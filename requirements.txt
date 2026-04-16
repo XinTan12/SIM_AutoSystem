@@ -1,0 +1,7 @@
+numpy
+PyQt5
+nidaqmx
+tifffile
+opencv-python
+pandas
+matplotlib

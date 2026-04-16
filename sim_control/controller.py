@@ -1,0 +1,249 @@
+﻿from __future__ import annotations
+
+import traceback
+from typing import Any
+
+from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+
+from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter
+from .models import BackendConfig, CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, new_task_id
+from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
+
+
+class SimAcquisitionWorker(QObject):
+    signal_status_changed = pyqtSignal(str, dict)
+    signal_acquisition_ready = pyqtSignal(object)
+    signal_acquisition_failed = pyqtSignal(str, str)
+
+    @pyqtSlot(object)
+    def slot_start(self, payload: dict[str, Any]) -> None:
+        task: SimTaskConfig = payload["task"]
+        task_id: str = payload["task_id"]
+        daq_config: DaqLineConfig = payload["daq_config"]
+        pattern_result: PatternPreparationResult = payload["pattern_result"]
+        waveform_builder: NIDaqWaveformBuilder = payload["waveform_builder"]
+        daq: NIDaqAdapter = payload["daq_adapter"]
+        camera: FusionBtCameraAdapter = payload["camera_adapter"]
+        slm: KopinSlmAdapter = payload["slm_adapter"]
+
+        try:
+            self.signal_status_changed.emit(
+                "acquisition_starting",
+                {"task_id": task_id, "laser_wavelength_nm": task.laser_wavelength_nm},
+            )
+            plan = waveform_builder.build(
+                daq_config=daq_config,
+                timing=task.timing,
+                laser_wavelength_nm=task.laser_wavelength_nm,
+                exposure_us=task.camera.exposure_us,
+                frame_count=9,
+            )
+            self.signal_status_changed.emit(
+                "waveform_ready",
+                {"task_id": task_id, "sample_count": plan.sample_count, "duration_s": plan.duration_s},
+            )
+            camera.apply_config(task.camera)
+            camera.arm(frame_count=9)
+            slm.activate_prepared_patterns()
+            daq.play_waveform(daq_config.device_name, plan)
+            stack, timestamps = camera.read_frame_sequence(
+                frame_count=9,
+                pattern_files=pattern_result.pattern_files,
+                laser_wavelength_nm=task.laser_wavelength_nm,
+            )
+            for index, timestamp in enumerate(timestamps, start=1):
+                self.signal_status_changed.emit(
+                    "frame_captured",
+                    {"task_id": task_id, "frame_index": index, "timestamp": timestamp},
+                )
+            self.signal_status_changed.emit(
+                "acquisition_complete",
+                {"task_id": task_id, "stack_shape": list(stack.shape)},
+            )
+            self.signal_acquisition_ready.emit(
+                {
+                    "task_id": task_id,
+                    "stack": stack,
+                    "timestamps": timestamps,
+                    "laser_wavelength_nm": task.laser_wavelength_nm,
+                    "exposure_us": task.camera.exposure_us,
+                    "pattern_files": list(pattern_result.pattern_files),
+                    "metadata": {
+                        "pattern_handles": list(pattern_result.handles),
+                        "waveform": plan.metadata,
+                        "daq_device": daq_config.device_name,
+                    },
+                }
+            )
+        except Exception as exc:
+            self.signal_acquisition_failed.emit(task_id, f"{exc}\n{traceback.format_exc()}")
+        finally:
+            try:
+                camera.disarm()
+            except Exception:
+                pass
+            try:
+                daq.set_all_low(daq_config.device_name)
+            except Exception:
+                pass
+
+
+class SimAcquisitionController(QObject):
+    signal_status_changed = pyqtSignal(str, dict)
+    signal_acquisition_ready = pyqtSignal(object)
+    signal_acquisition_failed = pyqtSignal(str, str)
+    signal_start_worker = pyqtSignal(object)
+
+    def __init__(self, backend: BackendConfig | None = None, parent: QObject | None = None):
+        super().__init__(parent)
+        self.backend = backend or BackendConfig()
+        self.waveform_builder = NIDaqWaveformBuilder()
+        self.daq_adapter = NIDaqAdapter(simulate=self.backend.simulate_daq)
+        self.camera_adapter = FusionBtCameraAdapter(
+            sdk_path=self.backend.fusion_bt_sdk_path,
+            simulate=self.backend.simulate_camera,
+        )
+        self.slm_adapter = KopinSlmAdapter(
+            sdk_path=self.backend.slm_sdk_path,
+            simulate=self.backend.simulate_slm,
+        )
+        self.daq_config = DaqLineConfig()
+        self.camera_config = CameraConfig()
+        self.pattern_result = PatternPreparationResult()
+
+        self._thread = QThread(self)
+        self._worker = SimAcquisitionWorker()
+        self._worker.moveToThread(self._thread)
+        self._worker.signal_status_changed.connect(self.signal_status_changed)
+        self._worker.signal_acquisition_ready.connect(self.signal_acquisition_ready)
+        self._worker.signal_acquisition_failed.connect(self.signal_acquisition_failed)
+        self.signal_start_worker.connect(self._worker.slot_start)
+        self._thread.start()
+
+    def shutdown(self) -> None:
+        try:
+            self.stop()
+        except Exception:
+            pass
+        try:
+            self.camera_adapter.disconnect()
+        except Exception:
+            pass
+        try:
+            self.slm_adapter.disconnect()
+        except Exception:
+            pass
+        self._thread.quit()
+        self._thread.wait(2000)
+
+    def initialize_hardware(self) -> None:
+        self.signal_status_changed.emit("hardware_initializing", {})
+        self.camera_adapter.initialize()
+        self.slm_adapter.initialize()
+        self.signal_status_changed.emit(
+            "hardware_initialized",
+            {
+                "simulate_daq": self.daq_adapter.simulate,
+                "simulate_camera": self.camera_adapter.simulate,
+                "simulate_slm": self.slm_adapter.simulate,
+            },
+        )
+
+    def initialize_camera(self) -> None:
+        self.camera_adapter.initialize()
+        self.signal_status_changed.emit("camera_initialized", {})
+
+    def refresh_available_camera_devices(self) -> list[dict[str, Any]]:
+        return self.camera_adapter.list_devices()
+
+    def connect_camera(self, device_index: int | None = None, device_label: str = "") -> dict[str, Any]:
+        info = self.camera_adapter.connect(device_index=device_index, device_label=device_label)
+        self.signal_status_changed.emit("camera_connected", info)
+        return info
+
+    def disconnect_camera(self) -> None:
+        self.camera_adapter.disconnect()
+        self.signal_status_changed.emit("camera_disconnected", {})
+
+    def camera_connection_info(self) -> dict[str, Any]:
+        return self.camera_adapter.connection_info()
+
+    def arm_camera(self, frame_count: int = 9) -> None:
+        self.camera_adapter.arm(frame_count=frame_count)
+        self.signal_status_changed.emit("camera_armed", {"frame_count": frame_count})
+
+    def disarm_camera(self) -> None:
+        self.camera_adapter.disarm()
+        self.signal_status_changed.emit("camera_disarmed", {})
+
+    def refresh_available_daq_devices(self) -> list[str]:
+        return self.daq_adapter.list_devices(default_device=self.daq_config.device_name)
+
+    def refresh_available_lines(self, device_name: str | None = None) -> list[str]:
+        selected_device = device_name or self.daq_config.device_name
+        return self.daq_adapter.list_port0_lines(device_name=selected_device, default_device=self.daq_config.device_name)
+
+    def apply_daq_config(self, config: DaqLineConfig) -> None:
+        validate_daq_line_config(config)
+        self.daq_config = config
+        self.signal_status_changed.emit("daq_config_applied", {"device_name": config.device_name})
+
+    def apply_camera_config(self, config: CameraConfig) -> None:
+        if config.trigger_mode != "external_level":
+            raise HardwareError("Only external_level trigger mode is supported.")
+        self.camera_config = config
+        self.camera_adapter.apply_config(config)
+        self.signal_status_changed.emit("camera_config_applied", {"camera_config": config.__dict__})
+
+    def refresh_available_slm_devices(self) -> list[dict[str, str]]:
+        return self.slm_adapter.list_devices()
+
+    def connect_slm(self, device_path: str | None = None) -> dict[str, Any]:
+        info = self.slm_adapter.connect(device_path=device_path)
+        self.signal_status_changed.emit("slm_connected", info)
+        return info
+
+    def disconnect_slm(self) -> None:
+        self.slm_adapter.disconnect()
+        self.signal_status_changed.emit("slm_disconnected", {})
+
+    def slm_connection_info(self) -> dict[str, Any]:
+        return self.slm_adapter.connection_info()
+
+    def prepare_patterns(self, pattern_files: list[str], device_path: str | None = None) -> PatternPreparationResult:
+        self.pattern_result = self.slm_adapter.program_patterns(pattern_files, device_path=device_path)
+        self.signal_status_changed.emit(
+            "patterns_prepared",
+            {
+                "handles": list(self.pattern_result.handles),
+                "prepared_at": self.pattern_result.prepared_at,
+            },
+        )
+        return self.pattern_result
+
+    def start_single_acquisition(self, task: SimTaskConfig) -> str:
+        if not self.pattern_result.handles:
+            raise HardwareError("Patterns must be prepared before acquisition.")
+        task_id = new_task_id()
+        payload = {
+            "task_id": task_id,
+            "task": task,
+            "daq_config": self.daq_config,
+            "pattern_result": self.pattern_result,
+            "waveform_builder": self.waveform_builder,
+            "daq_adapter": self.daq_adapter,
+            "camera_adapter": self.camera_adapter,
+            "slm_adapter": self.slm_adapter,
+        }
+        self.signal_start_worker.emit(payload)
+        return task_id
+
+    def stop(self) -> None:
+        try:
+            self.daq_adapter.set_all_low(self.daq_config.device_name)
+        finally:
+            try:
+                self.camera_adapter.disarm()
+            except Exception:
+                pass
+        self.signal_status_changed.emit("stop_requested", {})
