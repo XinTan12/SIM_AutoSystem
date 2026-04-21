@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,16 +66,31 @@ class UiRegressionTests(unittest.TestCase):
         self.assertTrue(hasattr(ui, "btn_sCMOS_live"))
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_X"))
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_Y"))
+        self.assertTrue(hasattr(ui, "cmb_sCMOS_imageSize"))
+        self.assertTrue(hasattr(ui, "cmb_sCMOS_bitDepth"))
         self.assertFalse(hasattr(ui, "spb_sCMOS_ringBufferCapacity"))
         self.assertFalse(hasattr(ui, "spb_sCMOS_delayTime"))
+        self.assertFalse(hasattr(ui, "spb_sCMOS_pixelWidth"))
+        self.assertFalse(hasattr(ui, "spb_sCMOS_pixelHeight"))
 
         self.assertIsInstance(ui.spb_sCMOS_ROI_X, QtWidgets.QSpinBox)
         self.assertIsInstance(ui.spb_sCMOS_ROI_Y, QtWidgets.QSpinBox)
         self.assertIsInstance(ui.spb_sCMOS_exposureTime, QtWidgets.QSpinBox)
-        self.assertEqual(ui.spb_sCMOS_pixelWidth.maximum(), 2304)
-        self.assertEqual(ui.spb_sCMOS_pixelHeight.maximum(), 2304)
+        self.assertIsInstance(ui.cmb_sCMOS_imageSize, QtWidgets.QComboBox)
+        self.assertIsInstance(ui.cmb_sCMOS_bitDepth, QtWidgets.QComboBox)
+        self.assertEqual(
+            [ui.cmb_sCMOS_imageSize.itemText(index) for index in range(ui.cmb_sCMOS_imageSize.count())],
+            ["2304 x 2304", "1152 x 1152", "576 x 576"],
+        )
+        self.assertEqual(
+            [ui.cmb_sCMOS_bitDepth.itemText(index) for index in range(ui.cmb_sCMOS_bitDepth.count())],
+            ["16-bit"],
+        )
         self.assertEqual(ui.spb_sCMOS_exposureTime.minimum(), 1)
-        self.assertEqual(ui.spb_sCMOS_exposureTime.maximum(), 10_000_000)
+        self.assertEqual(ui.spb_sCMOS_exposureTime.maximum(), 10_000)
+        self.assertEqual(ui.spb_sCMOS_exposureTime.value(), 10)
+        self.assertIn("Exp(ms)", all_text)
+        self.assertNotIn("Exp(us)", all_text)
 
     def test_cellsorting_left_column_uses_uniform_lines_between_groups(self):
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
@@ -138,7 +153,19 @@ class UiRegressionTests(unittest.TestCase):
 
         tab_titles = [ui.tabs.tabText(index) for index in range(ui.tabs.count())]
         self.assertNotIn("Camera", tab_titles)
-        self.assertEqual(tab_titles, ["DAQ", "Patterns", "Laser"])
+        self.assertEqual(tab_titles, ["Laser", "Patterns", "DAQ"])
+        self.assertTrue(hasattr(ui, "combo_test_target"))
+        self.assertTrue(hasattr(ui, "btn_pulse_test"))
+        self.assertIsInstance(ui.combo_test_target, QtWidgets.QComboBox)
+        self.assertIsInstance(ui.btn_pulse_test, QtWidgets.QPushButton)
+        texts = {
+            child.text()
+            for child in dialog.findChildren((QtWidgets.QLabel, QtWidgets.QPushButton))
+            if hasattr(child, "text")
+        }
+        self.assertIn("Pulse Test", texts)
+        self.assertIn("Test target", texts)
+        self.assertNotIn("Validate Wiring", texts)
 
         for widget_name in (
             "spin_sample_rate",
@@ -182,6 +209,27 @@ class UiRegressionTests(unittest.TestCase):
             ui.tab_patterns.minimumHeight(),
             601,
             "Patterns page should reserve the same vertical space budget as the other tabs.",
+        )
+
+    def test_sim_settings_ui_setup_does_not_emit_invalid_font_size_warnings(self):
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        messages = []
+
+        def message_handler(_msg_type, _context, message):
+            messages.append(message)
+
+        previous_handler = QtCore.qInstallMessageHandler(message_handler)
+        try:
+            ui.setupUi(dialog)
+        finally:
+            QtCore.qInstallMessageHandler(previous_handler)
+
+        self.assertFalse(
+            any("QFont::setPointSize: Point size <= 0" in message for message in messages),
+            "SIM settings dialog should not apply invalid font point sizes.",
         )
 
 

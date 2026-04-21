@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <ui version="4.0">
  <class>SimSettingsDialog</class>
  <widget class="QDialog" name="SimSettingsDialog">
@@ -19,7 +19,6 @@
   <property name="font">
    <font>
     <family>Arial</family>
-    <pointsize>-1</pointsize>
    </font>
   </property>
   <property name="windowTitle">
@@ -28,7 +27,7 @@
   <property name="styleSheet">
    <string notr="true">QDialog {
     background: #f5f7fb;
-    font-family: &quot;Arial&quot;;
+    font-family: "Arial";
     font-size: 14px;
 }
 QGroupBox {
@@ -124,7 +123,6 @@ QLabel#lbl_error {
      <property name="font">
       <font>
        <family>Arial</family>
-       <pointsize>-1</pointsize>
        <weight>87</weight>
        <bold>true</bold>
       </font>
@@ -172,23 +170,11 @@ QLabel#lbl_error {
      <property name="documentMode">
       <bool>true</bool>
      </property>
-     <widget class="QWidget" name="tab_daq">
-      <property name="minimumSize">
-       <size>
-        <width>30</width>
-        <height>30</height>
-       </size>
-      </property>
-      <property name="font">
-       <font>
-        <family>Arial</family>
-        <pointsize>10</pointsize>
-       </font>
-      </property>
+     <widget class="QWidget" name="tab_laser">
       <attribute name="title">
-       <string>DAQ</string>
+       <string>Laser</string>
       </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_daq_page">
+      <layout class="QVBoxLayout" name="verticalLayout_laser_page">
        <property name="leftMargin">
         <number>24</number>
        </property>
@@ -202,9 +188,22 @@ QLabel#lbl_error {
         <number>24</number>
        </property>
        <item>
-        <layout class="QHBoxLayout" name="horizontalLayout_daq_center">
+        <spacer name="verticalSpacer_laser_top">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>10</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_laser_center">
          <item>
-          <spacer name="horizontalSpacer_daq_left">
+          <spacer name="horizontalSpacer_laser_left">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
            </property>
@@ -217,921 +216,130 @@ QLabel#lbl_error {
           </spacer>
          </item>
          <item>
-          <widget class="QGroupBox" name="group_daq">
+          <widget class="QGroupBox" name="group_laser">
            <property name="maximumSize">
             <size>
-             <width>700</width>
-             <height>720</height>
+             <width>500</width>
+             <height>16777215</height>
             </size>
            </property>
            <property name="font">
             <font>
              <family>Arial</family>
-             <pointsize>-1</pointsize>
              <weight>75</weight>
              <bold>true</bold>
             </font>
            </property>
-           <property name="title">
-            <string>DAQ Wiring</string>
+           <property name="layoutDirection">
+            <enum>Qt::LeftToRight</enum>
            </property>
-           <layout class="QVBoxLayout" name="verticalLayout_daq_group">
-            <property name="spacing">
-             <number>16</number>
-            </property>
+           <property name="title">
+            <string>Active Laser</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+           <layout class="QGridLayout" name="gridLayout_lasers">
             <property name="leftMargin">
              <number>24</number>
             </property>
             <property name="topMargin">
-             <number>50</number>
+             <number>24</number>
             </property>
             <property name="rightMargin">
              <number>24</number>
             </property>
             <property name="bottomMargin">
-             <number>60</number>
+             <number>24</number>
             </property>
-            <item>
-             <layout class="QHBoxLayout" name="horizontalLayout_daq_device">
-              <property name="spacing">
-               <number>12</number>
+            <property name="spacing">
+             <number>18</number>
+            </property>
+            <item row="0" column="0">
+             <widget class="QRadioButton" name="radio_laser_405">
+              <property name="minimumSize">
+               <size>
+                <width>180</width>
+                <height>48</height>
+               </size>
               </property>
-              <item>
-               <widget class="QLabel" name="label_daq_device">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>DAQ Device</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QComboBox" name="combo_daq_device">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="btn_refresh_lines">
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                  <weight>75</weight>
-                  <bold>true</bold>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Refresh</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item>
-             <layout class="QFormLayout" name="formLayout_daq">
-              <property name="fieldGrowthPolicy">
-               <enum>QFormLayout::FieldsStayAtSizeHint</enum>
-              </property>
-              <property name="labelAlignment">
-               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-              </property>
-              <property name="formAlignment">
-               <set>Qt::AlignHCenter|Qt::AlignTop</set>
-              </property>
-              <property name="horizontalSpacing">
-               <number>16</number>
-              </property>
-              <property name="verticalSpacing">
-               <number>12</number>
-              </property>
-              <item row="0" column="0">
-               <widget class="QLabel" name="label_slm_enable_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>SLM Enable</string>
-                </property>
-                <property name="textFormat">
-                 <enum>Qt::AutoText</enum>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QComboBox" name="combo_slm_enable_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QComboBox" name="combo_slm_trigger_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="0">
-               <widget class="QLabel" name="label_slm_finish_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>SLM Finish</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="1">
-               <widget class="QComboBox" name="combo_slm_finish_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="3" column="0">
-               <widget class="QLabel" name="label_camera_trigger_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Camera Trigger</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="3" column="1">
-               <widget class="QComboBox" name="combo_camera_trigger_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="4" column="0">
-               <widget class="QLabel" name="label_laser_405_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Laser 405</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="4" column="1">
-               <widget class="QComboBox" name="combo_laser_405_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="5" column="0">
-               <widget class="QLabel" name="label_laser_488_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Laser 488</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="5" column="1">
-               <widget class="QComboBox" name="combo_laser_488_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="6" column="0">
-               <widget class="QLabel" name="label_laser_561_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Laser 561</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="6" column="1">
-               <widget class="QComboBox" name="combo_laser_561_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="7" column="0">
-               <widget class="QLabel" name="label_laser_640_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Laser 640</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-              <item row="7" column="1">
-               <widget class="QComboBox" name="combo_laser_640_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>200</width>
-                  <height>36</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>260</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                 </font>
-                </property>
-                <property name="maxVisibleItems">
-                 <number>16</number>
-                </property>
-                <property name="insertPolicy">
-                 <enum>QComboBox::InsertAtBottom</enum>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="0">
-               <widget class="QLabel" name="label_slm_trigger_line">
-                <property name="minimumSize">
-                 <size>
-                  <width>120</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="maximumSize">
-                 <size>
-                  <width>120</width>
-                  <height>16777215</height>
-                 </size>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>10</pointsize>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>SLM Trigger</string>
-                </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item>
-             <widget class="QGroupBox" name="group_daq_timing">
               <property name="font">
                <font>
                 <family>Arial</family>
-                <pointsize>-1</pointsize>
                 <weight>75</weight>
                 <bold>true</bold>
                </font>
               </property>
-              <property name="title">
-               <string>Timing</string>
+              <property name="text">
+               <string>405 nm</string>
               </property>
-              <layout class="QFormLayout" name="formLayout_daq_timing">
-               <property name="fieldGrowthPolicy">
-                <enum>QFormLayout::FieldsStayAtSizeHint</enum>
-               </property>
-               <property name="labelAlignment">
-                <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-               </property>
-               <property name="formAlignment">
-                <set>Qt::AlignHCenter|Qt::AlignTop</set>
-               </property>
-               <property name="horizontalSpacing">
-                <number>16</number>
-               </property>
-               <property name="verticalSpacing">
-                <number>12</number>
-               </property>
-               <property name="leftMargin">
-                <number>20</number>
-               </property>
-               <property name="topMargin">
-                <number>20</number>
-               </property>
-               <property name="rightMargin">
-                <number>20</number>
-               </property>
-               <property name="bottomMargin">
-                <number>20</number>
-               </property>
-               <item row="0" column="0">
-                <widget class="QLabel" name="label_sample_rate">
-                 <property name="minimumSize">
-                  <size>
-                   <width>120</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>120</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>10</pointsize>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Sample Rate (Hz)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="1">
-                <widget class="QSpinBox" name="spin_sample_rate">
-                 <property name="minimumSize">
-                  <size>
-                   <width>200</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>260</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>-1</pointsize>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1000</number>
-                 </property>
-                 <property name="maximum">
-                  <number>20000000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="0">
-                <widget class="QLabel" name="label_edge_pulse">
-                 <property name="minimumSize">
-                  <size>
-                   <width>120</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>120</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>10</pointsize>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Edge Pulse (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QSpinBox" name="spin_edge_pulse_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>200</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>260</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>-1</pointsize>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="2" column="0">
-                <widget class="QLabel" name="label_inter_frame_gap">
-                 <property name="minimumSize">
-                  <size>
-                   <width>120</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>140</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>10</pointsize>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Inter Frame Gap (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="2" column="1">
-                <widget class="QSpinBox" name="spin_inter_frame_gap_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>200</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>260</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>-1</pointsize>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="maximum">
-                  <number>2000000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="3" column="0">
-                <widget class="QLabel" name="label_slm_enable_guard">
-                 <property name="minimumSize">
-                  <size>
-                   <width>120</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>140</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>10</pointsize>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>SLM Enable Guard (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="3" column="1">
-                <widget class="QSpinBox" name="spin_slm_enable_guard_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>200</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>260</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Arial</family>
-                   <pointsize>-1</pointsize>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100000</number>
-                 </property>
-                </widget>
-               </item>
-              </layout>
              </widget>
             </item>
-            <item>
-             <layout class="QHBoxLayout" name="horizontalLayout_daq_buttons">
-              <property name="spacing">
-               <number>0</number>
+            <item row="0" column="1">
+             <widget class="QRadioButton" name="radio_laser_488">
+              <property name="minimumSize">
+               <size>
+                <width>180</width>
+                <height>48</height>
+               </size>
               </property>
-              <item>
-               <spacer name="horizontalSpacer_daq_button_left">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>40</width>
-                  <height>20</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-              <item>
-               <widget class="QPushButton" name="btn_validate_wiring">
-                <property name="sizePolicy">
-                 <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
-                  <horstretch>0</horstretch>
-                  <verstretch>0</verstretch>
-                 </sizepolicy>
-                </property>
-                <property name="font">
-                 <font>
-                  <family>Arial</family>
-                  <pointsize>-1</pointsize>
-                  <weight>75</weight>
-                  <bold>true</bold>
-                 </font>
-                </property>
-                <property name="text">
-                 <string>Validate Wiring</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <spacer name="horizontalSpacer_daq_button_right">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>40</width>
-                  <height>20</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-             </layout>
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
+              <property name="text">
+               <string>488 nm</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QRadioButton" name="radio_laser_561">
+              <property name="minimumSize">
+               <size>
+                <width>180</width>
+                <height>48</height>
+               </size>
+              </property>
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
+              <property name="text">
+               <string>561 nm</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QRadioButton" name="radio_laser_640">
+              <property name="minimumSize">
+               <size>
+                <width>180</width>
+                <height>48</height>
+               </size>
+              </property>
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
+              <property name="text">
+               <string>640 nm</string>
+              </property>
+             </widget>
             </item>
            </layout>
           </widget>
          </item>
          <item>
-          <spacer name="horizontalSpacer_daq_right">
+          <spacer name="horizontalSpacer_laser_right">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
            </property>
@@ -1144,6 +352,19 @@ QLabel#lbl_error {
           </spacer>
          </item>
         </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_laser_bottom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>2</height>
+          </size>
+         </property>
+        </spacer>
        </item>
       </layout>
      </widget>
@@ -1210,7 +431,6 @@ QLabel#lbl_error {
              <property name="font">
               <font>
                <family>Arial</family>
-               <pointsize>-1</pointsize>
                <weight>75</weight>
                <bold>true</bold>
               </font>
@@ -1301,7 +521,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                  </widget>
@@ -1344,7 +563,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1375,7 +593,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1406,7 +623,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1463,7 +679,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1498,7 +713,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1517,7 +731,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1535,7 +748,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1570,7 +782,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1589,7 +800,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1607,7 +817,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1642,7 +851,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1661,7 +869,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1679,7 +886,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1714,7 +920,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1733,7 +938,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1751,7 +955,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1786,7 +989,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1805,7 +1007,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1823,7 +1024,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1858,7 +1058,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1877,7 +1076,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1895,7 +1093,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -1930,7 +1127,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -1949,7 +1145,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -1967,7 +1162,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -2002,7 +1196,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -2021,7 +1214,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -2039,7 +1231,6 @@ QLabel#lbl_error {
                <property name="font">
                 <font>
                  <family>Arial</family>
-                 <pointsize>-1</pointsize>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
@@ -2074,7 +1265,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                    </font>
                   </property>
                   <property name="alignment">
@@ -2093,7 +1283,6 @@ QLabel#lbl_error {
                   <property name="font">
                    <font>
                     <family>Arial</family>
-                    <pointsize>-1</pointsize>
                     <weight>75</weight>
                     <bold>true</bold>
                    </font>
@@ -2127,11 +1316,23 @@ QLabel#lbl_error {
        </item>
       </layout>
      </widget>
-     <widget class="QWidget" name="tab_laser">
+     <widget class="QWidget" name="tab_daq">
+      <property name="minimumSize">
+       <size>
+        <width>30</width>
+        <height>30</height>
+       </size>
+      </property>
+      <property name="font">
+       <font>
+        <family>Arial</family>
+        <pointsize>10</pointsize>
+       </font>
+      </property>
       <attribute name="title">
-       <string>Laser</string>
+       <string>DAQ</string>
       </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_laser_page">
+      <layout class="QVBoxLayout" name="verticalLayout_daq_page">
        <property name="leftMargin">
         <number>24</number>
        </property>
@@ -2145,22 +1346,9 @@ QLabel#lbl_error {
         <number>24</number>
        </property>
        <item>
-        <spacer name="verticalSpacer_laser_top">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>10</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="horizontalLayout_laser_center">
+        <layout class="QHBoxLayout" name="horizontalLayout_daq_center">
          <item>
-          <spacer name="horizontalSpacer_laser_left">
+          <spacer name="horizontalSpacer_daq_left">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
            </property>
@@ -2173,135 +1361,933 @@ QLabel#lbl_error {
           </spacer>
          </item>
          <item>
-          <widget class="QGroupBox" name="group_laser">
+          <widget class="QGroupBox" name="group_daq">
            <property name="maximumSize">
             <size>
-             <width>500</width>
-             <height>16777215</height>
+             <width>700</width>
+             <height>720</height>
             </size>
            </property>
            <property name="font">
             <font>
              <family>Arial</family>
-             <pointsize>-1</pointsize>
              <weight>75</weight>
              <bold>true</bold>
             </font>
            </property>
-           <property name="layoutDirection">
-            <enum>Qt::LeftToRight</enum>
-           </property>
            <property name="title">
-            <string>Active Laser</string>
+            <string>DAQ Wiring</string>
            </property>
-           <property name="alignment">
-            <set>Qt::AlignCenter</set>
-           </property>
-           <layout class="QGridLayout" name="gridLayout_lasers">
+           <layout class="QVBoxLayout" name="verticalLayout_daq_group">
+            <property name="spacing">
+             <number>16</number>
+            </property>
             <property name="leftMargin">
              <number>24</number>
             </property>
             <property name="topMargin">
-             <number>24</number>
+             <number>50</number>
             </property>
             <property name="rightMargin">
              <number>24</number>
             </property>
             <property name="bottomMargin">
-             <number>24</number>
+             <number>60</number>
             </property>
-            <property name="spacing">
-             <number>18</number>
-            </property>
-            <item row="0" column="0">
-             <widget class="QRadioButton" name="radio_laser_405">
-              <property name="minimumSize">
-               <size>
-                <width>180</width>
-                <height>48</height>
-               </size>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_daq_device">
+              <property name="spacing">
+               <number>12</number>
               </property>
+              <item>
+               <widget class="QLabel" name="label_daq_device">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>DAQ Device</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="combo_daq_device">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="btn_refresh_lines">
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Refresh</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QFormLayout" name="formLayout_daq">
+              <property name="fieldGrowthPolicy">
+               <enum>QFormLayout::FieldsStayAtSizeHint</enum>
+              </property>
+              <property name="labelAlignment">
+               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+              </property>
+              <property name="formAlignment">
+               <set>Qt::AlignHCenter|Qt::AlignTop</set>
+              </property>
+              <property name="horizontalSpacing">
+               <number>16</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>12</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_slm_enable_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>SLM Enable</string>
+                </property>
+                <property name="textFormat">
+                 <enum>Qt::AutoText</enum>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QComboBox" name="combo_slm_enable_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QComboBox" name="combo_slm_trigger_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_slm_finish_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>SLM Finish</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QComboBox" name="combo_slm_finish_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_camera_trigger_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Camera Trigger</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QComboBox" name="combo_camera_trigger_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_laser_405_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Laser 405</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QComboBox" name="combo_laser_405_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_laser_488_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Laser 488</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="1">
+               <widget class="QComboBox" name="combo_laser_488_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="0">
+               <widget class="QLabel" name="label_laser_561_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Laser 561</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="1">
+               <widget class="QComboBox" name="combo_laser_561_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="7" column="0">
+               <widget class="QLabel" name="label_laser_640_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Laser 640</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="7" column="1">
+               <widget class="QComboBox" name="combo_laser_640_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>200</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>260</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+                <property name="maxVisibleItems">
+                 <number>16</number>
+                </property>
+                <property name="insertPolicy">
+                 <enum>QComboBox::InsertAtBottom</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_slm_trigger_line">
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>SLM Trigger</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="group_daq_timing">
               <property name="font">
                <font>
                 <family>Arial</family>
-                <pointsize>-1</pointsize>
                 <weight>75</weight>
                 <bold>true</bold>
                </font>
               </property>
-              <property name="text">
-               <string>405 nm</string>
+              <property name="title">
+               <string>Timing</string>
               </property>
+              <layout class="QFormLayout" name="formLayout_daq_timing">
+               <property name="fieldGrowthPolicy">
+                <enum>QFormLayout::FieldsStayAtSizeHint</enum>
+               </property>
+               <property name="labelAlignment">
+                <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+               </property>
+               <property name="formAlignment">
+                <set>Qt::AlignHCenter|Qt::AlignTop</set>
+               </property>
+               <property name="horizontalSpacing">
+                <number>16</number>
+               </property>
+               <property name="verticalSpacing">
+                <number>12</number>
+               </property>
+               <property name="leftMargin">
+                <number>20</number>
+               </property>
+               <property name="topMargin">
+                <number>20</number>
+               </property>
+               <property name="rightMargin">
+                <number>20</number>
+               </property>
+               <property name="bottomMargin">
+                <number>20</number>
+               </property>
+               <item row="0" column="0">
+                <widget class="QLabel" name="label_sample_rate">
+                 <property name="minimumSize">
+                  <size>
+                   <width>120</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>120</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                   <pointsize>10</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Sample Rate (Hz)</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QSpinBox" name="spin_sample_rate">
+                 <property name="minimumSize">
+                  <size>
+                   <width>200</width>
+                   <height>36</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>260</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                  </font>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignCenter</set>
+                 </property>
+                 <property name="minimum">
+                  <number>1000</number>
+                 </property>
+                 <property name="maximum">
+                  <number>20000000</number>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLabel" name="label_edge_pulse">
+                 <property name="minimumSize">
+                  <size>
+                   <width>120</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>120</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                   <pointsize>10</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Edge Pulse (us)</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QSpinBox" name="spin_edge_pulse_us">
+                 <property name="minimumSize">
+                  <size>
+                   <width>200</width>
+                   <height>36</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>260</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                  </font>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignCenter</set>
+                 </property>
+                 <property name="minimum">
+                  <number>1</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100000</number>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="0">
+                <widget class="QLabel" name="label_inter_frame_gap">
+                 <property name="minimumSize">
+                  <size>
+                   <width>120</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>140</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                   <pointsize>10</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Inter Frame Gap (us)</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="1">
+                <widget class="QSpinBox" name="spin_inter_frame_gap_us">
+                 <property name="minimumSize">
+                  <size>
+                   <width>200</width>
+                   <height>36</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>260</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                  </font>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignCenter</set>
+                 </property>
+                 <property name="maximum">
+                  <number>2000000</number>
+                 </property>
+                </widget>
+               </item>
+               <item row="3" column="0">
+                <widget class="QLabel" name="label_slm_enable_guard">
+                 <property name="minimumSize">
+                  <size>
+                   <width>120</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>140</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                   <pointsize>10</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>SLM Enable Guard (us)</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="3" column="1">
+                <widget class="QSpinBox" name="spin_slm_enable_guard_us">
+                 <property name="minimumSize">
+                  <size>
+                   <width>200</width>
+                   <height>36</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>260</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <family>Arial</family>
+                  </font>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignCenter</set>
+                 </property>
+                 <property name="minimum">
+                  <number>1</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100000</number>
+                 </property>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="0" column="1">
-             <widget class="QRadioButton" name="radio_laser_488">
-              <property name="minimumSize">
-               <size>
-                <width>180</width>
-                <height>48</height>
-               </size>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_daq_buttons">
+              <property name="spacing">
+               <number>0</number>
               </property>
-              <property name="font">
-               <font>
-                <family>Arial</family>
-                <pointsize>-1</pointsize>
-                <weight>75</weight>
-                <bold>true</bold>
-               </font>
-              </property>
-              <property name="text">
-               <string>488 nm</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QRadioButton" name="radio_laser_561">
-              <property name="minimumSize">
-               <size>
-                <width>180</width>
-                <height>48</height>
-               </size>
-              </property>
-              <property name="font">
-               <font>
-                <family>Arial</family>
-                <pointsize>-1</pointsize>
-                <weight>75</weight>
-                <bold>true</bold>
-               </font>
-              </property>
-              <property name="text">
-               <string>561 nm</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QRadioButton" name="radio_laser_640">
-              <property name="minimumSize">
-               <size>
-                <width>180</width>
-                <height>48</height>
-               </size>
-              </property>
-              <property name="font">
-               <font>
-                <family>Arial</family>
-                <pointsize>-1</pointsize>
-                <weight>75</weight>
-                <bold>true</bold>
-               </font>
-              </property>
-              <property name="text">
-               <string>640 nm</string>
-              </property>
-             </widget>
+              <item>
+               <spacer name="horizontalSpacer_daq_button_left">
+                <property name="orientation">
+                 <enum>Qt::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QLabel" name="label_test_target">
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Test target</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="combo_test_target">
+                <property name="minimumSize">
+                 <size>
+                  <width>260</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                 </font>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="btn_pulse_test">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>Pulse Test</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacer_daq_button_right">
+                <property name="orientation">
+                 <enum>Qt::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
             </item>
            </layout>
           </widget>
          </item>
          <item>
-          <spacer name="horizontalSpacer_laser_right">
+          <spacer name="horizontalSpacer_daq_right">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
            </property>
@@ -2314,19 +2300,6 @@ QLabel#lbl_error {
           </spacer>
          </item>
         </layout>
-       </item>
-       <item>
-        <spacer name="verticalSpacer_laser_bottom">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>2</height>
-          </size>
-         </property>
-        </spacer>
        </item>
       </layout>
      </widget>
@@ -2376,7 +2349,6 @@ QLabel#lbl_error {
        <property name="font">
         <font>
          <family>Arial</family>
-         <pointsize>-1</pointsize>
          <weight>75</weight>
          <bold>true</bold>
         </font>
@@ -2407,7 +2379,6 @@ QLabel#lbl_error {
        <property name="font">
         <font>
          <family>Arial</family>
-         <pointsize>-1</pointsize>
          <weight>75</weight>
          <bold>true</bold>
         </font>
@@ -2434,6 +2405,6 @@ QLabel#lbl_error {
    </item>
   </layout>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>

@@ -31,7 +31,11 @@ def app_config_from_dict(payload: dict) -> AppConfig:
     daq = DaqLineConfig(**payload.get("daq", {}))
     camera = CameraConfig(**payload.get("camera", {}))
     timing = TimingConfig(**payload.get("timing", {}))
-    backend = BackendConfig(**payload.get("backend", {}))
+    backend_payload = payload.get("backend", {})
+    backend = BackendConfig(
+        fusion_bt_sdk_path=str(backend_payload.get("fusion_bt_sdk_path", "")),
+        slm_sdk_path=str(backend_payload.get("slm_sdk_path", "")),
+    )
     pattern_files = _merge_list(payload.get("pattern_files", []))
     selected_laser_nm = int(payload.get("selected_laser_nm", 488))
     config_path = str(payload.get("config_path", DEFAULT_CONFIG_PATH))

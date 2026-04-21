@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import traceback
+
+import numpy as np
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -27,8 +30,9 @@ from PyQt5.QtWidgets import (
     QWidget,
     QComboBox,
 )
+import tifffile
 
-from .adapters import HardwareError, KopinSlmAdapter, NIDaqAdapter
+from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter
 from .config_store import (
     DEFAULT_CONFIG_PATH,
     app_config_from_dict,
@@ -40,7 +44,7 @@ from .controller import SimAcquisitionController
 from .models import AppConfig, DAQ_ROLE_ORDER, DaqLineConfig, SimTaskConfig, TimingConfig
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
-from .waveform import parse_line_name, validate_daq_line_config
+from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
 
 
 ROLE_LABELS = {
@@ -54,9 +58,28 @@ ROLE_LABELS = {
     "laser_640_line": "Laser 640",
 }
 
+SIM_ACQUISITION_TEST_ID = "sim_acquisition"
+DAQ_PULSE_TEST_ROLES = (
+    "camera_trigger_line",
+    "laser_405_line",
+    "laser_488_line",
+    "laser_561_line",
+    "laser_640_line",
+)
+TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "test_captures"
+
 
 def clone_app_config(config: AppConfig) -> AppConfig:
     return app_config_from_dict(app_config_to_dict(config))
+
+
+def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, str]]:
+    items = [
+        (role, f"{ROLE_LABELS[role]} -> {getattr(daq_config, role)}")
+        for role in DAQ_PULSE_TEST_ROLES
+    ]
+    items.append((SIM_ACQUISITION_TEST_ID, "SIM采集"))
+    return items
 
 
 class SimSettingsDialog(QDialog):
@@ -75,11 +98,8 @@ class SimSettingsDialog(QDialog):
             self.config.config_path = config_path
 
         self.ui = Ui_SimSettingsDialog()
-        self.daq_adapter = NIDaqAdapter(simulate=self.config.backend.simulate_daq)
-        self.slm_adapter = KopinSlmAdapter(
-            sdk_path=self.config.backend.slm_sdk_path,
-            simulate=self.config.backend.simulate_slm,
-        )
+        self.daq_adapter = NIDaqAdapter()
+        self.slm_adapter = KopinSlmAdapter(sdk_path=self.config.backend.slm_sdk_path)
         self._preferred_daq_device = self.config.daq.device_name
         self._loaded_pattern_result = None
         self._build_ui()
@@ -96,7 +116,8 @@ class SimSettingsDialog(QDialog):
         self.lbl_error = self.ui.lbl_error
         self.combo_daq_device = self.ui.combo_daq_device
         self.btn_refresh_lines = self.ui.btn_refresh_lines
-        self.btn_validate_wiring = self.ui.btn_validate_wiring
+        self.combo_test_target = self.ui.combo_test_target
+        self.btn_pulse_test = self.ui.btn_pulse_test
         self.btn_save_close = self.ui.btn_save_close
         self.btn_cancel = self.ui.btn_cancel
 
@@ -157,12 +178,14 @@ class SimSettingsDialog(QDialog):
     def _wire_signals(self) -> None:
         self.btn_refresh_lines.clicked.connect(self._refresh_daq_devices)
         self.combo_daq_device.currentTextChanged.connect(lambda _text: self._refresh_device_lines())
-        self.btn_validate_wiring.clicked.connect(self._validate_wiring)
+        self.btn_pulse_test.clicked.connect(self._run_pulse_test)
         self.btn_save_close.clicked.connect(self._save_and_accept)
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_connect_slm.clicked.connect(self._connect_slm)
         self.btn_disconnect_slm.clicked.connect(self._disconnect_slm)
         self.btn_load_patterns.clicked.connect(self._load_patterns)
+        for combo in self.line_combos.values():
+            combo.currentTextChanged.connect(lambda _text: self._refresh_test_targets())
         for index, button in enumerate(self.pattern_browse_buttons):
             button.clicked.connect(lambda _checked=False, idx=index: self._browse_pattern(idx))
 
@@ -221,6 +244,7 @@ class SimSettingsDialog(QDialog):
             combo.blockSignals(True)
             combo.clear()
             combo.blockSignals(False)
+        self._refresh_test_targets()
 
     def _default_line_for_role(self, device_name: str, role: str) -> str:
         return f"{device_name}/port0/line{DAQ_ROLE_ORDER.index(role)}"
@@ -268,6 +292,7 @@ class SimSettingsDialog(QDialog):
                 if fallback_value in lines:
                     combo.setCurrentText(fallback_value)
             combo.blockSignals(False)
+        self._refresh_test_targets()
 
     def _refresh_slm_devices(self) -> None:
         selected_path = self.combo_slm_device.currentData()
@@ -349,18 +374,147 @@ class SimSettingsDialog(QDialog):
         except Exception as exc:
             self._set_error(str(exc))
 
-    def _validate_wiring(self) -> None:
+    def _current_daq_config_for_test_targets(self) -> DaqLineConfig | None:
+        device_name = self.combo_daq_device.currentText().strip()
+        if not device_name:
+            return None
+        selections = {}
+        for role, combo in self.line_combos.items():
+            value = combo.currentText().strip()
+            if not value:
+                return None
+            selections[role] = value
+        return DaqLineConfig(device_name=device_name, **selections)
+
+    def _refresh_test_targets(self) -> None:
+        selected_target = self.combo_test_target.currentData()
+        daq_config = self._current_daq_config_for_test_targets()
+        self.combo_test_target.blockSignals(True)
+        self.combo_test_target.clear()
+        if daq_config is not None:
+            for target_id, label in build_daq_test_target_items(daq_config):
+                self.combo_test_target.addItem(label, target_id)
+            selected_index = self.combo_test_target.findData(selected_target)
+            if selected_index < 0 and self.combo_test_target.count():
+                selected_index = 0
+            if selected_index >= 0:
+                self.combo_test_target.setCurrentIndex(selected_index)
+        self.combo_test_target.blockSignals(False)
+        self.btn_pulse_test.setEnabled(self.combo_test_target.count() > 0)
+
+    def _test_capture_path(self, subdir: str, prefix: str) -> Path:
+        target_dir = TEST_CAPTURE_ROOT / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return target_dir / f"{prefix}_{timestamp}.tiff"
+
+    def _write_uint16_tiff(self, path: Path, image_data: np.ndarray) -> None:
+        tifffile.imwrite(path, np.asarray(image_data, dtype=np.uint16))
+
+    def _run_camera_trigger_test(self, daq_config: DaqLineConfig) -> Path:
+        camera_adapter = FusionBtCameraAdapter(sdk_path=self.config.backend.fusion_bt_sdk_path)
+        output_path = self._test_capture_path("camera_pulse", "camera_trigger")
+        _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
         try:
-            validate_daq_line_config(self._current_daq_config())
+            camera_adapter.apply_config(self.config.camera)
+            camera_adapter.arm(frame_count=1)
+            self.daq_adapter.pulse_line(daq_config.device_name, line_index, duration_s=0.1)
+            stack, _timestamps = camera_adapter.read_frame_sequence(
+                frame_count=1,
+                pattern_files=[""],
+                laser_wavelength_nm=self.config.selected_laser_nm,
+            )
+            self._write_uint16_tiff(output_path, stack[0])
+            return output_path
+        finally:
+            try:
+                camera_adapter.disarm()
+            except Exception:
+                pass
+            try:
+                camera_adapter.disconnect()
+            except Exception:
+                pass
+            try:
+                self.daq_adapter.set_all_low(daq_config.device_name)
+            except Exception:
+                pass
+
+    def _run_laser_pulse_test(self, daq_config: DaqLineConfig, target_role: str) -> None:
+        line_name = getattr(daq_config, target_role)
+        device_name, _, line_index = parse_line_name(line_name)
+        self.daq_adapter.pulse_line(device_name, line_index, duration_s=1.0)
+
+    def _run_sim_acquisition_test(self, daq_config: DaqLineConfig) -> Path:
+        if not self.slm_adapter.is_connected():
+            raise HardwareError("SIM采集测试前需要先连接 SLM。")
+        if self._loaded_pattern_result is None or not self._loaded_pattern_result.handles:
+            raise HardwareError("SIM采集测试前需要先加载 9 个 pattern。")
+
+        camera_adapter = FusionBtCameraAdapter(sdk_path=self.config.backend.fusion_bt_sdk_path)
+        output_path = self._test_capture_path("sim_acquisition", "sim_acquisition_488nm_10ms")
+        camera_config = clone_app_config(self.config).camera
+        camera_config.exposure_us = 10_000
+        waveform_builder = NIDaqWaveformBuilder()
+        plan = waveform_builder.build(
+            daq_config=daq_config,
+            timing=self._current_timing_config(),
+            laser_wavelength_nm=488,
+            exposure_us=10_000,
+            frame_count=9,
+        )
+        try:
+            camera_adapter.apply_config(camera_config)
+            camera_adapter.arm(frame_count=9)
+            self.slm_adapter.activate_prepared_patterns()
+            self.daq_adapter.play_waveform(daq_config.device_name, plan)
+            stack, _timestamps = camera_adapter.read_frame_sequence(
+                frame_count=9,
+                pattern_files=list(self._loaded_pattern_result.pattern_files),
+                laser_wavelength_nm=488,
+            )
+            self._write_uint16_tiff(output_path, stack)
+            return output_path
+        finally:
+            try:
+                camera_adapter.disarm()
+            except Exception:
+                pass
+            try:
+                camera_adapter.disconnect()
+            except Exception:
+                pass
+            try:
+                self.daq_adapter.set_all_low(daq_config.device_name)
+            except Exception:
+                pass
+
+    def _run_pulse_test(self) -> None:
+        try:
+            daq_config = self._current_daq_config()
+            validate_daq_line_config(daq_config)
+            target_id = self.combo_test_target.currentData()
+            if not target_id:
+                raise ValueError("Please select a test target.")
+            if target_id == SIM_ACQUISITION_TEST_ID:
+                output_path = self._run_sim_acquisition_test(daq_config)
+                message = f"SIM采集测试完成，16位 TIFF 已保存到:\n{output_path}"
+            elif target_id == "camera_trigger_line":
+                output_path = self._run_camera_trigger_test(daq_config)
+                message = f"相机测试完成，16位 TIFF 已保存到:\n{output_path}"
+            else:
+                self._run_laser_pulse_test(daq_config, str(target_id))
+                message = f"{ROLE_LABELS[str(target_id)]} 脉冲测试完成。"
             self._set_error("-")
-            QMessageBox.information(self, "DAQ Wiring", "DAQ wiring validation passed.")
+            QMessageBox.information(self, "Pulse Test", message)
         except Exception as exc:
             self._set_error(str(exc))
-            QMessageBox.critical(self, "DAQ Wiring", str(exc))
+            QMessageBox.critical(self, "Pulse Test", str(exc))
 
     def _save_and_accept(self) -> None:
         try:
             config = clone_app_config(self._sync_config_from_widgets())
+            validate_daq_line_config(config.daq)
             save_app_config(config, config.config_path or DEFAULT_CONFIG_PATH)
             self.signal_settings_saved.emit(config)
             self.accept()

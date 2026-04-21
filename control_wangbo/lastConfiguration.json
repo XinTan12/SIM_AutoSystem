@@ -11,12 +11,12 @@
     "spb_postTriggerBuffer": 100,
     "spb_missEventSavePreFrames": 200,
     "spb_fastCamera_displayGray_max": 65535,
-    "spb_sCMOS_pixelWidth": 608,
-    "spb_sCMOS_pixelHeight": 304,
-    "spb_sCMOS_exposureTime": 25,
+    "spb_sCMOS_pixelWidth": 1152,
+    "spb_sCMOS_pixelHeight": 1152,
+    "spb_sCMOS_exposureTime": 20,
     "spb_sCMOS_displayGray_max": 65535,
-    "spb_sCMOS_ROI_X": 0,
-    "spb_sCMOS_ROI_Y": 0,
+    "spb_sCMOS_ROI_X": 400,
+    "spb_sCMOS_ROI_Y": 200,
     "spb_sCMOS_preTriggerBuffer": 10,
     "spb_sCMOS_postTriggerBuffer": 100,
     "spb_captureROI_X": 0,
@@ -66,55 +66,5 @@
     "spb_sCMOS_openTimes": 1,
     "spb_sCMOS_closeTimes": 1,
     "spb_sCMOS_minArea": 3000,
-    "spb_threshold_Bi": 5,
-    "sim_control": {
-        "daq": {
-            "device_name": "Dev2",
-            "slm_enable_line": "Dev2/port0/line0",
-            "slm_trigger_line": "Dev2/port0/line1",
-            "slm_finish_line": "Dev2/port0/line2",
-            "camera_trigger_line": "Dev2/port0/line3",
-            "laser_405_line": "Dev2/port0/line4",
-            "laser_488_line": "Dev2/port0/line5",
-            "laser_561_line": "Dev2/port0/line6",
-            "laser_640_line": "Dev2/port0/line7"
-        },
-        "camera": {
-            "device_index": 0,
-            "device_label": "0: Simulated ORCA-Fusion BT [SIM-CAM-000]",
-            "roi_x": 0,
-            "roi_y": 0,
-            "roi_width": 608,
-            "roi_height": 304,
-            "exposure_us": 25,
-            "timeout_ms": 5000,
-            "trigger_mode": "external_level"
-        },
-        "timing": {
-            "sample_rate_hz": 1000000,
-            "edge_pulse_us": 50,
-            "inter_frame_gap_us": 10000,
-            "slm_enable_guard_us": 50
-        },
-        "backend": {
-            "simulate_daq": true,
-            "simulate_camera": true,
-            "simulate_slm": true,
-            "fusion_bt_sdk_path": "",
-            "slm_sdk_path": ""
-        },
-        "pattern_files": [
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            ""
-        ],
-        "selected_laser_nm": 488,
-        "config_path": "E:\\Intelligent_SR\\SIM_AutoSystem\\config\\sim_control_config.json"
-    }
+    "spb_threshold_Bi": 5
 }

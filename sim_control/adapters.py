@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import math
 import os
 import struct
 import sys
@@ -40,6 +41,7 @@ R11_IMAGE_BASE = 0x01000000
 R11_BITPLANE_BYTES = (R11_QXGA_WIDTH // 8) * R11_QXGA_HEIGHT
 R11_BITPLANE_PAGES = R11_BITPLANE_BYTES // R11_PAGE_SIZE
 _REVERSE_BITS_LUT = bytes(int(f"{index:08b}"[::-1], 2) for index in range(256))
+_SUPPORTED_CAMERA_BIT_DEPTHS = (8, 10, 12, 14, 16)
 
 
 def _resolve_r11_dll_path(user_path: str = "") -> Path:
@@ -315,15 +317,12 @@ class _R11CommLib:
 
 
 class NIDaqAdapter:
-    def __init__(self, simulate: bool = False):
-        self.simulate = simulate or nidaqmx is None
+    def __init__(self):
+        self._available = nidaqmx is not None
 
     def list_devices(self, default_device: str = "Dev1") -> list[str]:
-        if self.simulate:
-            devices = ["Dev1", "Dev2"]
-            if default_device and default_device not in devices:
-                devices.insert(0, default_device)
-            return devices
+        if not self._available:
+            return []
         try:
             system = nidaqmx.system.System.local()
             return [device.name for device in system.devices]
@@ -334,8 +333,6 @@ class NIDaqAdapter:
         selected_device = (device_name or default_device or "Dev1").strip()
         if not selected_device:
             return []
-        if self.simulate:
-            return [f"{selected_device}/port0/line{i}" for i in range(16)]
         try:
             devices = self.list_devices(default_device=selected_device)
             if selected_device not in devices:
@@ -345,9 +342,8 @@ class NIDaqAdapter:
             return []
 
     def play_waveform(self, device_name: str, plan: WaveformPlan) -> None:
-        if self.simulate:
-            time.sleep(plan.duration_s)
-            return
+        if not self._available:
+            raise HardwareError("nidaqmx is not available; cannot drive NI hardware.")
         try:
             with nidaqmx.Task() as task:
                 task.do_channels.add_do_chan(
@@ -367,8 +363,8 @@ class NIDaqAdapter:
             raise HardwareError(f"Failed to play NI waveform: {exc}") from exc
 
     def set_all_low(self, device_name: str) -> None:
-        if self.simulate:
-            return
+        if not self._available:
+            raise HardwareError("nidaqmx is not available; cannot reset NI outputs.")
         try:
             with nidaqmx.Task() as task:
                 task.do_channels.add_do_chan(
@@ -379,11 +375,34 @@ class NIDaqAdapter:
         except Exception as exc:
             raise HardwareError(f"Failed to reset NI outputs: {exc}") from exc
 
+    def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None:
+        if not self._available:
+            raise HardwareError("nidaqmx is not available; cannot pulse NI outputs.")
+        if not 0 <= int(line_index) <= 31:
+            raise HardwareError(f"Invalid NI line index: {line_index}")
+        if duration_s <= 0:
+            raise HardwareError(f"Pulse duration must be positive: {duration_s}")
+
+        line_mask = int(1 << int(line_index))
+        try:
+            with nidaqmx.Task() as task:
+                task.do_channels.add_do_chan(
+                    f"{device_name}/port0",
+                    line_grouping=LineGrouping.CHAN_FOR_ALL_LINES,
+                )
+                task.write(0, auto_start=True)
+                try:
+                    task.write(line_mask, auto_start=True)
+                    time.sleep(duration_s)
+                finally:
+                    task.write(0, auto_start=True)
+        except Exception as exc:
+            raise HardwareError(f"Failed to pulse NI line {line_index} on {device_name}: {exc}") from exc
+
 
 class FusionBtCameraAdapter:
-    def __init__(self, sdk_path: str = "", simulate: bool = True):
+    def __init__(self, sdk_path: str = ""):
         self.sdk_path = sdk_path
-        self.simulate = simulate
         self._sdk = None
         self._initialized = False
         self._armed = False
@@ -454,22 +473,6 @@ class FusionBtCameraAdapter:
         return descriptor
 
     def _ensure_camera_open(self, device_index: int | None = None, device_label: str = "") -> dict[str, Any]:
-        if self.simulate:
-            selected_index = int(self._camera_config.device_index if device_index is None else device_index)
-            selected_label = device_label or self._camera_config.device_label or f"Simulated Fusion BT [{selected_index}]"
-            self._connected_device_index = selected_index
-            self._connected_device_label = selected_label
-            self._connection_info = {
-                "index": selected_index,
-                "display": selected_label,
-                "model": "Simulated ORCA-Fusion BT",
-                "camera_id": f"SIM-CAM-{selected_index:03d}",
-                "driver_version": "simulated",
-                "mode": "simulated",
-            }
-            self._device_open = True
-            return dict(self._connection_info)
-
         self.initialize()
         selected_index = int(self._camera_config.device_index if device_index is None else device_index)
         if self._device_open and self._dcam_camera is not None and self._connected_device_index == selected_index:
@@ -523,12 +526,133 @@ class FusionBtCameraAdapter:
             )
         return float(actual)
 
+    def _get_property(self, prop_id: int) -> float:
+        value = self._dcam_camera.prop_getvalue(prop_id)
+        if value is False:
+            raise HardwareError(
+                f"Failed to query DCAM property {prop_id}: {self._dcam_camera.lasterr().name}"
+            )
+        return float(value)
+
+    def _try_get_property(self, prop_id: int) -> float | None:
+        try:
+            return self._get_property(prop_id)
+        except Exception:
+            return None
+
+    def _property_text(self, prop_id: int, value: float) -> str:
+        try:
+            text = self._dcam_camera.prop_getvaluetext(prop_id, value)
+        except Exception:
+            return ""
+        return "" if text is False or text is None else str(text)
+
+    def _camera_signature(self) -> str:
+        parts = [
+            str(self._connection_info.get("model", "")),
+            str(self._connection_info.get("camera_id", "")),
+            str(self._connected_device_label or ""),
+        ]
+        return " ".join(part for part in parts if part).upper()
+
+    def _fixed_readout_speed_value(self) -> float:
+        dcamapi4 = self._dcamapi4
+        signature = self._camera_signature()
+        requested = None
+        if "C13440" in signature or "FLASH4.0" in signature or "FLASH 4.0" in signature:
+            requested = 2
+        elif "C15440" in signature or "FUSION BT" in signature:
+            requested = 3
+        if requested is None:
+            requested = dcamapi4.DCAMPROP.READOUTSPEED.FASTEST
+        try:
+            queried = self._dcam_camera.prop_queryvalue(dcamapi4.DCAM_IDPROP.READOUTSPEED, requested)
+        except Exception:
+            queried = False
+        if queried is False:
+            return float(requested)
+        return float(queried)
+
+    def _supported_bit_depths(self) -> list[int]:
+        prop_id = self._dcamapi4.DCAM_IDPROP.BITSPERCHANNEL
+        supported: list[int] = []
+        for candidate in _SUPPORTED_CAMERA_BIT_DEPTHS:
+            try:
+                queried = self._dcam_camera.prop_queryvalue(prop_id, candidate)
+            except Exception:
+                queried = False
+            if queried is False:
+                continue
+            try:
+                queried_value = int(round(float(queried)))
+            except Exception:
+                continue
+            if queried_value == candidate and candidate not in supported:
+                supported.append(candidate)
+        if not supported:
+            current_value = self._try_get_property(prop_id)
+            if current_value is not None:
+                supported.append(int(round(current_value)))
+        return sorted({int(value) for value in supported})
+
+    def get_supported_bit_depths(self) -> list[int]:
+        if not self._device_open or self._dcam_camera is None:
+            return [16]
+        supported = self._supported_bit_depths()
+        return supported or [16]
+
+    def _resolve_bit_depth(self, requested_bit_depth: int) -> tuple[list[int], int]:
+        supported_bit_depths = self._supported_bit_depths()
+        if not supported_bit_depths:
+            supported_bit_depths = [16]
+        if int(requested_bit_depth) in supported_bit_depths:
+            return supported_bit_depths, int(requested_bit_depth)
+        if 16 in supported_bit_depths:
+            return supported_bit_depths, 16
+        return supported_bit_depths, max(supported_bit_depths)
+
+    def _apply_bit_depth(self, bit_depth: int) -> None:
+        dcamapi4 = self._dcamapi4
+        bits_enum_name = f"_{int(bit_depth)}"
+        bits_value = getattr(dcamapi4.DCAMPROP.BITSPERCHANNEL, bits_enum_name, int(bit_depth))
+        pixel_type = dcamapi4.DCAM_PIXELTYPE.MONO8 if int(bit_depth) <= 8 else dcamapi4.DCAM_PIXELTYPE.MONO16
+        self._set_property(dcamapi4.DCAM_IDPROP.BITSPERCHANNEL, bits_value)
+        self._set_property(dcamapi4.DCAM_IDPROP.IMAGE_PIXELTYPE, pixel_type)
+
+    def _read_timing_summary(
+        self,
+        config: CameraConfig,
+        supported_bit_depths: list[int],
+        applied_bit_depth: int,
+        applied_readout_speed_value: float,
+    ) -> dict[str, Any]:
+        dcamapi4 = self._dcamapi4
+        timing_readout_time_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_READOUTTIME)
+        timing_cyclic_trigger_period_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_CYCLICTRIGGERPERIOD)
+        timing_min_trigger_blanking_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_MINTRIGGERBLANKING)
+        exposure_s = max(0.0, float(config.exposure_us) / 1_000_000.0)
+        tc_s = max(0.0, float(timing_cyclic_trigger_period_s or 0.0))
+        min_tb_s = max(0.0, float(timing_min_trigger_blanking_s or 0.0))
+        recommended_gap_s = max(tc_s - exposure_s, min_tb_s, 0.0)
+        recommended_gap_us = int(math.ceil(recommended_gap_s * 1_000_000.0)) + 1000
+        return {
+            "camera_model": str(self._connection_info.get("model", "")),
+            "camera_id": str(self._connection_info.get("camera_id", "")),
+            "applied_readout_speed_value": int(round(float(applied_readout_speed_value))),
+            "applied_readout_speed_text": self._property_text(
+                dcamapi4.DCAM_IDPROP.READOUTSPEED,
+                applied_readout_speed_value,
+            ),
+            "supported_bit_depths": list(supported_bit_depths),
+            "applied_bit_depth": int(applied_bit_depth),
+            "timing_readout_time_s": timing_readout_time_s,
+            "timing_cyclic_trigger_period_s": timing_cyclic_trigger_period_s,
+            "timing_min_trigger_blanking_s": timing_min_trigger_blanking_s,
+            "recommended_inter_frame_gap_us": recommended_gap_us,
+        }
+
     def initialize(self) -> None:
         if self._initialized:
-            return
-        if self.simulate:
-            self._sdk = {"mode": "simulated"}
-            self._initialized = True
             return
         self._initialize_dcam_api()
         device_count = self._dcam.Dcamapi.get_devicecount()
@@ -538,16 +662,6 @@ class FusionBtCameraAdapter:
         self._initialized = True
 
     def list_devices(self) -> list[dict[str, Any]]:
-        if self.simulate:
-            return [
-                {
-                    "index": 0,
-                    "model": "Simulated ORCA-Fusion BT",
-                    "camera_id": "SIM-CAM-000",
-                    "driver_version": "simulated",
-                    "display": "0: Simulated ORCA-Fusion BT [SIM-CAM-000]",
-                }
-            ]
         self._initialize_dcam_api()
         device_count = self._dcam.Dcamapi.get_devicecount()
         if device_count is False:
@@ -572,49 +686,56 @@ class FusionBtCameraAdapter:
         return self._device_open
 
     def connection_info(self) -> dict[str, Any]:
-        return dict(self._connection_info)
+        info = dict(self._connection_info)
+        if self._device_open and self._dcam_camera is not None:
+            info["supported_bit_depths"] = self.get_supported_bit_depths()
+        return info
 
     def connect(self, device_index: int | None = None, device_label: str = "") -> dict[str, Any]:
         selected_index = self._camera_config.device_index if device_index is None else int(device_index)
         self._camera_config.device_index = selected_index
         if device_label:
             self._camera_config.device_label = device_label
-        return self._ensure_camera_open(device_index=selected_index, device_label=device_label or self._camera_config.device_label)
+        info = self._ensure_camera_open(device_index=selected_index, device_label=device_label or self._camera_config.device_label)
+        info["supported_bit_depths"] = self.get_supported_bit_depths()
+        self._connection_info["supported_bit_depths"] = list(info["supported_bit_depths"])
+        return info
 
     def disconnect(self) -> None:
-        if self.simulate:
-            self.stop_preview()
-            self.disarm()
-            self._device_open = False
-            self._connection_info = {}
-            self._connected_device_label = ""
-            return
         self._close_camera()
 
-    def apply_config(self, config: CameraConfig) -> None:
+    def apply_config(self, config: CameraConfig) -> dict[str, Any]:
         if not self._initialized:
             self.initialize()
         if config.trigger_mode != "external_level":
             raise HardwareError("Fusion BT adapter only supports external_level trigger mode.")
         self._camera_config = config
-        if self.simulate:
-            return
         self._ensure_camera_open(device_index=config.device_index, device_label=config.device_label)
-        self._configure_camera(
-            config,
-            trigger_source=self._dcamapi4.DCAMPROP.TRIGGERSOURCE.EXTERNAL,
-            trigger_active=self._dcamapi4.DCAMPROP.TRIGGERACTIVE.LEVEL,
-        )
+        try:
+            result = self._configure_camera(
+                config,
+                trigger_source=self._dcamapi4.DCAMPROP.TRIGGERSOURCE.EXTERNAL,
+                trigger_active=self._dcamapi4.DCAMPROP.TRIGGERACTIVE.LEVEL,
+            )
+        except Exception:
+            self._close_camera()
+            raise
+        return result
 
-    def _configure_camera(self, config: CameraConfig, trigger_source: int, trigger_active: int) -> None:
+    def _configure_camera(self, config: CameraConfig, trigger_source: int, trigger_active: int) -> dict[str, Any]:
         self._camera_config = config
-        if self.simulate:
-            return
         dcamapi4 = self._dcamapi4
         self._set_property(dcamapi4.DCAM_IDPROP.TRIGGERSOURCE, trigger_source)
         self._set_property(dcamapi4.DCAM_IDPROP.TRIGGERACTIVE, trigger_active)
         self._set_property(dcamapi4.DCAM_IDPROP.TRIGGER_MODE, dcamapi4.DCAMPROP.TRIGGER_MODE.NORMAL)
         self._set_property(dcamapi4.DCAM_IDPROP.TRIGGERPOLARITY, dcamapi4.DCAMPROP.TRIGGERPOLARITY.POSITIVE)
+        applied_readout_speed_value = self._set_property(
+            dcamapi4.DCAM_IDPROP.READOUTSPEED,
+            self._fixed_readout_speed_value(),
+        )
+        supported_bit_depths, applied_bit_depth = self._resolve_bit_depth(config.bit_depth)
+        self._apply_bit_depth(applied_bit_depth)
+        config.bit_depth = int(applied_bit_depth)
         self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.OFF)
         self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYHPOS, config.roi_x)
         self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYVPOS, config.roi_y)
@@ -623,6 +744,14 @@ class FusionBtCameraAdapter:
         self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.ON)
         exposure_s = config.exposure_us / 1_000_000.0
         self._set_property(dcamapi4.DCAM_IDPROP.EXPOSURETIME, exposure_s)
+        summary = self._read_timing_summary(
+            config,
+            supported_bit_depths=supported_bit_depths,
+            applied_bit_depth=applied_bit_depth,
+            applied_readout_speed_value=applied_readout_speed_value,
+        )
+        self._connection_info["supported_bit_depths"] = list(supported_bit_depths)
+        return summary
 
     @property
     def preview_active(self) -> bool:
@@ -637,10 +766,6 @@ class FusionBtCameraAdapter:
         self.disarm()
         self._camera_config = config
         self._preview_frame_counter = 0
-        if self.simulate:
-            self.connect(device_index=config.device_index, device_label=config.device_label)
-            self._preview_active = True
-            return
         self._ensure_camera_open(device_index=config.device_index, device_label=config.device_label)
         self._configure_camera(
             config,
@@ -660,18 +785,6 @@ class FusionBtCameraAdapter:
     def read_preview_frame(self, timeout_ms: int = 100) -> np.ndarray:
         if not self._preview_active:
             raise HardwareError("Preview must be started before reading frames.")
-        if self.simulate:
-            height = self._camera_config.roi_height
-            width = self._camera_config.roi_width
-            x = np.linspace(0.0, 1.0, width, dtype=np.float32)
-            y = np.linspace(0.0, 1.0, height, dtype=np.float32)
-            grid_x, grid_y = np.meshgrid(x, y)
-            phase = (time.time() * 2.0) + (self._preview_frame_counter * 0.15)
-            wave = np.sin((grid_x * np.pi * 4.0) + phase) + np.cos((grid_y * np.pi * 3.0) - (phase * 0.7))
-            gradient = (grid_x + grid_y) * 4096.0
-            frame = np.clip((wave + 2.0) * 8000.0 + gradient, 0, 65535).astype(np.uint16)
-            self._preview_frame_counter += 1
-            return frame
         if not self._dcam_camera.wait_capevent_frameready(timeout_ms):
             raise HardwareError(f"DCAM preview wait failed: {self._dcam_camera.lasterr().name}")
         frame = self._dcam_camera.buf_getlastframedata()
@@ -684,7 +797,7 @@ class FusionBtCameraAdapter:
         if not self._preview_active:
             return
         self._preview_active = False
-        if self.simulate or not self._initialized:
+        if not self._initialized:
             return
         try:
             self._dcam_camera.cap_stop()
@@ -702,9 +815,6 @@ class FusionBtCameraAdapter:
             self.stop_preview()
         self._frame_count = frame_count
         self._armed = True
-        if self.simulate:
-            self.connect(device_index=self._camera_config.device_index, device_label=self._camera_config.device_label)
-            return
         if frame_count <= 0:
             raise HardwareError("frame_count must be positive.")
         self._ensure_camera_open(
@@ -719,7 +829,7 @@ class FusionBtCameraAdapter:
     def disarm(self) -> None:
         self._armed = False
         self._frame_count = 0
-        if self.simulate or not self._initialized:
+        if not self._initialized:
             return
         try:
             self._dcam_camera.cap_stop()
@@ -738,29 +848,6 @@ class FusionBtCameraAdapter:
     ) -> tuple[np.ndarray, list[float]]:
         if not self._armed:
             raise HardwareError("Camera must be armed before reading frame sequence.")
-        if self.simulate:
-            height = self._camera_config.roi_height
-            width = self._camera_config.roi_width
-            frames = np.empty((frame_count, height, width), dtype=np.uint16)
-            timestamps: list[float] = []
-
-            x = np.linspace(0.0, 1.0, width, dtype=np.float32)
-            y = np.linspace(0.0, 1.0, height, dtype=np.float32)
-            grid_x, grid_y = np.meshgrid(x, y)
-            laser_gain = {405: 0.85, 488: 1.0, 561: 1.15, 640: 1.3}.get(laser_wavelength_nm, 1.0)
-
-            for index in range(frame_count):
-                timestamps.append(time.time())
-                base = ((grid_x + grid_y) * 4096.0) * laser_gain
-                phase = np.sin((grid_x * (index + 1) * np.pi) + (grid_y * np.pi * 0.5))
-                phase = (phase + 1.0) * 16384.0
-                pattern_hint = (index + 1) * 512.0
-                payload = np.clip(base + phase + pattern_hint, 0, 65535)
-                if pattern_files[index]:
-                    payload += (sum(map(ord, Path(pattern_files[index]).name)) % 1024)
-                frames[index] = payload.astype(np.uint16)
-            return frames, timestamps
-
         timestamps: list[float] = []
         captured = 0
         overall_timeout_ms = max(
@@ -794,9 +881,8 @@ class FusionBtCameraAdapter:
 
 
 class KopinSlmAdapter:
-    def __init__(self, sdk_path: str = "", simulate: bool = True):
+    def __init__(self, sdk_path: str = ""):
         self.sdk_path = sdk_path
-        self.simulate = simulate
         self._sdk: _R11CommLib | None = None
         self._initialized = False
         self._prepared = PatternPreparationResult()
@@ -808,15 +894,6 @@ class KopinSlmAdapter:
     def list_devices(self) -> list[dict[str, str]]:
         if not self._initialized:
             self.initialize()
-        if self.simulate:
-            return [
-                {
-                    "id": "sim-r11-1",
-                    "path": "sim://r11/1",
-                    "serial": "SIM0001",
-                    "display": "Simulated R11 (SIM0001)",
-                }
-            ]
         devices = self._sdk.enumerate_winusb_devices()
         formatted: list[dict[str, str]] = []
         for index, device in enumerate(devices, start=1):
@@ -839,21 +916,6 @@ class KopinSlmAdapter:
             return self.connection_info()
         if self._device_open and device_path and device_path != self._connected_device_path:
             self.disconnect()
-        if self.simulate:
-            selected_path = device_path or "sim://r11/1"
-            self._connected_device_path = selected_path
-            self._device_info = {
-                **self._base_info,
-                "device_id": "sim-r11-1",
-                "device_path": selected_path,
-                "device_serial_hint": "SIM0001",
-                "serial_number": 1,
-                "repertoire_name": "Simulated R11",
-                "mode": "simulated",
-            }
-            self._device_open = True
-            return self.connection_info()
-
         devices = self.list_devices()
         if not devices:
             raise HardwareError("No R11 WinUSB devices found. Confirm the R11 driver is installed and the device is connected.")
@@ -880,8 +942,7 @@ class KopinSlmAdapter:
         if not self._device_open:
             return
         try:
-            if not self.simulate:
-                self._sdk.close()
+            self._sdk.close()
         finally:
             self._device_open = False
             self._connected_device_path = ""
@@ -907,11 +968,6 @@ class KopinSlmAdapter:
     def initialize(self) -> None:
         if self._initialized:
             return
-        if self.simulate:
-            self._base_info = {"mode": "simulated"}
-            self._device_info = dict(self._base_info)
-            self._initialized = True
-            return
         dll_path = _resolve_r11_dll_path(self.sdk_path)
         self._sdk = _R11CommLib(dll_path)
         versions = self._sdk.get_versions()
@@ -928,18 +984,6 @@ class KopinSlmAdapter:
             self.initialize()
         if len(pattern_files) != 9:
             raise HardwareError("Exactly 9 pattern files are required.")
-        if self.simulate:
-            normalized_pattern_files = [
-                path if path else f"sim://pattern/{index}"
-                for index, path in enumerate(pattern_files, start=1)
-            ]
-            self._prepared = PatternPreparationResult(
-                pattern_files=normalized_pattern_files,
-                handles=list(range(1, 10)),
-                prepared_at=time.time(),
-                metadata={**self.connect(device_path), "mode": "simulated"},
-            )
-            return self._prepared
         missing = [path for path in pattern_files if not path or not Path(path).exists()]
         if missing:
             raise HardwareError(f"Pattern files not found: {missing}")
@@ -984,8 +1028,6 @@ class KopinSlmAdapter:
     def activate_prepared_patterns(self) -> None:
         if not self._prepared.handles:
             raise HardwareError("No patterns programmed to SLM.")
-        if self.simulate:
-            return
         self._connect(device_path=self._connected_device_path or None)
         self._sdk.activate_running_order()
 

@@ -62,6 +62,7 @@ class CameraConfig:
     roi_width: int = 512
     roi_height: int = 512
     exposure_us: int = 10_000
+    bit_depth: int = 16
     timeout_ms: int = 5_000
     trigger_mode: str = "external_level"
 
@@ -76,9 +77,6 @@ class TimingConfig:
 
 @dataclass
 class BackendConfig:
-    simulate_daq: bool = False
-    simulate_camera: bool = True
-    simulate_slm: bool = True
     fusion_bt_sdk_path: str = ""
     slm_sdk_path: str = ""
 

@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>Single_Cell_Sorting</class>
  <widget class="QWidget" name="Single_Cell_Sorting">
@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1960</width>
-    <height>1011</height>
+    <width>1800</width>
+    <height>1000</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -31,8 +31,8 @@
   <widget class="QGroupBox" name="grp_triggerControl">
    <property name="geometry">
     <rect>
-     <x>1210</x>
-     <y>50</y>
+     <x>1120</x>
+     <y>30</y>
      <width>161</width>
      <height>171</height>
     </rect>
@@ -1230,7 +1230,7 @@
      <enum>QFrame::StyledPanel</enum>
     </property>
     <property name="text">
-     <string />
+     <string/>
     </property>
    </widget>
    <widget class="QLabel" name="lb_FPSshow">
@@ -2179,13 +2179,13 @@
      <height>2</height>
     </rect>
    </property>
-   <layout class="QHBoxLayout" name="horizontalLayout" />
+   <layout class="QHBoxLayout" name="horizontalLayout"/>
   </widget>
   <widget class="QGroupBox" name="grp_releaseROIView">
    <property name="geometry">
     <rect>
-     <x>1210</x>
-     <y>350</y>
+     <x>600</x>
+     <y>560</y>
      <width>181</width>
      <height>111</height>
     </rect>
@@ -2247,7 +2247,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -2277,7 +2277,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -2307,7 +2307,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -2545,8 +2545,8 @@
   <widget class="QGroupBox" name="grp_captureROIView">
    <property name="geometry">
     <rect>
-     <x>1210</x>
-     <y>220</y>
+     <x>310</x>
+     <y>870</y>
      <width>391</width>
      <height>121</height>
     </rect>
@@ -2689,7 +2689,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -2719,7 +2719,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -2749,7 +2749,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -3473,8 +3473,8 @@
   <widget class="QGroupBox" name="grp_sortROIView">
    <property name="geometry">
     <rect>
-     <x>1210</x>
-     <y>720</y>
+     <x>600</x>
+     <y>680</y>
      <width>201</width>
      <height>141</height>
     </rect>
@@ -4034,7 +4034,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -4064,7 +4064,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -4094,7 +4094,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -5226,8 +5226,8 @@
   <widget class="QGroupBox" name="grp_trappedROIView">
    <property name="geometry">
     <rect>
-     <x>1400</x>
-     <y>350</y>
+     <x>790</x>
+     <y>560</y>
      <width>191</width>
      <height>111</height>
     </rect>
@@ -5571,7 +5571,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -5601,7 +5601,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -5631,7 +5631,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -5641,8 +5641,8 @@
   <widget class="QGroupBox" name="grp_videoSave">
    <property name="geometry">
     <rect>
-     <x>1010</x>
-     <y>50</y>
+     <x>910</x>
+     <y>40</y>
      <width>201</width>
      <height>141</height>
     </rect>
@@ -6036,7 +6036,7 @@
     </font>
    </property>
    <property name="title">
-    <string />
+    <string/>
    </property>
    <widget class="QWidget" name="layoutWidget">
     <property name="geometry">
@@ -6120,7 +6120,7 @@
   <widget class="QGroupBox" name="grp_simConfiguration">
    <property name="geometry">
     <rect>
-     <x>1610</x>
+     <x>1480</x>
      <y>40</y>
      <width>300</width>
      <height>930</height>
@@ -6224,8 +6224,8 @@
   <widget class="QGroupBox" name="grp_rinseChannel">
    <property name="geometry">
     <rect>
-     <x>1370</x>
-     <y>50</y>
+     <x>1290</x>
+     <y>30</y>
      <width>161</width>
      <height>121</height>
     </rect>
@@ -7682,8 +7682,8 @@
   <widget class="QGroupBox" name="grp_collectedROIView">
    <property name="geometry">
     <rect>
-     <x>1410</x>
-     <y>720</y>
+     <x>810</x>
+     <y>680</y>
      <width>201</width>
      <height>141</height>
     </rect>
@@ -8243,7 +8243,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8273,7 +8273,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8303,38 +8303,12 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
     </layout>
    </widget>
-  </widget>
-  <widget class="Line" name="line_12">
-   <property name="geometry">
-    <rect>
-     <x>1210</x>
-     <y>710</y>
-     <width>391</width>
-     <height>21</height>
-    </rect>
-   </property>
-   <property name="orientation">
-    <enum>Qt::Horizontal</enum>
-   </property>
-  </widget>
-  <widget class="Line" name="line_13">
-   <property name="geometry">
-    <rect>
-     <x>1210</x>
-     <y>340</y>
-     <width>391</width>
-     <height>20</height>
-    </rect>
-   </property>
-   <property name="orientation">
-    <enum>Qt::Horizontal</enum>
-   </property>
   </widget>
   <widget class="Line" name="line_18">
    <property name="geometry">
@@ -8352,8 +8326,8 @@
   <widget class="QGroupBox" name="grp_releaseROIView_2">
    <property name="geometry">
     <rect>
-     <x>1210</x>
-     <y>870</y>
+     <x>1040</x>
+     <y>720</y>
      <width>391</width>
      <height>131</height>
     </rect>
@@ -8415,7 +8389,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8445,7 +8419,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8475,7 +8449,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8694,7 +8668,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8724,7 +8698,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -8754,7 +8728,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -9061,10 +9035,10 @@
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
-     <x>310</x>
-     <y>900</y>
-     <width>891</width>
-     <height>101</height>
+     <x>700</x>
+     <y>865</y>
+     <width>775</width>
+     <height>250</height>
     </rect>
    </property>
    <property name="font">
@@ -9081,8 +9055,8 @@
      <rect>
       <x>10</x>
       <y>20</y>
-      <width>791</width>
-      <height>71</height>
+      <width>670</width>
+      <height>100</height>
      </rect>
     </property>
     <property name="font">
@@ -9098,8 +9072,8 @@
    <widget class="QPushButton" name="btn_saveExperimentInfo">
     <property name="geometry">
      <rect>
-      <x>810</x>
-      <y>70</y>
+      <x>690</x>
+      <y>90</y>
       <width>81</width>
       <height>25</height>
      </rect>
@@ -9135,8 +9109,8 @@
   <widget class="QGroupBox" name="grp_releaseROIView_3">
    <property name="geometry">
     <rect>
-     <x>930</x>
-     <y>210</y>
+     <x>310</x>
+     <y>550</y>
      <width>271</width>
      <height>341</height>
     </rect>
@@ -9351,7 +9325,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -9420,7 +9394,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -9531,7 +9505,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -9561,7 +9535,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -9591,7 +9565,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string />
+        <string/>
        </property>
       </widget>
      </item>
@@ -10019,10 +9993,10 @@
   <widget class="QGroupBox" name="grp_realTimeLiveView_2">
    <property name="geometry">
     <rect>
-     <x>310</x>
-     <y>550</y>
-     <width>611</width>
-     <height>341</height>
+     <x>1000</x>
+     <y>200</y>
+     <width>500</width>
+     <height>515</height>
     </rect>
    </property>
    <property name="sizePolicy">
@@ -10058,21 +10032,21 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>20</y>
-      <width>600</width>
-      <height>300</height>
+      <y>25</y>
+      <width>460</width>
+      <height>460</height>
      </rect>
     </property>
     <property name="minimumSize">
      <size>
-      <width>600</width>
+      <width>400</width>
       <height>300</height>
      </size>
     </property>
     <property name="maximumSize">
      <size>
       <width>600</width>
-      <height>300</height>
+      <height>600</height>
      </size>
     </property>
     <property name="font">
@@ -10087,14 +10061,14 @@
      <enum>QFrame::StyledPanel</enum>
     </property>
     <property name="text">
-     <string />
+     <string/>
     </property>
    </widget>
    <widget class="QLabel" name="lb_sCMOS_FPSshow">
     <property name="geometry">
      <rect>
       <x>50</x>
-      <y>320</y>
+      <y>485</y>
       <width>50</width>
       <height>16</height>
      </rect>
@@ -10127,7 +10101,7 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>320</y>
+      <y>485</y>
       <width>30</width>
       <height>15</height>
      </rect>
@@ -10159,8 +10133,8 @@
    <widget class="QWidget" name="layoutWidget">
     <property name="geometry">
      <rect>
-      <x>480</x>
-      <y>320</y>
+      <x>340</x>
+      <y>490</y>
       <width>128</width>
       <height>22</height>
      </rect>
@@ -10460,7 +10434,7 @@
      </rect>
     </property>
     <layout class="QGridLayout" name="gridLayout_32">
-     <item row="0" column="2">
+     <item row="0" column="2" colspan="2">
       <widget class="QLabel" name="label_74">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -10489,45 +10463,12 @@
         </font>
        </property>
        <property name="text">
-        <string>Width</string>
+        <string>Image Size</string>
        </property>
       </widget>
      </item>
-     <item row="0" column="3">
-      <widget class="QLabel" name="label_77">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>55</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>55</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Height</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="2">
-      <widget class="QSpinBox" name="spb_sCMOS_pixelWidth">
+     <item row="1" column="2" colspan="2">
+      <widget class="QComboBox" name="cmb_sCMOS_imageSize">
        <property name="enabled">
         <bool>true</bool>
        </property>
@@ -10539,87 +10480,39 @@
        </property>
        <property name="minimumSize">
         <size>
-         <width>60</width>
+         <width>130</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>60</width>
+         <width>130</width>
          <height>25</height>
         </size>
        </property>
        <property name="font">
         <font>
          <family>Times New Roman</family>
-         <pointsize>12</pointsize>
+         <pointsize>11</pointsize>
          <weight>50</weight>
          <bold>false</bold>
         </font>
        </property>
-       <property name="minimum">
-        <number>64</number>
-       </property>
-       <property name="maximum">
-        <number>2304</number>
-       </property>
-       <property name="singleStep">
-        <number>32</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>608</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="3">
-      <widget class="QSpinBox" name="spb_sCMOS_pixelHeight">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>60</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>60</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>16</number>
-       </property>
-       <property name="maximum">
-        <number>2304</number>
-       </property>
-       <property name="singleStep">
-        <number>8</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>304</number>
-       </property>
+       <item>
+        <property name="text">
+         <string>2304 x 2304</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>1152 x 1152</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>576 x 576</string>
+        </property>
+       </item>
       </widget>
      </item>
      <item row="0" column="0">
@@ -10717,7 +10610,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Exp(us)</string>
+        <string>Exp(ms)</string>
        </property>
       </widget>
      </item>
@@ -10840,13 +10733,13 @@
         <number>1</number>
        </property>
        <property name="maximum">
-        <number>10000000</number>
+        <number>10000</number>
        </property>
        <property name="singleStep">
-        <number>10</number>
+        <number>1</number>
        </property>
        <property name="value">
-        <number>25</number>
+        <number>10</number>
        </property>
       </widget>
      </item>
@@ -10938,19 +10831,6 @@
      <y>799</y>
      <width>291</width>
      <height>1</height>
-    </rect>
-   </property>
-   <property name="orientation">
-    <enum>Qt::Horizontal</enum>
-   </property>
-  </widget>
-  <widget class="Line" name="line_15">
-   <property name="geometry">
-    <rect>
-     <x>1210</x>
-     <y>860</y>
-     <width>401</width>
-     <height>21</height>
     </rect>
    </property>
    <property name="orientation">
@@ -11561,6 +11441,6 @@
    </layout>
   </widget>
  </widget>
- <resources />
- <connections />
+ <resources/>
+ <connections/>
 </ui>

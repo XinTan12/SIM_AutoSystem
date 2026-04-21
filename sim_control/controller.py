@@ -98,18 +98,13 @@ class SimAcquisitionController(QObject):
         super().__init__(parent)
         self.backend = backend or BackendConfig()
         self.waveform_builder = NIDaqWaveformBuilder()
-        self.daq_adapter = NIDaqAdapter(simulate=self.backend.simulate_daq)
-        self.camera_adapter = FusionBtCameraAdapter(
-            sdk_path=self.backend.fusion_bt_sdk_path,
-            simulate=self.backend.simulate_camera,
-        )
-        self.slm_adapter = KopinSlmAdapter(
-            sdk_path=self.backend.slm_sdk_path,
-            simulate=self.backend.simulate_slm,
-        )
+        self.daq_adapter = NIDaqAdapter()
+        self.camera_adapter = FusionBtCameraAdapter(sdk_path=self.backend.fusion_bt_sdk_path)
+        self.slm_adapter = KopinSlmAdapter(sdk_path=self.backend.slm_sdk_path)
         self.daq_config = DaqLineConfig()
         self.camera_config = CameraConfig()
         self.pattern_result = PatternPreparationResult()
+        self._latest_camera_timing: dict[str, Any] = {}
 
         self._thread = QThread(self)
         self._worker = SimAcquisitionWorker()
@@ -140,14 +135,7 @@ class SimAcquisitionController(QObject):
         self.signal_status_changed.emit("hardware_initializing", {})
         self.camera_adapter.initialize()
         self.slm_adapter.initialize()
-        self.signal_status_changed.emit(
-            "hardware_initialized",
-            {
-                "simulate_daq": self.daq_adapter.simulate,
-                "simulate_camera": self.camera_adapter.simulate,
-                "simulate_slm": self.slm_adapter.simulate,
-            },
-        )
+        self.signal_status_changed.emit("hardware_initialized", {})
 
     def initialize_camera(self) -> None:
         self.camera_adapter.initialize()
@@ -188,12 +176,17 @@ class SimAcquisitionController(QObject):
         self.daq_config = config
         self.signal_status_changed.emit("daq_config_applied", {"device_name": config.device_name})
 
-    def apply_camera_config(self, config: CameraConfig) -> None:
+    def apply_camera_config(self, config: CameraConfig) -> dict[str, Any]:
         if config.trigger_mode != "external_level":
             raise HardwareError("Only external_level trigger mode is supported.")
         self.camera_config = config
-        self.camera_adapter.apply_config(config)
-        self.signal_status_changed.emit("camera_config_applied", {"camera_config": config.__dict__})
+        result = self.camera_adapter.apply_config(config) or {}
+        if result.get("applied_bit_depth") is not None:
+            config.bit_depth = int(result["applied_bit_depth"])
+        self._latest_camera_timing = dict(result)
+        payload = {"camera_config": dict(config.__dict__), **dict(result)}
+        self.signal_status_changed.emit("camera_config_applied", payload)
+        return dict(result)
 
     def refresh_available_slm_devices(self) -> list[dict[str, str]]:
         return self.slm_adapter.list_devices()
@@ -224,6 +217,9 @@ class SimAcquisitionController(QObject):
     def start_single_acquisition(self, task: SimTaskConfig) -> str:
         if not self.pattern_result.handles:
             raise HardwareError("Patterns must be prepared before acquisition.")
+        recommended_gap_us = self._latest_camera_timing.get("recommended_inter_frame_gap_us")
+        if recommended_gap_us is not None:
+            task.timing.inter_frame_gap_us = int(recommended_gap_us)
         task_id = new_task_id()
         payload = {
             "task_id": task_id,

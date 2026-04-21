@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtCore import Qt, pyqtSlot,pyqtSignal,QTimer
+from PyQt5.QtCore import QEvent, Qt, pyqtSlot,pyqtSignal,QTimer
 from PyQt5.QtGui import QImage, QPixmap
 import PyQt5.QtWidgets as qw
 import CellSorting_ui
@@ -29,11 +29,93 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from sim_control.config_store import app_config_from_dict, app_config_to_dict, load_app_config, save_app_config
-from sim_control.adapters import FusionBtCameraAdapter
+from sim_control.adapters import FusionBtCameraAdapter, KopinSlmAdapter, NIDaqAdapter
 from sim_control.controller import SimAcquisitionController
 from sim_control.gui import SimSettingsDialog
 from sim_control.models import SimTaskConfig
 from sim_control.preview import SimPreviewController
+from sim_control.summary import build_sim_settings_summary
+from sim_control.sim_camera_presets import (
+    DEFAULT_SIM_CAMERA_SIZE,
+    SIM_CAMERA_ROI_STEP_PX,
+    fit_image_size_to_bounds,
+    is_full_frame_sim_camera_size,
+    normalize_sim_camera_roi,
+    preset_index_for_sim_camera_size,
+    sim_camera_roi_origin_bounds,
+    size_from_sim_camera_label,
+)
+
+SIM_EXPOSURE_MIN_MS = 1
+SIM_EXPOSURE_MAX_MS = 10_000
+SIM_EXPOSURE_DEFAULT_MS = 10
+SIM_BIT_DEPTH_DEFAULT = 16
+
+
+def clone_sim_app_config(config):
+    return app_config_from_dict(app_config_to_dict(config))
+
+
+def merge_legacy_sim_control_payload(base_config, legacy_payload):
+    merged = clone_sim_app_config(base_config)
+    if not legacy_payload:
+        return merged
+
+    legacy_config = app_config_from_dict(legacy_payload)
+    merged.daq = legacy_config.daq
+    merged.camera = legacy_config.camera
+    merged.timing = legacy_config.timing
+    merged.pattern_files = list(legacy_config.pattern_files)
+    merged.selected_laser_nm = legacy_config.selected_laser_nm
+    merged.config_path = base_config.config_path
+    return merged
+
+
+def apply_real_hardware_preference(config, camera_devices, slm_devices, daq_devices):
+    updated = clone_sim_app_config(config)
+    if camera_devices:
+        current_label = (updated.camera.device_label or "").strip().lower()
+        matching_camera = next(
+            (device for device in camera_devices if int(device.get("index", -1)) == int(updated.camera.device_index)),
+            None,
+        )
+        if matching_camera is None:
+            matching_camera = camera_devices[0]
+        elif current_label != str(matching_camera.get("display", "")).strip().lower():
+            matching_camera = camera_devices[0]
+        updated.camera.device_index = int(matching_camera.get("index", 0))
+        updated.camera.device_label = str(matching_camera.get("display", ""))
+    return updated
+
+
+def sim_exposure_us_to_ms(exposure_us):
+    value_ms = int(round(float(exposure_us) / 1000.0))
+    return max(SIM_EXPOSURE_MIN_MS, min(SIM_EXPOSURE_MAX_MS, value_ms))
+
+
+def sim_exposure_ms_to_us(exposure_ms):
+    value_ms = int(round(float(exposure_ms)))
+    value_ms = max(SIM_EXPOSURE_MIN_MS, min(SIM_EXPOSURE_MAX_MS, value_ms))
+    return value_ms * 1000
+
+
+def normalize_legacy_sim_exposure_setting(exposure_value):
+    value = int(round(float(exposure_value)))
+    if value > SIM_EXPOSURE_MAX_MS:
+        return sim_exposure_us_to_ms(value)
+    return max(SIM_EXPOSURE_MIN_MS, min(SIM_EXPOSURE_MAX_MS, value))
+
+
+def sim_bit_depth_to_label(bit_depth):
+    value = int(round(float(bit_depth)))
+    return f"{value}-bit"
+
+
+def sim_bit_depth_from_label(label, default=SIM_BIT_DEPTH_DEFAULT):
+    digits = "".join(ch for ch in str(label) if ch.isdigit())
+    if not digits:
+        return int(default)
+    return int(digits)
 
 
 class MainWindow(qw.QWidget):
@@ -70,15 +152,20 @@ class MainWindow(qw.QWidget):
         # 初始化UI
         self.ui = CellSorting_ui.Ui_Single_Cell_Sorting()
         self.ui.setupUi(self)
+        self.ui.lb_sCMOS_cameraView.installEventFilter(self)
         self.sim_app_config = load_app_config()
         self.sim_camera_adapter = None
         self.sim_acquisition_controller = None
         self.sim_preview_controller = None
         self.sim_runtime_backend_signature = None
         self.sim_preview_backend_signature = None
+        self.sim_runtime_timing_snapshot = {}
         self.sim_camera_connected = False
         self.sim_available_cameras = []
         self.sim_preview_active = False
+        self.sim_preview_requested = False
+        self.sim_preview_restart_requested = False
+        self.sim_preview_stop_in_progress = False
         self.sim_acquisition_in_progress = False
         self.sim_resume_preview_after_acquisition = False
         self.sim_last_acquisition_batch = None
@@ -170,6 +257,7 @@ class MainWindow(qw.QWidget):
         重写关闭事件，清理资源
         """
         # 自动保存当前配置
+        self.persist_sim_app_config_from_ui()
         self.save_current_settings_to_default()  # 新增
         print("关闭窗口，清理资源...")
         time.sleep(0.1)
@@ -213,11 +301,12 @@ class MainWindow(qw.QWidget):
         self.ui.btn_sCMOS_refresh.clicked.connect(self.btn_sCMOS_refresh_function)
         self.ui.btn_sCMOS_live.clicked.connect(self.btn_sCMOS_live_function)
 
+        self.configure_sim_camera_spinboxes()
         self.ui.spb_sCMOS_ROI_X.valueChanged.connect(self.on_sim_camera_setting_changed)
         self.ui.spb_sCMOS_ROI_Y.valueChanged.connect(self.on_sim_camera_setting_changed)
         self.ui.spb_sCMOS_exposureTime.valueChanged.connect(self.on_sim_camera_setting_changed)
-        self.ui.spb_sCMOS_pixelWidth.valueChanged.connect(self.on_sim_camera_setting_changed)
-        self.ui.spb_sCMOS_pixelHeight.valueChanged.connect(self.on_sim_camera_setting_changed)
+        self.ui.cmb_sCMOS_bitDepth.currentTextChanged.connect(self.on_sim_camera_setting_changed)
+        self.ui.cmb_sCMOS_imageSize.activated.connect(self.on_sim_camera_size_activated)
         self.ui.grp_videoSave_2.setVisible(False)
         self.ui.btn_sCMOS_connection.setText("Connect SIM Camera")
         self.ui.btn_sCMOS_live.setText("Live")
@@ -225,9 +314,6 @@ class MainWindow(qw.QWidget):
         self.update_sim_camera_action_buttons()
 
         """fastCamare保存视频模块"""
-        self.ui.spb_sCMOS_pixelWidth.valueChanged.connect(self.spb_ROI_value_changed_function)#相机ROI设置宽必须为32的倍数，高必须为8的倍数
-        self.ui.spb_sCMOS_pixelHeight.valueChanged.connect(self.spb_ROI_value_changed_function)
-
         self.btn_missEventVideoSaveModel_state = False
         self.ui.btn_snap.setEnabled(False)
         self.ui.btn_triggerSaveVideo.setEnabled(False)
@@ -421,6 +507,7 @@ class MainWindow(qw.QWidget):
         
         if file_path:
             try:
+                self.persist_sim_app_config_from_ui()
                 with open(file_path, 'w') as f:
                     json.dump(configure_settings, f, indent=4)
                 qw.QMessageBox.information(self, "成功", "参数保存成功！")
@@ -449,6 +536,10 @@ class MainWindow(qw.QWidget):
         self.update_image_processing_para()
 
     def btn_openSimSettings_function(self):
+        self.prefer_real_sim_hardware(
+            save_to_disk=True,
+            probe_camera=not self.sim_camera_connected,
+        )
         dialog = SimSettingsDialog(config=self.sim_app_config, parent=self)
         dialog.signal_settings_saved.connect(self.apply_sim_settings)
         dialog.exec_()
@@ -456,6 +547,10 @@ class MainWindow(qw.QWidget):
     def apply_sim_settings(self, config):
         self.sim_app_config = app_config_from_dict(app_config_to_dict(config))
         save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+        self.prefer_real_sim_hardware(
+            save_to_disk=True,
+            probe_camera=not self.sim_camera_connected,
+        )
         self.sync_sim_camera_controls_from_config()
         self.refresh_sim_settings_summary()
         self.refresh_sim_camera_devices()
@@ -464,50 +559,132 @@ class MainWindow(qw.QWidget):
 
     def refresh_sim_settings_summary(self):
         sim_config = app_config_from_dict(app_config_to_dict(self.sim_app_config))
-        daq = sim_config.daq
-        camera = sim_config.camera
-        backend = sim_config.backend
-        selected_device = camera.device_label or f"#{camera.device_index}"
-        summary_lines = [
-            f"Laser: {sim_config.selected_laser_nm} nm",
-            f"Selected SIM Camera: {selected_device}",
-            f"Exposure: {camera.exposure_us} us",
-            f"ROI: x={camera.roi_x}, y={camera.roi_y}, w={camera.roi_width}, h={camera.roi_height}",
-            "",
-            "DAQ:",
-            f"  device_name: {daq.device_name}",
-            f"  slm_enable_line: {daq.slm_enable_line}",
-            f"  slm_trigger_line: {daq.slm_trigger_line}",
-            f"  slm_finish_line: {daq.slm_finish_line}",
-            f"  camera_trigger_line: {daq.camera_trigger_line}",
-            f"  laser_405_line: {daq.laser_405_line}",
-            f"  laser_488_line: {daq.laser_488_line}",
-            f"  laser_561_line: {daq.laser_561_line}",
-            f"  laser_640_line: {daq.laser_640_line}",
-            "",
-            "Backend:",
-            f"  simulate_daq: {backend.simulate_daq}",
-            f"  simulate_camera: {backend.simulate_camera}",
-            f"  simulate_slm: {backend.simulate_slm}",
-        ]
-        self.ui.pte_simSummary.setPlainText("\n".join(summary_lines))
+        runtime_timing = dict(getattr(self, "sim_runtime_timing_snapshot", {}) or {})
+        self.ui.pte_simSummary.setPlainText(build_sim_settings_summary(sim_config, runtime_timing=runtime_timing))
+
+    def configure_sim_camera_spinboxes(self):
+        for spinbox in (
+            self.ui.spb_sCMOS_ROI_X,
+            self.ui.spb_sCMOS_ROI_Y,
+            self.ui.spb_sCMOS_exposureTime,
+        ):
+            spinbox.setKeyboardTracking(False)
+        self.ui.spb_sCMOS_ROI_X.setSingleStep(SIM_CAMERA_ROI_STEP_PX)
+        self.ui.spb_sCMOS_ROI_Y.setSingleStep(SIM_CAMERA_ROI_STEP_PX)
+
+    def sync_sim_camera_roi_position_controls(self, controls_enabled=None):
+        camera = self.sim_app_config.camera
+        max_x, max_y = sim_camera_roi_origin_bounds(camera.roi_width, camera.roi_height)
+        blocked_widgets = (
+            self.ui.spb_sCMOS_ROI_X,
+            self.ui.spb_sCMOS_ROI_Y,
+        )
+        for widget in blocked_widgets:
+            widget.blockSignals(True)
+        try:
+            self.ui.spb_sCMOS_ROI_X.setMaximum(max_x)
+            self.ui.spb_sCMOS_ROI_Y.setMaximum(max_y)
+            self.ui.spb_sCMOS_ROI_X.setValue(camera.roi_x)
+            self.ui.spb_sCMOS_ROI_Y.setValue(camera.roi_y)
+        finally:
+            for widget in blocked_widgets:
+                widget.blockSignals(False)
+
+        if controls_enabled is None:
+            controls_enabled = self.ui.cmb_sCMOS_imageSize.isEnabled()
+        roi_position_enabled = bool(controls_enabled) and not is_full_frame_sim_camera_size(
+            camera.roi_width,
+            camera.roi_height,
+        )
+        self.ui.spb_sCMOS_ROI_X.setEnabled(roi_position_enabled)
+        self.ui.spb_sCMOS_ROI_Y.setEnabled(roi_position_enabled)
 
     def sync_sim_camera_controls_from_config(self):
         camera = self.sim_app_config.camera
-        self.ui.spb_sCMOS_ROI_X.setValue(camera.roi_x)
-        self.ui.spb_sCMOS_ROI_Y.setValue(camera.roi_y)
-        self.ui.spb_sCMOS_pixelWidth.setValue(camera.roi_width)
-        self.ui.spb_sCMOS_pixelHeight.setValue(camera.roi_height)
-        self.ui.spb_sCMOS_exposureTime.setValue(camera.exposure_us)
+        bit_depth_combo = getattr(self.ui, "cmb_sCMOS_bitDepth", None)
+        roi_width, roi_height, roi_x, roi_y = normalize_sim_camera_roi(
+            camera.roi_width,
+            camera.roi_height,
+            camera.roi_x,
+            camera.roi_y,
+        )
+        camera.roi_width = roi_width
+        camera.roi_height = roi_height
+        camera.roi_x = roi_x
+        camera.roi_y = roi_y
+        blocked_widgets = [
+            self.ui.cmb_sCMOS_imageSize,
+            self.ui.spb_sCMOS_exposureTime,
+        ]
+        if bit_depth_combo is not None:
+            blocked_widgets.append(bit_depth_combo)
+        for widget in blocked_widgets:
+            widget.blockSignals(True)
+        try:
+            self.ui.cmb_sCMOS_imageSize.setCurrentIndex(
+                preset_index_for_sim_camera_size(camera.roi_width, camera.roi_height)
+            )
+            self.ui.spb_sCMOS_exposureTime.setValue(sim_exposure_us_to_ms(camera.exposure_us))
+            if bit_depth_combo is not None:
+                target_bit_depth_label = sim_bit_depth_to_label(getattr(camera, "bit_depth", SIM_BIT_DEPTH_DEFAULT))
+                target_index = bit_depth_combo.findText(target_bit_depth_label)
+                if target_index < 0:
+                    bit_depth_combo.clear()
+                    bit_depth_combo.addItem(target_bit_depth_label)
+                    target_index = 0
+                bit_depth_combo.setCurrentIndex(target_index)
+                bit_depth_combo.setCurrentText(target_bit_depth_label)
+        finally:
+            for widget in blocked_widgets:
+                widget.blockSignals(False)
+        self.sync_sim_camera_roi_position_controls()
+
+    def refresh_sim_camera_bit_depth_choices(self, supported_bit_depths=None):
+        combo = getattr(self.ui, "cmb_sCMOS_bitDepth", None)
+        if combo is None:
+            return
+        camera = self.sim_app_config.camera
+        supported = sorted({int(value) for value in (supported_bit_depths or [SIM_BIT_DEPTH_DEFAULT])})
+        if not supported:
+            supported = [SIM_BIT_DEPTH_DEFAULT]
+        current_bit_depth = int(getattr(camera, "bit_depth", SIM_BIT_DEPTH_DEFAULT))
+        if current_bit_depth in supported:
+            selected_bit_depth = current_bit_depth
+        elif SIM_BIT_DEPTH_DEFAULT in supported:
+            selected_bit_depth = SIM_BIT_DEPTH_DEFAULT
+        else:
+            selected_bit_depth = max(supported)
+        camera.bit_depth = int(selected_bit_depth)
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for bit_depth in supported:
+                combo.addItem(sim_bit_depth_to_label(bit_depth))
+            combo.setCurrentText(sim_bit_depth_to_label(selected_bit_depth))
+        finally:
+            combo.blockSignals(False)
+        self.refresh_sim_settings_summary()
 
     def sync_sim_camera_config_from_ui(self, save_to_disk=True):
         camera = self.sim_app_config.camera
-        camera.roi_x = int(self.ui.spb_sCMOS_ROI_X.value())
-        camera.roi_y = int(self.ui.spb_sCMOS_ROI_Y.value())
-        camera.roi_width = int(self.ui.spb_sCMOS_pixelWidth.value())
-        camera.roi_height = int(self.ui.spb_sCMOS_pixelHeight.value())
-        camera.exposure_us = int(round(self.ui.spb_sCMOS_exposureTime.value()))
+        bit_depth_combo = getattr(self.ui, "cmb_sCMOS_bitDepth", None)
+        roi_width, roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        roi_width, roi_height, roi_x, roi_y = normalize_sim_camera_roi(
+            roi_width,
+            roi_height,
+            self.ui.spb_sCMOS_ROI_X.value(),
+            self.ui.spb_sCMOS_ROI_Y.value(),
+        )
+        camera.roi_x = roi_x
+        camera.roi_y = roi_y
+        camera.roi_width = roi_width
+        camera.roi_height = roi_height
+        camera.exposure_us = sim_exposure_ms_to_us(self.ui.spb_sCMOS_exposureTime.value())
+        camera.bit_depth = sim_bit_depth_from_label(
+            bit_depth_combo.currentText() if bit_depth_combo is not None else getattr(camera, "bit_depth", SIM_BIT_DEPTH_DEFAULT)
+        )
         camera.timeout_ms = max(camera.timeout_ms, 2000)
+        self.sync_sim_camera_roi_position_controls()
         if hasattr(self.ui, "cmb_sCMOS_camera") and self.ui.cmb_sCMOS_camera.currentIndex() >= 0:
             selected_index = self.ui.cmb_sCMOS_camera.currentIndex()
             if selected_index < len(self.sim_available_cameras):
@@ -518,9 +695,18 @@ class MainWindow(qw.QWidget):
             save_app_config(self.sim_app_config, self.sim_app_config.config_path)
         self.refresh_sim_settings_summary()
 
+    def persist_sim_app_config_from_ui(self):
+        self.sync_sim_camera_config_from_ui(save_to_disk=False)
+        save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+
     def update_sim_camera_action_buttons(self):
         has_devices = bool(self.sim_available_cameras)
         connect_enabled = (self.sim_camera_connected or has_devices) and not self.sim_acquisition_in_progress
+        live_button_active = bool(
+            getattr(self, "sim_preview_requested", False)
+            or self.sim_preview_active
+            or self.sim_preview_stop_in_progress
+        )
         self.ui.btn_sCMOS_connection.setEnabled(connect_enabled)
         self.ui.btn_sCMOS_connection.setText(
             "Disconnect SIM Camera" if self.sim_camera_connected else "Connect SIM Camera"
@@ -529,9 +715,9 @@ class MainWindow(qw.QWidget):
             "background-color: #4EEE94" if self.sim_camera_connected else "background-color: #E1E1E1"
         )
         self.ui.btn_sCMOS_live.setEnabled(self.sim_camera_connected and not self.sim_acquisition_in_progress)
-        self.ui.btn_sCMOS_live.setText("Abort" if self.sim_preview_active else "Live")
+        self.ui.btn_sCMOS_live.setText("Abort" if live_button_active else "Live")
         self.ui.btn_sCMOS_live.setStyleSheet(
-            "background-color: #4EEE94" if self.sim_preview_active else "background-color: #E1E1E1"
+            "background-color: #4EEE94" if live_button_active else "background-color: #E1E1E1"
         )
         self.ui.btn_sCMOS_refresh.setEnabled((not self.sim_camera_connected) and not self.sim_acquisition_in_progress)
         self.ui.cmb_sCMOS_camera.setEnabled(
@@ -539,14 +725,42 @@ class MainWindow(qw.QWidget):
         )
 
     def refresh_sim_camera_devices(self, show_dialog_on_error=False):
-        self.ensure_sim_runtime()
-        try:
-            devices = self.sim_acquisition_controller.refresh_available_camera_devices()
-        except Exception as e:
-            devices = []
-            print(f"SIM camera enumeration failed: {str(e)}")
-            if show_dialog_on_error:
-                qw.QMessageBox.warning(self, "SIM Camera", str(e))
+        self.prefer_real_sim_hardware(
+            save_to_disk=True,
+            probe_camera=not self.sim_camera_connected,
+        )
+        devices = []
+        if self.sim_camera_connected:
+            try:
+                devices = [dict(self.sim_acquisition_controller.camera_connection_info())]
+            except Exception as e:
+                print(f"SIM connected camera info refresh failed: {str(e)}")
+                if show_dialog_on_error:
+                    qw.QMessageBox.warning(self, "SIM Camera", str(e))
+            if not devices or not devices[0]:
+                fallback_index = int(self.sim_app_config.camera.device_index)
+                fallback_label = str(
+                    self.sim_app_config.camera.device_label or f"Camera {fallback_index}"
+                )
+                devices = [{"index": fallback_index, "display": fallback_label}]
+            else:
+                devices[0].setdefault("index", int(self.sim_app_config.camera.device_index))
+                devices[0].setdefault(
+                    "display",
+                    str(
+                        self.sim_app_config.camera.device_label
+                        or f"Camera {int(devices[0]['index'])}"
+                    ),
+                )
+        else:
+            self.ensure_sim_runtime()
+            try:
+                devices = self.sim_acquisition_controller.refresh_available_camera_devices()
+            except Exception as e:
+                devices = []
+                print(f"SIM camera enumeration failed: {str(e)}")
+                if show_dialog_on_error:
+                    qw.QMessageBox.warning(self, "SIM Camera", str(e))
         self.sim_available_cameras = list(devices)
         self.ui.cmb_sCMOS_camera.blockSignals(True)
         self.ui.cmb_sCMOS_camera.clear()
@@ -566,27 +780,37 @@ class MainWindow(qw.QWidget):
         else:
             self.sim_app_config.camera.device_label = ""
         self.ui.cmb_sCMOS_camera.blockSignals(False)
+        supported_bit_depths = [SIM_BIT_DEPTH_DEFAULT]
+        if self.sim_available_cameras:
+            selected_device = self.sim_available_cameras[max(self.ui.cmb_sCMOS_camera.currentIndex(), 0)]
+            supported_bit_depths = selected_device.get("supported_bit_depths") or supported_bit_depths
+        MainWindow.refresh_sim_camera_bit_depth_choices(self, supported_bit_depths)
         self.update_sim_camera_action_buttons()
-        self.refresh_sim_settings_summary()
 
     def btn_sCMOS_refresh_function(self):
         self.refresh_sim_camera_devices(show_dialog_on_error=True)
 
     def on_sim_camera_setting_changed(self):
+        self.sync_sim_camera_config_from_ui(save_to_disk=False)
         if not self.sim_camera_connected:
-            self.refresh_sim_settings_summary()
             return
-        self.sync_sim_camera_config_from_ui()
-        if self.sim_preview_active:
+        live_requested = bool(getattr(self, "sim_preview_requested", False) or self.sim_preview_active)
+        if live_requested:
             self.sim_preview_restart_timer.start(150)
+
+    def on_sim_camera_size_activated(self, *_):
+        roi_width, roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        if (
+            roi_width == int(self.sim_app_config.camera.roi_width)
+            and roi_height == int(self.sim_app_config.camera.roi_height)
+        ):
+            return
+        self.on_sim_camera_setting_changed()
 
     def ensure_sim_runtime(self):
         backend = self.sim_app_config.backend
         signature = (
-            backend.simulate_camera,
             backend.fusion_bt_sdk_path,
-            backend.simulate_daq,
-            backend.simulate_slm,
             backend.slm_sdk_path,
         )
         if self.sim_acquisition_controller is not None and signature == self.sim_runtime_backend_signature:
@@ -609,15 +833,61 @@ class MainWindow(qw.QWidget):
         self.sim_runtime_backend_signature = signature
         self.sim_preview_backend_signature = signature
 
+    def detect_real_sim_hardware(self, probe_camera=True):
+        backend = self.sim_app_config.backend
+        camera_devices = []
+        slm_devices = []
+        daq_devices = []
+
+        if probe_camera:
+            try:
+                camera_devices = FusionBtCameraAdapter(
+                    sdk_path=backend.fusion_bt_sdk_path,
+                ).list_devices()
+            except Exception as e:
+                print(f"SIM real camera probe failed: {str(e)}")
+
+        try:
+            slm_devices = KopinSlmAdapter(
+                sdk_path=backend.slm_sdk_path,
+            ).list_devices()
+        except Exception as e:
+            print(f"SIM real SLM probe failed: {str(e)}")
+
+        try:
+            daq_devices = NIDaqAdapter().list_devices(default_device=self.sim_app_config.daq.device_name)
+        except Exception as e:
+            print(f"SIM real DAQ probe failed: {str(e)}")
+
+        return camera_devices, slm_devices, daq_devices
+
+    def prefer_real_sim_hardware(self, save_to_disk=True, probe_camera=True):
+        camera_devices, slm_devices, daq_devices = self.detect_real_sim_hardware(
+            probe_camera=probe_camera,
+        )
+        updated_config = apply_real_hardware_preference(
+            self.sim_app_config,
+            camera_devices=camera_devices,
+            slm_devices=slm_devices,
+            daq_devices=daq_devices,
+        )
+        if app_config_to_dict(updated_config) != app_config_to_dict(self.sim_app_config):
+            self.sim_app_config = updated_config
+            if save_to_disk:
+                save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+        else:
+            self.sim_app_config = updated_config
+        return camera_devices, slm_devices, daq_devices
+
     def ensure_sim_preview_controller(self):
         self.ensure_sim_runtime()
 
     def set_sim_camera_controls_enabled(self, enabled):
         self.ui.spb_sCMOS_exposureTime.setEnabled(enabled)
-        self.ui.spb_sCMOS_ROI_Y.setEnabled(enabled)
-        self.ui.spb_sCMOS_ROI_X.setEnabled(enabled)
-        self.ui.spb_sCMOS_pixelWidth.setEnabled(enabled)
-        self.ui.spb_sCMOS_pixelHeight.setEnabled(enabled)
+        if hasattr(self.ui, "cmb_sCMOS_bitDepth"):
+            self.ui.cmb_sCMOS_bitDepth.setEnabled(enabled)
+        self.ui.cmb_sCMOS_imageSize.setEnabled(enabled)
+        self.sync_sim_camera_roi_position_controls(controls_enabled=enabled)
 
     def start_sim_preview(self):
         if self.sim_acquisition_in_progress:
@@ -626,40 +896,93 @@ class MainWindow(qw.QWidget):
         if not self.sim_camera_connected:
             qw.QMessageBox.information(self, "SIM Camera", "Please connect the SIM camera before starting Live.")
             return
-        self.sync_sim_camera_config_from_ui()
+        self.sim_preview_requested = True
+        if self.sim_preview_stop_in_progress:
+            self.sim_preview_restart_requested = True
+            self.update_sim_camera_action_buttons()
+            return
+        self.sync_sim_camera_config_from_ui(save_to_disk=False)
         self.ensure_sim_runtime()
         self.sim_preview_controller.start(self.sim_app_config.camera, timeout_ms=200)
+        self.sim_preview_restart_requested = False
+        self.sim_preview_stop_in_progress = False
         self.sim_preview_active = True
         self.update_sim_camera_action_buttons()
 
-    def stop_sim_preview(self):
+    def stop_sim_preview(self, wait=True, clear_restart=True):
+        self.sim_preview_restart_timer.stop()
+        if clear_restart:
+            self.sim_preview_restart_requested = False
+        controller_busy = False
         if self.sim_preview_controller is not None:
-            self.sim_preview_controller.stop(wait=True)
+            controller_busy = (
+                getattr(self.sim_preview_controller, "active", False)
+                or getattr(self.sim_preview_controller, "stopping", False)
+                or self.sim_preview_stop_in_progress
+            )
         self.sim_preview_active = False
+        self.sim_preview_stop_in_progress = bool(controller_busy)
         self.ui.lb_sCMOS_FPSshow.setText("0")
         self.update_sim_camera_action_buttons()
+        if self.sim_preview_controller is None or not controller_busy:
+            return
+        self.sim_preview_controller.stop(wait=wait)
+        if wait:
+            self.sim_preview_stop_in_progress = False
+            self.update_sim_camera_action_buttons()
 
     def btn_sCMOS_live_function(self):
         if not self.sim_camera_connected:
             qw.QMessageBox.information(self, "SIM Camera", "Please connect the SIM camera before starting Live.")
             return
-        if self.sim_preview_active:
-            self.stop_sim_preview()
+        live_requested = bool(getattr(self, "sim_preview_requested", False))
+        if live_requested or self.sim_preview_active or self.sim_preview_stop_in_progress:
+            self.sim_preview_requested = False
+            self.sim_preview_restart_requested = False
+            self.stop_sim_preview(wait=False, clear_restart=True)
         else:
             self.start_sim_preview()
 
     def restart_sim_preview_with_current_settings(self):
-        if not self.sim_preview_active or not self.sim_camera_connected or self.sim_acquisition_in_progress:
+        if not self.sim_camera_connected or self.sim_acquisition_in_progress:
             return
-        self.stop_sim_preview()
-        self.start_sim_preview()
+        live_requested = bool(getattr(self, "sim_preview_requested", False) or self.sim_preview_active)
+        if not live_requested:
+            return
+        if not self.sim_preview_active and not self.sim_preview_stop_in_progress:
+            return
+        self.sim_preview_restart_requested = True
+        if self.sim_preview_stop_in_progress:
+            return
+        self.sim_preview_stop_in_progress = True
+        self.sim_preview_active = False
+        self.ui.lb_sCMOS_FPSshow.setText("0")
+        self.update_sim_camera_action_buttons()
+        if self.sim_preview_controller is not None:
+            self.sim_preview_controller.stop(wait=False)
 
     def slot_handle_sim_preview_status(self, status, payload):
-        if status == "preview_stopped" and not self.sim_preview_active:
+        if status == "preview_started":
+            self.sim_preview_active = True
+            self.sim_preview_restart_requested = False
+            self.sim_preview_stop_in_progress = False
+            self.update_sim_camera_action_buttons()
+            return
+        if status == "preview_stopped":
+            live_requested = bool(getattr(self, "sim_preview_requested", self.sim_preview_restart_requested))
+            pending_restart = self.sim_preview_restart_requested and live_requested
+            self.sim_preview_restart_requested = False
+            self.sim_preview_active = False
+            self.sim_preview_stop_in_progress = False
             self.ui.lb_sCMOS_FPSshow.setText("0")
+            self.update_sim_camera_action_buttons()
+            if pending_restart and self.sim_camera_connected and not self.sim_acquisition_in_progress:
+                self.start_sim_preview()
 
     def slot_handle_sim_preview_error(self, message):
-        self.stop_sim_preview()
+        self.sim_preview_requested = False
+        self.sim_preview_restart_requested = False
+        self.stop_sim_preview(wait=False)
         print(f"SIM preview error: {message}")
         qw.QMessageBox.warning(self, "SIM Preview Error", message.splitlines()[0])
 
@@ -667,12 +990,19 @@ class MainWindow(qw.QWidget):
         if self.sim_acquisition_in_progress:
             print("SIM acquisition skipped because another acquisition is still running.")
             return
-        self.sync_sim_camera_config_from_ui(save_to_disk=self.sim_camera_connected)
+        self.sync_sim_camera_config_from_ui(save_to_disk=False)
         self.ensure_sim_runtime()
         self.sim_preview_restart_timer.stop()
-        self.sim_resume_preview_after_acquisition = self.sim_preview_active
-        if self.sim_preview_active:
-            self.stop_sim_preview()
+        preview_should_resume = bool(
+            getattr(self, "sim_preview_requested", self.sim_preview_active or self.sim_preview_restart_requested)
+        )
+        self.sim_resume_preview_after_acquisition = (
+            preview_should_resume
+        )
+        self.sim_preview_requested = False
+        self.sim_preview_restart_requested = False
+        if self.sim_preview_active or self.sim_preview_stop_in_progress:
+            self.stop_sim_preview(wait=True)
         self.sim_acquisition_in_progress = True
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(False)
@@ -707,7 +1037,17 @@ class MainWindow(qw.QWidget):
             if task_id:
                 self.sim_current_task_id = task_id
             print(f"SIM acquisition status: {status} {payload}")
-        elif status in {"acquisition_complete", "camera_config_applied", "patterns_prepared", "camera_connected"}:
+        elif status == "camera_config_applied":
+            self.sim_runtime_timing_snapshot = dict(payload or {})
+            if payload.get("applied_bit_depth") is not None and hasattr(self, "sim_app_config"):
+                self.sim_app_config.camera.bit_depth = int(payload["applied_bit_depth"])
+            supported_bit_depths = payload.get("supported_bit_depths")
+            if supported_bit_depths:
+                MainWindow.refresh_sim_camera_bit_depth_choices(self, supported_bit_depths)
+            else:
+                self.refresh_sim_settings_summary()
+            print(f"SIM acquisition status: {status} {payload}")
+        elif status in {"acquisition_complete", "patterns_prepared", "camera_connected"}:
             print(f"SIM acquisition status: {status} {payload}")
 
     def slot_handle_sim_acquisition_ready(self, payload):
@@ -756,9 +1096,12 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_fastCamera_displayGray_max']         = self.ui.spb_fastCamera_displayGray_max.value()
         configure_settings['spb_fastCamera_displayGray_max']         = self.ui.spb_fastCamera_displayGray_max.value()
         #Camera Settings模块 sCMOS
-        configure_settings['spb_sCMOS_pixelWidth']              = self.ui.spb_sCMOS_pixelWidth.value()
-        configure_settings['spb_sCMOS_pixelHeight']             = self.ui.spb_sCMOS_pixelHeight.value()
-        configure_settings['spb_sCMOS_exposureTime']            = self.ui.spb_sCMOS_exposureTime.value()
+        sim_roi_width, sim_roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        configure_settings['spb_sCMOS_pixelWidth']              = sim_roi_width
+        configure_settings['spb_sCMOS_pixelHeight']             = sim_roi_height
+        configure_settings['spb_sCMOS_exposureTime']            = normalize_legacy_sim_exposure_setting(
+            self.ui.spb_sCMOS_exposureTime.value()
+        )
         configure_settings['spb_sCMOS_displayGray_max']         = self.ui.spb_sCMOS_displayGray_max.value()
         #configure_settings['spb_sCMOS_frameRate']               = self.ui.spb_sCMOS_frameRate.value()
         configure_settings['spb_sCMOS_ROI_X']                   = self.ui.spb_sCMOS_ROI_X.value()
@@ -825,7 +1168,6 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_sCMOS_minArea']          = self.ui.spb_sCMOS_minArea.value()
         #Binary ROI 模块
         configure_settings['spb_threshold_Bi'] = self.ui.spb_threshold_Bi.value()
-        configure_settings['sim_control'] = app_config_to_dict(self.sim_app_config)
 
         # 添加其他需要保存的控件...
         return configure_settings
@@ -867,9 +1209,14 @@ class MainWindow(qw.QWidget):
             self.ui.spb_fastCamera_displayGray_max.setValue(configure_settings.get('spb_fastCamera_displayGray_max', 5000))
 
             # 设置Camera Settings模块 sCMOS
-            self.ui.spb_sCMOS_pixelWidth.setValue(configure_settings.get('spb_sCMOS_pixelWidth', 816))
-            self.ui.spb_sCMOS_pixelHeight.setValue(configure_settings.get('spb_sCMOS_pixelHeight', 624))
-            self.ui.spb_sCMOS_exposureTime.setValue(configure_settings.get('spb_sCMOS_exposureTime', 200))
+            sim_width = configure_settings.get('spb_sCMOS_pixelWidth', DEFAULT_SIM_CAMERA_SIZE[0])
+            sim_height = configure_settings.get('spb_sCMOS_pixelHeight', DEFAULT_SIM_CAMERA_SIZE[1])
+            self.ui.cmb_sCMOS_imageSize.setCurrentIndex(preset_index_for_sim_camera_size(sim_width, sim_height))
+            self.ui.spb_sCMOS_exposureTime.setValue(
+                normalize_legacy_sim_exposure_setting(
+                    configure_settings.get('spb_sCMOS_exposureTime', SIM_EXPOSURE_DEFAULT_MS)
+                )
+            )
             self.ui.spb_sCMOS_displayGray_max.setValue(configure_settings.get('spb_sCMOS_displayGray_max', 5000))
             #self.ui.spb_sCMOS_frameRate.setValue(configure_settings.get('spb_sCMOS_frameRate', 1500))
             self.ui.spb_sCMOS_ROI_X.setValue(
@@ -945,7 +1292,7 @@ class MainWindow(qw.QWidget):
             self.ui.spb_threshold_Bi.setValue(configure_settings.get('spb_threshold_Bi', 120))
             sim_control_payload = configure_settings.get('sim_control')
             if sim_control_payload:
-                self.sim_app_config = app_config_from_dict(sim_control_payload)
+                self.sim_app_config = merge_legacy_sim_control_payload(self.sim_app_config, sim_control_payload)
                 save_app_config(self.sim_app_config, self.sim_app_config.config_path)
             else:
                 self.sync_sim_camera_config_from_ui(save_to_disk=False)
@@ -1441,22 +1788,24 @@ class MainWindow(qw.QWidget):
         """强行将ROI设置在合法范围"""
         self.ui.spb_pixelWidth.setValue(8*(math.floor(self.ui.spb_pixelWidth.value()/8)))         
         self.ui.spb_pixelHeight.setValue(2*(math.floor(self.ui.spb_pixelHeight.value()/2)))
-        self.ui.spb_sCMOS_pixelWidth.setValue(32*(math.floor(self.ui.spb_sCMOS_pixelWidth.value()/32)))         
-        self.ui.spb_sCMOS_pixelHeight.setValue(8*(math.floor(self.ui.spb_sCMOS_pixelHeight.value()/8)))
 
     def btn_sCMOS_connection_function(self):
         self.ensure_sim_runtime()
         if self.sim_camera_connected:
             self.sim_preview_restart_timer.stop()
-            if self.sim_preview_active:
-                self.stop_sim_preview()
+            self.sim_preview_requested = False
+            self.sim_preview_restart_requested = False
+            if self.sim_preview_active or self.sim_preview_stop_in_progress:
+                self.stop_sim_preview(wait=True)
             try:
                 self.sim_acquisition_controller.disconnect_camera()
             except Exception as e:
                 print(f"SIM camera disconnect failed: {str(e)}")
                 qw.QMessageBox.warning(self, "SIM Camera", str(e))
                 return
+            self.sim_runtime_timing_snapshot = {}
             self.sim_camera_connected = False
+            MainWindow.refresh_sim_camera_bit_depth_choices(self, [SIM_BIT_DEPTH_DEFAULT])
             self.set_sim_camera_controls_enabled(False)
             self.update_sim_camera_action_buttons()
             return
@@ -1475,18 +1824,28 @@ class MainWindow(qw.QWidget):
         selected_camera = self.sim_available_cameras[selected_combo_index]
         self.sim_app_config.camera.device_index = int(selected_camera.get("index", 0))
         self.sim_app_config.camera.device_label = str(selected_camera.get("display", ""))
-        self.sync_sim_camera_config_from_ui()
+        self.sync_sim_camera_config_from_ui(save_to_disk=False)
 
         try:
-            self.sim_acquisition_controller.connect_camera(
+            connection_info = self.sim_acquisition_controller.connect_camera(
                 device_index=self.sim_app_config.camera.device_index,
                 device_label=self.sim_app_config.camera.device_label,
             )
-            self.sim_acquisition_controller.apply_camera_config(self.sim_app_config.camera)
+            camera_result = self.sim_acquisition_controller.apply_camera_config(self.sim_app_config.camera) or {}
+            supported_bit_depths = camera_result.get("supported_bit_depths")
+            if not supported_bit_depths and isinstance(connection_info, dict):
+                supported_bit_depths = connection_info.get("supported_bit_depths")
+            if supported_bit_depths:
+                MainWindow.refresh_sim_camera_bit_depth_choices(self, supported_bit_depths)
         except Exception as e:
+            try:
+                self.sim_acquisition_controller.disconnect_camera()
+            except Exception as cleanup_error:
+                print(f"SIM camera cleanup after connection failure failed: {str(cleanup_error)}")
             print(f"SIM camera connection failed: {str(e)}")
             qw.QMessageBox.warning(self, "SIM Camera", str(e))
             self.sim_camera_connected = False
+            self.sim_preview_requested = False
             self.set_sim_camera_controls_enabled(False)
             self.update_sim_camera_action_buttons()
             return
@@ -2448,31 +2807,45 @@ class MainWindow(qw.QWidget):
             self.ui.btn_rinseChannelRelease.setEnabled(True)
             self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(True)
 
+    def _render_sim_preview_frame(self, frame, cache_frame=True):
+        if frame is None:
+            return
+        frame_8bit = self.sCMOS_dynamic_16bit_to_8bit(frame, self.ui.spb_sCMOS_displayGray_max.value())
+        display_frame = cv2.cvtColor(frame_8bit, cv2.COLOR_GRAY2BGR)
+        original_height, original_width = display_frame.shape[:2]
+        bounds = self.ui.lb_sCMOS_cameraView.contentsRect()
+        display_width, display_height = fit_image_size_to_bounds(
+            original_width,
+            original_height,
+            bounds.width(),
+            bounds.height(),
+        )
+        interpolation = cv2.INTER_AREA if display_width < original_width or display_height < original_height else cv2.INTER_LINEAR
+        if (display_width, display_height) != (original_width, original_height):
+            display_frame = cv2.resize(display_frame, (display_width, display_height), interpolation=interpolation)
+        h, w, ch = display_frame.shape
+        bytes_per_line = ch * w
+        q_img = QImage(display_frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
+        self.ui.lb_sCMOS_cameraView.setPixmap(QPixmap.fromImage(q_img))
+        self.ui.lb_sCMOS_cameraView.setAlignment(Qt.AlignCenter)
+        if cache_frame:
+            self.sim_last_preview_frame = frame.copy()
+
     @pyqtSlot(object, int)
     def slot_updata_display_sCMOSCameraFrameIndex_FPS(self, frame, fps):
         self.ui.lb_sCMOS_FPSshow.setText(str(fps))
         try:
-            if frame is None:
-                return
-            frame_8bit = self.sCMOS_dynamic_16bit_to_8bit(frame, self.ui.spb_sCMOS_displayGray_max.value())
-            original_height, original_width = frame_8bit.shape[:2]
-            if int(self.ui.spb_sCMOS_pixelHeight.value() * 2) < int(self.ui.spb_sCMOS_pixelWidth.value()):
-                display_width = 600
-                aspect_ratio = original_height / original_width
-                display_height = int(display_width * aspect_ratio)
-            else:
-                display_height = 300
-                aspect_ratio = original_width / original_height
-                display_width = int(display_height * aspect_ratio)
-            display_frame = cv2.resize(cv2.cvtColor(frame_8bit, cv2.COLOR_GRAY2BGR), (display_width, display_height))
-            h, w, ch = display_frame.shape
-            bytes_per_line = ch * w
-            q_img = QImage(display_frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
-            self.ui.lb_sCMOS_cameraView.setPixmap(QPixmap.fromImage(q_img))
-            self.ui.lb_sCMOS_cameraView.setAlignment(Qt.AlignCenter)
-            self.sim_last_preview_frame = frame
+            self._render_sim_preview_frame(frame)
         except Exception as e:
             print(f"SIM preview display error: {str(e)}")
+
+    def eventFilter(self, watched, event):
+        if watched is self.ui.lb_sCMOS_cameraView and event.type() == QEvent.Resize and self.sim_last_preview_frame is not None:
+            try:
+                self._render_sim_preview_frame(self.sim_last_preview_frame, cache_frame=False)
+            except Exception as e:
+                print(f"SIM preview resize error: {str(e)}")
+        return super().eventFilter(watched, event)
 
     def btn_sCMOS_enterSaveModel_function(self):
         qw.QMessageBox.information(self, "SIM Preview", "SIM preview mode does not use the old sCMOS save module.")

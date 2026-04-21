@@ -12,12 +12,12 @@
   },
   "camera": {
     "device_index": 0,
-    "device_label": "0: Simulated ORCA-Fusion BT [SIM-CAM-000]",
-    "roi_x": 0,
-    "roi_y": 0,
-    "roi_width": 608,
-    "roi_height": 304,
-    "exposure_us": 25,
+    "device_label": "0: C15440-20UP [S/N: 501679]",
+    "roi_x": 400,
+    "roi_y": 200,
+    "roi_width": 1152,
+    "roi_height": 1152,
+    "exposure_us": 20000,
     "timeout_ms": 5000,
     "trigger_mode": "external_level"
   },
@@ -28,9 +28,6 @@
     "slm_enable_guard_us": 50
   },
   "backend": {
-    "simulate_daq": true,
-    "simulate_camera": true,
-    "simulate_slm": true,
     "fusion_bt_sdk_path": "",
     "slm_sdk_path": ""
   },
@@ -46,5 +43,5 @@
     ""
   ],
   "selected_laser_nm": 488,
-  "config_path": ""
+  "config_path": "E:\\Intelligent_SR\\SIM_AutoSystem\\config\\sim_control_config.json"
 }
