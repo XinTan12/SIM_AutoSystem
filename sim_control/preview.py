@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 import time
 import traceback
@@ -10,8 +11,15 @@ from .adapters import FusionBtCameraAdapter, HardwareError
 from .models import CameraConfig
 
 
+@dataclass
+class PreviewFrameSnapshot:
+    frame: object
+    fps: int
+    sequence: int
+    captured_at: float
+
+
 class SimPreviewWorker(QObject):
-    signal_frame_ready = pyqtSignal(object, int)
     signal_status_changed = pyqtSignal(str, dict)
     signal_error = pyqtSignal(str)
 
@@ -22,35 +30,46 @@ class SimPreviewWorker(QObject):
         self._camera: FusionBtCameraAdapter | None = None
         self._config = CameraConfig()
         self._timeout_ms = 100
-        self._gui_preview_fps_limit = max(1, int(gui_preview_fps_limit))
-        self._gui_preview_interval_s = 1.0 / float(self._gui_preview_fps_limit)
-        self._last_frame_emit_at: float | None = None
+        self._snapshot_lock = threading.Lock()
+        self._latest_snapshot: PreviewFrameSnapshot | None = None
+        self._frame_sequence = 0
 
     def prepare_for_start(self) -> None:
         self._running = False
         self._stop_requested.clear()
+        with self._snapshot_lock:
+            self._latest_snapshot = None
+            self._frame_sequence = 0
 
     def request_stop(self) -> None:
         self._running = False
         self._stop_requested.set()
+        with self._snapshot_lock:
+            self._latest_snapshot = None
 
-    def _should_emit_frame(self, now: float) -> bool:
-        return self._last_frame_emit_at is None or (now - self._last_frame_emit_at) >= self._gui_preview_interval_s
+    def publish_preview_frame(self, frame, fps: int) -> PreviewFrameSnapshot:
+        with self._snapshot_lock:
+            self._frame_sequence += 1
+            snapshot = PreviewFrameSnapshot(
+                frame=frame,
+                fps=int(fps),
+                sequence=self._frame_sequence,
+                captured_at=time.perf_counter(),
+            )
+            self._latest_snapshot = snapshot
+        return snapshot
 
-    def emit_preview_frame(self, frame, fps: int) -> bool:
-        now = time.perf_counter()
-        if not self._should_emit_frame(now):
-            return False
-        self._last_frame_emit_at = now
-        self.signal_frame_ready.emit(frame, fps)
-        return True
+    def take_latest_frame(self) -> PreviewFrameSnapshot | None:
+        with self._snapshot_lock:
+            snapshot = self._latest_snapshot
+            self._latest_snapshot = None
+        return snapshot
 
     @pyqtSlot(object)
     def slot_start(self, payload: dict) -> None:
         self._camera = payload["camera"]
         self._config = payload["config"]
         self._timeout_ms = int(payload.get("timeout_ms", 100))
-        self._last_frame_emit_at = None
         self._running = True
         frame_counter = 0
         last_fps_at = time.perf_counter()
@@ -78,7 +97,7 @@ class SimPreviewWorker(QObject):
                     fps = int(round(frame_counter / elapsed))
                     frame_counter = 0
                     last_fps_at = now
-                self.emit_preview_frame(frame, fps)
+                self.publish_preview_frame(frame, fps)
         except Exception as exc:
             self.signal_error.emit(f"{exc}\n{traceback.format_exc()}")
         finally:
@@ -88,6 +107,8 @@ class SimPreviewWorker(QObject):
                     self._camera.stop_preview()
                 except Exception:
                     pass
+            with self._snapshot_lock:
+                self._latest_snapshot = None
             self.signal_status_changed.emit("preview_stopped", {})
 
     @pyqtSlot()
@@ -96,7 +117,6 @@ class SimPreviewWorker(QObject):
 
 
 class SimPreviewController(QObject):
-    signal_frame_ready = pyqtSignal(object, int)
     signal_status_changed = pyqtSignal(str, dict)
     signal_error = pyqtSignal(str)
     signal_start_worker = pyqtSignal(object)
@@ -105,10 +125,10 @@ class SimPreviewController(QObject):
     def __init__(self, camera: FusionBtCameraAdapter, parent: QObject | None = None, gui_preview_fps_limit: int = 30) -> None:
         super().__init__(parent)
         self.camera = camera
+        self.frame_poll_interval_ms = max(1, int(round(1000.0 / float(max(1, int(gui_preview_fps_limit))))))
         self._thread = QThread(self)
         self._worker = SimPreviewWorker(gui_preview_fps_limit=gui_preview_fps_limit)
         self._worker.moveToThread(self._thread)
-        self._worker.signal_frame_ready.connect(self.signal_frame_ready)
         self._worker.signal_status_changed.connect(self._handle_worker_status)
         self._worker.signal_status_changed.connect(self.signal_status_changed)
         self._worker.signal_error.connect(self.signal_error)
@@ -134,6 +154,9 @@ class SimPreviewController(QObject):
         elif status == "preview_stopped":
             self._active = False
             self._stopping = False
+
+    def take_latest_frame(self) -> PreviewFrameSnapshot | None:
+        return self._worker.take_latest_frame()
 
     def start(self, config: CameraConfig, timeout_ms: int = 100) -> None:
         if self._active or self.stopping:

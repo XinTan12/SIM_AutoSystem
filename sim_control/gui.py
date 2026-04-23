@@ -6,7 +6,7 @@ import traceback
 
 import numpy as np
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -41,7 +41,14 @@ from .config_store import (
     save_app_config,
 )
 from .controller import SimAcquisitionController
-from .models import AppConfig, DAQ_ROLE_ORDER, DaqLineConfig, SimTaskConfig, TimingConfig
+from .models import (
+    AppConfig,
+    DAQ_ROLE_ORDER,
+    DaqLineConfig,
+    SimTaskConfig,
+    TimingConfig,
+    default_daq_line_name,
+)
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
@@ -55,7 +62,7 @@ ROLE_LABELS = {
     "laser_405_line": "Laser 405",
     "laser_488_line": "Laser 488",
     "laser_561_line": "Laser 561",
-    "laser_640_line": "Laser 640",
+    "laser_647_line": "Laser 647",
 }
 
 SIM_ACQUISITION_TEST_ID = "sim_acquisition"
@@ -64,7 +71,7 @@ DAQ_PULSE_TEST_ROLES = (
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
-    "laser_640_line",
+    "laser_647_line",
 )
 TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "test_captures"
 
@@ -102,11 +109,10 @@ class SimSettingsDialog(QDialog):
         self.slm_adapter = KopinSlmAdapter(sdk_path=self.config.backend.slm_sdk_path)
         self._preferred_daq_device = self.config.daq.device_name
         self._loaded_pattern_result = None
+        self._initial_hardware_refresh_pending = True
         self._build_ui()
         self._wire_signals()
         self._populate_widgets_from_config(self.config)
-        self._refresh_daq_devices()
-        self._refresh_slm_devices()
         self._update_slm_controls()
 
     def _build_ui(self) -> None:
@@ -129,7 +135,7 @@ class SimSettingsDialog(QDialog):
             "laser_405_line": self.ui.combo_laser_405_line,
             "laser_488_line": self.ui.combo_laser_488_line,
             "laser_561_line": self.ui.combo_laser_561_line,
-            "laser_640_line": self.ui.combo_laser_640_line,
+            "laser_647_line": self.ui.combo_laser_647_line,
         }
 
         self.spin_sample_rate = self.ui.spin_sample_rate
@@ -160,8 +166,8 @@ class SimSettingsDialog(QDialog):
             self.ui.btn_browse_pattern_9,
         ]
         self.combo_slm_device = self.ui.combo_slm_device
-        self.btn_connect_slm = self.ui.btn_connect_slm
-        self.btn_disconnect_slm = self.ui.btn_disconnect_slm
+        self.btn_refresh_slm = self.ui.btn_refresh_slm
+        self.btn_toggle_slm_connection = self.ui.btn_toggle_slm_connection
         self.btn_load_patterns = self.ui.btn_load_patterns
         self.lbl_slm_status_value = self.ui.lbl_slm_status_value
 
@@ -170,7 +176,7 @@ class SimSettingsDialog(QDialog):
             405: self.ui.radio_laser_405,
             488: self.ui.radio_laser_488,
             561: self.ui.radio_laser_561,
-            640: self.ui.radio_laser_640,
+            647: self.ui.radio_laser_647,
         }
         for wavelength, button in self.laser_buttons.items():
             self.laser_group.addButton(button, wavelength)
@@ -181,13 +187,17 @@ class SimSettingsDialog(QDialog):
         self.btn_pulse_test.clicked.connect(self._run_pulse_test)
         self.btn_save_close.clicked.connect(self._save_and_accept)
         self.btn_cancel.clicked.connect(self.reject)
-        self.btn_connect_slm.clicked.connect(self._connect_slm)
-        self.btn_disconnect_slm.clicked.connect(self._disconnect_slm)
+        self.btn_refresh_slm.clicked.connect(self._refresh_slm_devices)
+        self.btn_toggle_slm_connection.clicked.connect(self._toggle_slm_connection)
         self.btn_load_patterns.clicked.connect(self._load_patterns)
         for combo in self.line_combos.values():
             combo.currentTextChanged.connect(lambda _text: self._refresh_test_targets())
         for index, button in enumerate(self.pattern_browse_buttons):
             button.clicked.connect(lambda _checked=False, idx=index: self._browse_pattern(idx))
+
+    def _perform_initial_hardware_refresh(self) -> None:
+        self._refresh_daq_devices()
+        self._refresh_slm_devices()
 
     def _populate_widgets_from_config(self, config: AppConfig) -> None:
         self._preferred_daq_device = config.daq.device_name
@@ -247,7 +257,7 @@ class SimSettingsDialog(QDialog):
         self._refresh_test_targets()
 
     def _default_line_for_role(self, device_name: str, role: str) -> str:
-        return f"{device_name}/port0/line{DAQ_ROLE_ORDER.index(role)}"
+        return default_daq_line_name(device_name, role)
 
     def _refresh_daq_devices(self) -> None:
         current_device = self.combo_daq_device.currentText().strip() or self._preferred_daq_device
@@ -327,8 +337,9 @@ class SimSettingsDialog(QDialog):
         connected = self.slm_adapter.is_connected()
         has_devices = self.combo_slm_device.count() > 0
         self.combo_slm_device.setEnabled(has_devices and not connected)
-        self.btn_connect_slm.setEnabled(has_devices and not connected)
-        self.btn_disconnect_slm.setEnabled(connected)
+        self.btn_refresh_slm.setEnabled(not connected)
+        self.btn_toggle_slm_connection.setEnabled(connected or has_devices)
+        self.btn_toggle_slm_connection.setText("Disconnect" if connected else "Connect")
         self.btn_load_patterns.setEnabled(connected)
         if status_message is not None:
             self.lbl_slm_status_value.setText(status_message)
@@ -341,6 +352,12 @@ class SimSettingsDialog(QDialog):
             self.lbl_slm_status_value.setText("Not connected")
         else:
             self.lbl_slm_status_value.setText("No SLM detected")
+
+    def _toggle_slm_connection(self) -> None:
+        if self.slm_adapter.is_connected():
+            self._disconnect_slm()
+            return
+        self._connect_slm()
 
     def _connect_slm(self) -> None:
         try:
@@ -561,6 +578,12 @@ class SimSettingsDialog(QDialog):
             pass
         super().closeEvent(event)
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._initial_hardware_refresh_pending:
+            self._initial_hardware_refresh_pending = False
+            QTimer.singleShot(0, self._perform_initial_hardware_refresh)
+
 
 class SimControlWindow(QMainWindow):
     def __init__(self, config_path: str | None = None, parent: QWidget | None = None):
@@ -719,7 +742,7 @@ class SimControlWindow(QMainWindow):
         group = QGroupBox("Laser Selection")
         layout = QVBoxLayout(group)
         self.laser_group = QButtonGroup(self)
-        for wavelength in (405, 488, 561, 640):
+        for wavelength in (405, 488, 561, 647):
             button = QRadioButton(f"{wavelength} nm")
             self.laser_group.addButton(button, wavelength)
             self.laser_buttons[wavelength] = button

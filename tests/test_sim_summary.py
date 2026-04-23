@@ -10,41 +10,46 @@ if str(PROJECT_ROOT) not in sys.path:
 
 class SimSettingsSummaryTests(unittest.TestCase):
     def test_build_sim_settings_summary_omits_backend_block(self):
-        from sim_control.models import AppConfig, BackendConfig, CameraConfig, DaqLineConfig
+        from sim_control.config_store import app_config_from_dict
         from sim_control.summary import build_sim_settings_summary
 
-        config = AppConfig(
-            selected_laser_nm=488,
-            camera=CameraConfig(
-                device_index=0,
-                device_label="0: ORCA-Fusion BT [CAM-001]",
-                roi_x=10,
-                roi_y=20,
-                roi_width=512,
-                roi_height=512,
-                exposure_us=10_000,
-            ),
-            daq=DaqLineConfig(
-                device_name="Dev2",
-                slm_enable_line="Dev2/port0/line0",
-                slm_trigger_line="Dev2/port0/line1",
-                slm_finish_line="Dev2/port0/line2",
-                camera_trigger_line="Dev2/port0/line3",
-                laser_405_line="Dev2/port0/line4",
-                laser_488_line="Dev2/port0/line5",
-                laser_561_line="Dev2/port0/line6",
-                laser_640_line="Dev2/port0/line7",
-            ),
-            backend=BackendConfig(
-                fusion_bt_sdk_path="E:/sdk/dcam",
-                slm_sdk_path="E:/sdk/r11",
-            ),
+        config = app_config_from_dict(
+            {
+                "selected_laser_nm": 488,
+                "camera": {
+                    "device_index": 0,
+                    "device_label": "0: ORCA-Fusion BT [CAM-001]",
+                    "roi_x": 10,
+                    "roi_y": 20,
+                    "roi_width": 512,
+                    "roi_height": 512,
+                    "exposure_us": 10_000,
+                },
+                "daq": {
+                    "device_name": "Dev2",
+                    "slm_enable_line": "Dev2/port0/line0",
+                    "slm_trigger_line": "Dev2/port0/line1",
+                    "slm_finish_line": "Dev2/port0/line2",
+                    "camera_trigger_line": "Dev2/port0/line5",
+                    "laser_405_line": "Dev2/port0/line8",
+                    "laser_488_line": "Dev2/port0/line6",
+                    "laser_561_line": "Dev2/port0/line7",
+                    "laser_640_line": "Dev2/port0/line9",
+                },
+                "backend": {
+                    "fusion_bt_sdk_path": "E:/sdk/dcam",
+                    "slm_sdk_path": "E:/sdk/r11",
+                },
+            }
         )
 
         summary = build_sim_settings_summary(config)
 
         self.assertIn("Laser: 488 nm", summary)
-        self.assertIn("camera_trigger_line: Dev2/port0/line3", summary)
+        self.assertIn("cam_trigger_line: Dev2/port0/line5", summary)
+        self.assertNotIn("camera_trigger_line", summary)
+        self.assertIn("laser_647_line: Dev2/port0/line9", summary)
+        self.assertNotIn("laser_640_line", summary)
         self.assertNotIn("Backend:", summary)
         self.assertNotIn("fusion_bt_sdk_path", summary)
         self.assertNotIn("slm_sdk_path", summary)
@@ -66,14 +71,14 @@ class SimSettingsSummaryTests(unittest.TestCase):
         summary = build_sim_settings_summary(
             config,
             runtime_timing={
-                "timing_readout_time_s": 0.00561,
-                "recommended_inter_frame_gap_us": 6500,
+                "timing_readout_time_s": 0.031649,
+                "recommended_inter_frame_gap_us": 32649,
             },
         )
 
         self.assertIn("Bit Depth: 12-bit", summary)
-        self.assertIn("TIMING_READOUTTIME: 5.610 ms", summary)
-        self.assertIn("Actual Inter Frame Gap: 6500 us", summary)
+        self.assertIn("TIMING_READOUTTIME: 31.649 ms", summary)
+        self.assertIn("Actual Inter Frame Gap: 32649 us", summary)
 
     def test_build_sim_settings_summary_falls_back_to_config_gap_without_runtime_timing(self):
         from sim_control.models import AppConfig, CameraConfig, TimingConfig

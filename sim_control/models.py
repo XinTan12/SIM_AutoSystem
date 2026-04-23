@@ -15,14 +15,34 @@ DAQ_ROLE_ORDER = [
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
-    "laser_640_line",
+    "laser_647_line",
 ]
+
+DEFAULT_DAQ_LINE_INDICES = {
+    "slm_enable_line": 0,
+    "slm_trigger_line": 1,
+    "slm_finish_line": 2,
+    "camera_trigger_line": 5,
+    "laser_405_line": 8,
+    "laser_488_line": 6,
+    "laser_561_line": 7,
+    "laser_647_line": 9,
+}
+
+
+def default_daq_line_name(device_name: str, role: str) -> str:
+    return f"{device_name}/port0/line{DEFAULT_DAQ_LINE_INDICES[role]}"
+
+
+def default_daq_line_map(device_name: str) -> dict[str, str]:
+    return {role: default_daq_line_name(device_name, role) for role in DAQ_ROLE_ORDER}
+
 
 LASER_ROLE_MAP = {
     405: "laser_405_line",
     488: "laser_488_line",
     561: "laser_561_line",
-    640: "laser_640_line",
+    647: "laser_647_line",
 }
 
 SUPPORTED_LASERS = tuple(LASER_ROLE_MAP.keys())
@@ -40,14 +60,14 @@ def new_task_id(prefix: str = "sim") -> str:
 @dataclass
 class DaqLineConfig:
     device_name: str = "Dev1"
-    slm_enable_line: str = "Dev1/port0/line0"
-    slm_trigger_line: str = "Dev1/port0/line1"
-    slm_finish_line: str = "Dev1/port0/line2"
-    camera_trigger_line: str = "Dev1/port0/line3"
-    laser_405_line: str = "Dev1/port0/line4"
-    laser_488_line: str = "Dev1/port0/line5"
-    laser_561_line: str = "Dev1/port0/line6"
-    laser_640_line: str = "Dev1/port0/line7"
+    slm_enable_line: str = default_daq_line_name("Dev1", "slm_enable_line")
+    slm_trigger_line: str = default_daq_line_name("Dev1", "slm_trigger_line")
+    slm_finish_line: str = default_daq_line_name("Dev1", "slm_finish_line")
+    camera_trigger_line: str = default_daq_line_name("Dev1", "camera_trigger_line")
+    laser_405_line: str = default_daq_line_name("Dev1", "laser_405_line")
+    laser_488_line: str = default_daq_line_name("Dev1", "laser_488_line")
+    laser_561_line: str = default_daq_line_name("Dev1", "laser_561_line")
+    laser_647_line: str = default_daq_line_name("Dev1", "laser_647_line")
 
     def line_map(self) -> dict[str, str]:
         return {role: getattr(self, role) for role in DAQ_ROLE_ORDER}

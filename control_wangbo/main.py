@@ -171,9 +171,12 @@ class MainWindow(qw.QWidget):
         self.sim_last_acquisition_batch = None
         self.sim_current_task_id = ""
         self.sim_last_preview_frame = None
+        self.sim_last_preview_sequence = -1
         self.sim_preview_restart_timer = QTimer(self)
         self.sim_preview_restart_timer.setSingleShot(True)
         self.sim_preview_restart_timer.timeout.connect(self.restart_sim_preview_with_current_settings)
+        self.sim_preview_poll_timer = QTimer(self)
+        self.sim_preview_poll_timer.timeout.connect(self.poll_latest_sim_preview_frame)
         self.UI_Init()
         # 初始化统计细胞ID和个数
         self.cell_ID = 0                   # 用来记录是哪次细胞的
@@ -242,7 +245,7 @@ class MainWindow(qw.QWidget):
         # 程序启动时自动加载 default.json
         # 恢复标志位
         self.is_auto_loading = False
-        default_path = Path(os.getcwd()) / "lastConfiguration.json"
+        default_path = Path(__file__).parent / "lastConfiguration.json"
         if default_path.exists():
             self.load_configure_settings(default_path)
         else:
@@ -536,13 +539,19 @@ class MainWindow(qw.QWidget):
         self.update_image_processing_para()
 
     def btn_openSimSettings_function(self):
-        self.prefer_real_sim_hardware(
-            save_to_disk=True,
-            probe_camera=not self.sim_camera_connected,
+        resume_live_after_dialog = bool(
+            self.sim_camera_connected
+            and not self.sim_acquisition_in_progress
+            and (self.sim_preview_requested or self.sim_preview_active)
         )
+        if resume_live_after_dialog:
+            self.sim_preview_requested = False
+            self.stop_sim_preview(wait=True)
         dialog = SimSettingsDialog(config=self.sim_app_config, parent=self)
         dialog.signal_settings_saved.connect(self.apply_sim_settings)
         dialog.exec_()
+        if resume_live_after_dialog and self.sim_camera_connected and not self.sim_acquisition_in_progress:
+            self.start_sim_preview()
 
     def apply_sim_settings(self, config):
         self.sim_app_config = app_config_from_dict(app_config_to_dict(config))
@@ -554,8 +563,6 @@ class MainWindow(qw.QWidget):
         self.sync_sim_camera_controls_from_config()
         self.refresh_sim_settings_summary()
         self.refresh_sim_camera_devices()
-        if self.sim_preview_active:
-            self.restart_sim_preview_with_current_settings()
 
     def refresh_sim_settings_summary(self):
         sim_config = app_config_from_dict(app_config_to_dict(self.sim_app_config))
@@ -815,6 +822,10 @@ class MainWindow(qw.QWidget):
         )
         if self.sim_acquisition_controller is not None and signature == self.sim_runtime_backend_signature:
             return
+        preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
+        if preview_poll_timer is not None:
+            preview_poll_timer.stop()
+        self.sim_last_preview_sequence = -1
         if self.sim_preview_controller is not None:
             self.sim_preview_controller.shutdown()
             self.sim_preview_controller = None
@@ -827,7 +838,6 @@ class MainWindow(qw.QWidget):
         self.sim_acquisition_controller.signal_acquisition_failed.connect(self.slot_handle_sim_acquisition_failed)
         self.sim_camera_adapter = self.sim_acquisition_controller.camera_adapter
         self.sim_preview_controller = SimPreviewController(self.sim_camera_adapter, self)
-        self.sim_preview_controller.signal_frame_ready.connect(self.slot_updata_display_sCMOSCameraFrameIndex_FPS)
         self.sim_preview_controller.signal_error.connect(self.slot_handle_sim_preview_error)
         self.sim_preview_controller.signal_status_changed.connect(self.slot_handle_sim_preview_status)
         self.sim_runtime_backend_signature = signature
@@ -909,8 +919,11 @@ class MainWindow(qw.QWidget):
         self.sim_preview_active = True
         self.update_sim_camera_action_buttons()
 
-    def stop_sim_preview(self, wait=True, clear_restart=True):
+    def stop_sim_preview(self, wait=True, clear_restart=True, clear_display=False):
         self.sim_preview_restart_timer.stop()
+        preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
+        if preview_poll_timer is not None:
+            preview_poll_timer.stop()
         if clear_restart:
             self.sim_preview_restart_requested = False
         controller_busy = False
@@ -922,7 +935,10 @@ class MainWindow(qw.QWidget):
             )
         self.sim_preview_active = False
         self.sim_preview_stop_in_progress = bool(controller_busy)
+        self.sim_last_preview_sequence = -1
         self.ui.lb_sCMOS_FPSshow.setText("0")
+        if clear_display:
+            self._clear_sim_preview_display()
         self.update_sim_camera_action_buttons()
         if self.sim_preview_controller is None or not controller_busy:
             return
@@ -939,7 +955,7 @@ class MainWindow(qw.QWidget):
         if live_requested or self.sim_preview_active or self.sim_preview_stop_in_progress:
             self.sim_preview_requested = False
             self.sim_preview_restart_requested = False
-            self.stop_sim_preview(wait=False, clear_restart=True)
+            self.stop_sim_preview(wait=False, clear_restart=True, clear_display=True)
         else:
             self.start_sim_preview()
 
@@ -956,6 +972,10 @@ class MainWindow(qw.QWidget):
             return
         self.sim_preview_stop_in_progress = True
         self.sim_preview_active = False
+        preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
+        if preview_poll_timer is not None:
+            preview_poll_timer.stop()
+        self.sim_last_preview_sequence = -1
         self.ui.lb_sCMOS_FPSshow.setText("0")
         self.update_sim_camera_action_buttons()
         if self.sim_preview_controller is not None:
@@ -966,6 +986,17 @@ class MainWindow(qw.QWidget):
             self.sim_preview_active = True
             self.sim_preview_restart_requested = False
             self.sim_preview_stop_in_progress = False
+            self.sim_last_preview_sequence = -1
+            poll_interval_ms = int(
+                getattr(
+                    self.sim_preview_controller,
+                    "frame_poll_interval_ms",
+                    33,
+                )
+            )
+            preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
+            if preview_poll_timer is not None:
+                preview_poll_timer.start(max(1, poll_interval_ms))
             self.update_sim_camera_action_buttons()
             return
         if status == "preview_stopped":
@@ -974,6 +1005,10 @@ class MainWindow(qw.QWidget):
             self.sim_preview_restart_requested = False
             self.sim_preview_active = False
             self.sim_preview_stop_in_progress = False
+            preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
+            if preview_poll_timer is not None:
+                preview_poll_timer.stop()
+            self.sim_last_preview_sequence = -1
             self.ui.lb_sCMOS_FPSshow.setText("0")
             self.update_sim_camera_action_buttons()
             if pending_restart and self.sim_camera_connected and not self.sim_acquisition_in_progress:
@@ -1176,8 +1211,6 @@ class MainWindow(qw.QWidget):
         """自动保存当前配置到 lastConfiguration.json"""
         configure_settings = self.collect_current_settings()  # 复用参数收集
         
-        #default_path = Path(os.getcwd()) / "lastConfiguration.json"
-        # 改用绝对路径（示例）
         default_path = Path(__file__).parent / "lastConfiguration.json"
         print("保存了pppppppppp")
         try:
@@ -2811,7 +2844,7 @@ class MainWindow(qw.QWidget):
         if frame is None:
             return
         frame_8bit = self.sCMOS_dynamic_16bit_to_8bit(frame, self.ui.spb_sCMOS_displayGray_max.value())
-        display_frame = cv2.cvtColor(frame_8bit, cv2.COLOR_GRAY2BGR)
+        display_frame = frame_8bit
         original_height, original_width = display_frame.shape[:2]
         bounds = self.ui.lb_sCMOS_cameraView.contentsRect()
         display_width, display_height = fit_image_size_to_bounds(
@@ -2823,13 +2856,42 @@ class MainWindow(qw.QWidget):
         interpolation = cv2.INTER_AREA if display_width < original_width or display_height < original_height else cv2.INTER_LINEAR
         if (display_width, display_height) != (original_width, original_height):
             display_frame = cv2.resize(display_frame, (display_width, display_height), interpolation=interpolation)
-        h, w, ch = display_frame.shape
-        bytes_per_line = ch * w
-        q_img = QImage(display_frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
-        self.ui.lb_sCMOS_cameraView.setPixmap(QPixmap.fromImage(q_img))
+        display_frame = np.ascontiguousarray(display_frame)
+        h, w = display_frame.shape[:2]
+        bytes_per_line = int(display_frame.strides[0])
+        q_img = QImage(display_frame.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
+        self.ui.lb_sCMOS_cameraView.setPixmap(QPixmap.fromImage(q_img.copy()))
         self.ui.lb_sCMOS_cameraView.setAlignment(Qt.AlignCenter)
         if cache_frame:
             self.sim_last_preview_frame = frame.copy()
+
+    def _clear_sim_preview_display(self):
+        label = self.ui.lb_sCMOS_cameraView
+        bounds = label.contentsRect()
+        width = max(1, bounds.width())
+        height = max(1, bounds.height())
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.black)
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignCenter)
+        self.sim_last_preview_frame = None
+        self.sim_last_preview_sequence = -1
+
+    def poll_latest_sim_preview_frame(self):
+        if self.sim_preview_controller is None:
+            return
+        snapshot = self.sim_preview_controller.take_latest_frame()
+        if snapshot is None:
+            return
+        if int(snapshot.sequence) <= int(getattr(self, "sim_last_preview_sequence", -1)):
+            return
+        try:
+            self._render_sim_preview_frame(snapshot.frame)
+        except Exception as e:
+            print(f"SIM preview display error: {str(e)}")
+            return
+        self.sim_last_preview_sequence = int(snapshot.sequence)
+        self.ui.lb_sCMOS_FPSshow.setText(str(snapshot.fps))
 
     @pyqtSlot(object, int)
     def slot_updata_display_sCMOSCameraFrameIndex_FPS(self, frame, fps):

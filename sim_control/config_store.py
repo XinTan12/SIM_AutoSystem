@@ -19,6 +19,21 @@ def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
     return merged
 
 
+def _normalize_daq_payload(payload: dict | None) -> dict:
+    normalized = dict(payload or {})
+    legacy_laser_line = normalized.pop("laser_640_line", "")
+    if legacy_laser_line and "laser_647_line" not in normalized:
+        normalized["laser_647_line"] = legacy_laser_line
+    return normalized
+
+
+def _normalize_selected_laser_nm(value: object) -> int:
+    selected_laser_nm = int(value if value is not None else 488)
+    if selected_laser_nm == 640:
+        return 647
+    return selected_laser_nm
+
+
 def app_config_to_dict(config: AppConfig) -> dict:
     payload = asdict(config)
     if not payload.get("config_path"):
@@ -28,7 +43,7 @@ def app_config_to_dict(config: AppConfig) -> dict:
 
 
 def app_config_from_dict(payload: dict) -> AppConfig:
-    daq = DaqLineConfig(**payload.get("daq", {}))
+    daq = DaqLineConfig(**_normalize_daq_payload(payload.get("daq", {})))
     camera = CameraConfig(**payload.get("camera", {}))
     timing = TimingConfig(**payload.get("timing", {}))
     backend_payload = payload.get("backend", {})
@@ -37,7 +52,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         slm_sdk_path=str(backend_payload.get("slm_sdk_path", "")),
     )
     pattern_files = _merge_list(payload.get("pattern_files", []))
-    selected_laser_nm = int(payload.get("selected_laser_nm", 488))
+    selected_laser_nm = _normalize_selected_laser_nm(payload.get("selected_laser_nm", 488))
     config_path = str(payload.get("config_path", DEFAULT_CONFIG_PATH))
     return AppConfig(
         daq=daq,

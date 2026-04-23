@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 from PyQt5 import QtCore, QtTest, QtWidgets
 
 
@@ -42,6 +43,8 @@ class TimerSpy:
 class PreviewControllerSpy:
     def __init__(self):
         self.stop_calls = []
+        self.active = True
+        self.stopping = False
 
     def stop(self, wait=False):
         self.stop_calls.append(wait)
@@ -275,6 +278,28 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(fps_label.text, "0")
         self.assertEqual(starts, [])
 
+    def test_preview_started_status_starts_poll_timer_and_resets_last_sequence(self):
+        legacy_main = load_legacy_main_module()
+        timer = TimerSpy()
+        controller = SimpleNamespace(frame_poll_interval_ms=40)
+        window = SimpleNamespace(
+            sim_preview_active=False,
+            sim_preview_restart_requested=True,
+            sim_preview_stop_in_progress=True,
+            sim_preview_controller=controller,
+            sim_preview_poll_timer=timer,
+            sim_last_preview_sequence=17,
+            update_sim_camera_action_buttons=lambda: None,
+        )
+
+        legacy_main.MainWindow.slot_handle_sim_preview_status(window, "preview_started", {})
+
+        self.assertTrue(window.sim_preview_active)
+        self.assertFalse(window.sim_preview_restart_requested)
+        self.assertFalse(window.sim_preview_stop_in_progress)
+        self.assertEqual(window.sim_last_preview_sequence, -1)
+        self.assertEqual(timer.start_calls, [40])
+
     def test_update_sim_camera_action_buttons_keeps_abort_label_while_live_restart_is_pending(self):
         legacy_main = load_legacy_main_module()
         live_button = ButtonSpy()
@@ -309,7 +334,9 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_requested=True,
             sim_preview_restart_requested=True,
             sim_preview_stop_in_progress=True,
-            stop_sim_preview=lambda wait=False, clear_restart=True: stop_calls.append((wait, clear_restart)),
+            stop_sim_preview=lambda wait=False, clear_restart=True, clear_display=False: stop_calls.append(
+                (wait, clear_restart, clear_display)
+            ),
             start_sim_preview=mock.Mock(),
         )
 
@@ -317,8 +344,65 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         self.assertFalse(window.sim_preview_requested)
         self.assertFalse(window.sim_preview_restart_requested)
-        self.assertEqual(stop_calls, [(False, True)])
+        self.assertEqual(stop_calls, [(False, True, True)])
         window.start_sim_preview.assert_not_called()
+
+    def test_stop_sim_preview_stops_poll_timer_and_resets_last_sequence(self):
+        legacy_main = load_legacy_main_module()
+        timer = TimerSpy()
+        controller = PreviewControllerSpy()
+        window = SimpleNamespace(
+            sim_preview_restart_timer=TimerSpy(),
+            sim_preview_controller=controller,
+            sim_preview_poll_timer=timer,
+            sim_preview_active=True,
+            sim_preview_stop_in_progress=False,
+            sim_preview_restart_requested=False,
+            sim_last_preview_sequence=9,
+            _clear_sim_preview_display=mock.Mock(),
+            update_sim_camera_action_buttons=lambda: None,
+            ui=SimpleNamespace(lb_sCMOS_FPSshow=LabelSpy()),
+        )
+
+        legacy_main.MainWindow.stop_sim_preview(window, wait=False, clear_restart=True)
+
+        self.assertEqual(timer.stop_calls, 1)
+        self.assertEqual(window.sim_last_preview_sequence, -1)
+        self.assertEqual(controller.stop_calls, [False])
+        self.assertEqual(window.ui.lb_sCMOS_FPSshow.text, "0")
+        window._clear_sim_preview_display.assert_not_called()
+
+    def test_stop_sim_preview_clears_display_only_when_requested(self):
+        legacy_main = load_legacy_main_module()
+        controller = PreviewControllerSpy()
+        clear_display = mock.Mock()
+        window = SimpleNamespace(
+            sim_preview_restart_timer=TimerSpy(),
+            sim_preview_controller=controller,
+            sim_preview_poll_timer=TimerSpy(),
+            sim_preview_active=True,
+            sim_preview_stop_in_progress=False,
+            sim_preview_restart_requested=False,
+            sim_last_preview_sequence=9,
+            _clear_sim_preview_display=clear_display,
+            update_sim_camera_action_buttons=lambda: None,
+            ui=SimpleNamespace(lb_sCMOS_FPSshow=LabelSpy()),
+        )
+
+        legacy_main.MainWindow.stop_sim_preview(
+            window,
+            wait=False,
+            clear_restart=True,
+            clear_display=True,
+        )
+
+        clear_display.assert_called_once_with()
+
+    def test_main_window_uses_module_local_default_configuration_path(self):
+        source = (CONTROL_ROOT / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn('default_path = Path(__file__).parent / "lastConfiguration.json"', source)
+        self.assertNotIn('default_path = Path(os.getcwd()) / "lastConfiguration.json"', source)
 
     def test_trigger_sim_formal_acquisition_snapshots_live_request_and_clears_requested_flag(self):
         legacy_main = load_legacy_main_module()
@@ -387,21 +471,73 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         window = SimpleNamespace(
             sim_camera_connected=True,
+            sim_preview_requested=False,
+            sim_preview_active=False,
+            sim_preview_stop_in_progress=False,
+            sim_acquisition_in_progress=False,
             sim_app_config=SimpleNamespace(),
             prefer_real_sim_hardware=mock.Mock(),
+            stop_sim_preview=mock.Mock(),
+            start_sim_preview=mock.Mock(),
             apply_sim_settings=mock.Mock(),
         )
 
         with mock.patch.object(legacy_main, "SimSettingsDialog", FakeDialog):
             legacy_main.MainWindow.btn_openSimSettings_function(window)
 
-        window.prefer_real_sim_hardware.assert_called_once_with(save_to_disk=True, probe_camera=False)
+        window.prefer_real_sim_hardware.assert_not_called()
         self.assertEqual(len(dialog_instances), 1)
         self.assertEqual(
             dialog_instances[0].signal_settings_saved.connected_callbacks,
             [window.apply_sim_settings],
         )
         self.assertEqual(dialog_instances[0].exec_calls, 1)
+        window.stop_sim_preview.assert_not_called()
+        window.start_sim_preview.assert_not_called()
+
+    def test_open_sim_settings_suspends_live_and_restores_after_dialog_closes(self):
+        legacy_main = load_legacy_main_module()
+        dialog_instances = []
+
+        class FakeSignal:
+            def __init__(self):
+                self.connected_callbacks = []
+
+            def connect(self, callback):
+                self.connected_callbacks.append(callback)
+
+        class FakeDialog:
+            def __init__(self, config, parent):
+                self.config = config
+                self.parent = parent
+                self.signal_settings_saved = FakeSignal()
+                dialog_instances.append(self)
+
+            def exec_(self):
+                return 0
+
+        stop_calls = []
+        start_calls = []
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_preview_requested=True,
+            sim_preview_active=True,
+            sim_preview_stop_in_progress=False,
+            sim_acquisition_in_progress=False,
+            sim_app_config=SimpleNamespace(),
+            prefer_real_sim_hardware=mock.Mock(),
+            stop_sim_preview=lambda wait=True: stop_calls.append(wait),
+            start_sim_preview=lambda: start_calls.append("start"),
+            apply_sim_settings=mock.Mock(),
+        )
+
+        with mock.patch.object(legacy_main, "SimSettingsDialog", FakeDialog):
+            legacy_main.MainWindow.btn_openSimSettings_function(window)
+
+        self.assertEqual(stop_calls, [True])
+        self.assertEqual(start_calls, ["start"])
+        self.assertEqual(len(dialog_instances), 1)
+        window.prefer_real_sim_hardware.assert_not_called()
 
     def test_apply_sim_settings_avoids_camera_reprobe_when_connected(self):
         legacy_main = load_legacy_main_module()
@@ -411,7 +547,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         config.config_path = "dummy.json"
         window = SimpleNamespace(
             sim_camera_connected=True,
-            sim_preview_active=False,
+            sim_preview_active=True,
             sim_app_config=AppConfig(),
             prefer_real_sim_hardware=mock.Mock(),
             sync_sim_camera_controls_from_config=mock.Mock(),
@@ -961,28 +1097,50 @@ class SimPreviewControllerTests(unittest.TestCase):
 
         controller.stop.assert_not_called()
 
-    def test_should_emit_frame_limits_gui_updates_to_latest_frame_at_30_fps(self):
+    def test_worker_take_latest_frame_returns_only_newest_snapshot_once(self):
         from sim_control.preview import SimPreviewWorker
 
         worker = SimPreviewWorker(gui_preview_fps_limit=30)
-        worker._last_frame_emit_at = 10.0
 
-        self.assertFalse(worker._should_emit_frame(now=10.01))
-        self.assertTrue(worker._should_emit_frame(now=10.04))
+        with mock.patch("sim_control.preview.time.perf_counter", side_effect=[1.0, 1.1, 1.2]):
+            worker.publish_preview_frame(np.array([[1]], dtype=np.uint16), fps=1)
+            worker.publish_preview_frame(np.array([[2]], dtype=np.uint16), fps=2)
+            worker.publish_preview_frame(np.array([[3]], dtype=np.uint16), fps=3)
 
-    def test_emit_preview_frame_keeps_only_latest_queued_frame(self):
-        from sim_control.preview import SimPreviewWorker
+        snapshot = worker.take_latest_frame()
 
-        worker = SimPreviewWorker(gui_preview_fps_limit=30)
-        delivered = []
-        worker.signal_frame_ready.connect(lambda frame, fps: delivered.append((frame, fps)))
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.fps, 3)
+        self.assertEqual(snapshot.sequence, 3)
+        self.assertEqual(snapshot.captured_at, 1.2)
+        np.testing.assert_array_equal(snapshot.frame, np.array([[3]], dtype=np.uint16))
+        self.assertIsNone(worker.take_latest_frame())
 
-        with mock.patch("sim_control.preview.time.perf_counter", side_effect=[1.0, 1.01, 1.05]):
-            worker.emit_preview_frame(frame="frame-1", fps=1)
-            worker.emit_preview_frame(frame="frame-2", fps=2)
-            worker.emit_preview_frame(frame="frame-3", fps=3)
+    def test_controller_take_latest_frame_returns_latest_snapshot_and_clears_store(self):
+        from sim_control.preview import SimPreviewController
 
-        self.assertEqual(delivered, [("frame-1", 1), ("frame-3", 3)])
+        class FakeCamera:
+            preview_active = False
+
+        controller = SimPreviewController(FakeCamera(), gui_preview_fps_limit=25)
+
+        try:
+            with mock.patch("sim_control.preview.time.perf_counter", side_effect=[2.0, 2.2]):
+                controller._worker.publish_preview_frame(np.array([[10]], dtype=np.uint16), fps=10)
+                controller._worker.publish_preview_frame(np.array([[20]], dtype=np.uint16), fps=11)
+
+            snapshot = controller.take_latest_frame()
+
+            self.assertEqual(controller.frame_poll_interval_ms, 40)
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot.fps, 11)
+            self.assertEqual(snapshot.sequence, 2)
+            self.assertEqual(snapshot.captured_at, 2.2)
+            np.testing.assert_array_equal(snapshot.frame, np.array([[20]], dtype=np.uint16))
+            self.assertIsNone(controller.take_latest_frame())
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
 
     def test_stop_wait_false_eventually_emits_preview_stopped(self):
         from sim_control.models import CameraConfig
@@ -1030,6 +1188,48 @@ class SimPreviewControllerTests(unittest.TestCase):
             while camera.preview_active and time.time() < deadline:
                 self.app.processEvents()
                 QtTest.QTest.qWait(10)
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+
+class SimPreviewPollingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance()
+        if cls.app is None:
+            cls.app = QtWidgets.QApplication([])
+
+    def test_poll_latest_sim_preview_frame_renders_only_latest_snapshot(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.preview import SimPreviewController
+
+        class FakeCamera:
+            preview_active = False
+
+        controller = SimPreviewController(FakeCamera())
+        rendered_frames = []
+        fps_label = LabelSpy()
+        window = SimpleNamespace(
+            sim_preview_controller=controller,
+            sim_last_preview_sequence=-1,
+            _render_sim_preview_frame=lambda frame: rendered_frames.append(frame.copy()),
+            ui=SimpleNamespace(lb_sCMOS_FPSshow=fps_label),
+        )
+
+        try:
+            with mock.patch("sim_control.preview.time.perf_counter", side_effect=[3.0, 3.1, 3.2]):
+                controller._worker.publish_preview_frame(np.array([[1]], dtype=np.uint16), fps=1)
+                controller._worker.publish_preview_frame(np.array([[2]], dtype=np.uint16), fps=2)
+                controller._worker.publish_preview_frame(np.array([[3]], dtype=np.uint16), fps=3)
+
+            legacy_main.MainWindow.poll_latest_sim_preview_frame(window)
+            legacy_main.MainWindow.poll_latest_sim_preview_frame(window)
+
+            self.assertEqual(window.sim_last_preview_sequence, 3)
+            self.assertEqual(fps_label.text, "3")
+            self.assertEqual(len(rendered_frames), 1)
+            np.testing.assert_array_equal(rendered_frames[0], np.array([[3]], dtype=np.uint16))
+        finally:
             controller._thread.quit()
             controller._thread.wait(2000)
 
@@ -1115,6 +1315,191 @@ class SimCameraSpinBoxCommitTests(unittest.TestCase):
         self.assertEqual(roi_y_events, [456])
 
         parent.close()
+
+
+class SimSettingsDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance()
+        if cls.app is None:
+            cls.app = QtWidgets.QApplication([])
+
+    def assert_compact_action_button_style(self, button, *, width):
+        self.assertEqual(button.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Fixed)
+        self.assertEqual(button.sizePolicy().verticalPolicy(), QtWidgets.QSizePolicy.Fixed)
+        self.assertEqual(button.minimumHeight(), 36)
+        self.assertEqual(button.maximumHeight(), 36)
+        self.assertEqual(button.minimumWidth(), width)
+        self.assertEqual(button.maximumWidth(), width)
+
+    def test_dialog_defers_hardware_refresh_until_first_show(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch.object(SimSettingsDialog, "_refresh_daq_devices", autospec=True) as refresh_daq, mock.patch.object(
+            SimSettingsDialog,
+            "_refresh_slm_devices",
+            autospec=True,
+        ) as refresh_slm:
+            dialog = SimSettingsDialog(config=AppConfig())
+            self.assertEqual(refresh_daq.call_count, 0)
+            self.assertEqual(refresh_slm.call_count, 0)
+
+            dialog.show()
+            self.app.processEvents()
+            QtTest.QTest.qWait(20)
+            self.app.processEvents()
+
+            self.assertEqual(refresh_daq.call_count, 1)
+            self.assertEqual(refresh_slm.call_count, 1)
+            dialog.close()
+
+    def test_pattern_page_exposes_refresh_and_toggle_slm_controls(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        self.assertTrue(hasattr(dialog.ui, "btn_refresh_slm"))
+        self.assertTrue(hasattr(dialog.ui, "btn_toggle_slm_connection"))
+        self.assertTrue(hasattr(dialog.ui, "btn_load_patterns"))
+        self.assertEqual(dialog.ui.combo_slm_device.minimumWidth(), 174)
+        self.assertEqual(dialog.ui.combo_slm_device.maximumWidth(), 280)
+        self.assert_compact_action_button_style(dialog.ui.btn_refresh_slm, width=120)
+        self.assert_compact_action_button_style(dialog.ui.btn_toggle_slm_connection, width=150)
+        self.assert_compact_action_button_style(dialog.ui.btn_load_patterns, width=120)
+        self.assertGreater(
+            dialog.ui.horizontalLayout_slm_device.indexOf(dialog.ui.btn_refresh_slm),
+            dialog.ui.horizontalLayout_slm_device.indexOf(dialog.ui.combo_slm_device),
+        )
+        self.assertIn("padding: 0 18px;", dialog.styleSheet())
+        dialog.close()
+
+    def test_daq_and_dialog_action_buttons_share_compact_button_style(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        self.assertTrue(hasattr(dialog.ui, "btn_refresh_lines"))
+        self.assertTrue(hasattr(dialog.ui, "btn_pulse_test"))
+        self.assertTrue(hasattr(dialog.ui, "btn_save_close"))
+        self.assertTrue(hasattr(dialog.ui, "btn_cancel"))
+        self.assert_compact_action_button_style(dialog.ui.btn_refresh_lines, width=120)
+        self.assert_compact_action_button_style(dialog.ui.btn_pulse_test, width=140)
+        self.assert_compact_action_button_style(dialog.ui.btn_save_close, width=170)
+        self.assert_compact_action_button_style(dialog.ui.btn_cancel, width=120)
+        self.assertIn("QPushButton#btn_refresh_lines", dialog.styleSheet())
+        self.assertIn("QPushButton#btn_save_close", dialog.styleSheet())
+        dialog.close()
+
+    def test_toggle_slm_connection_routes_to_connect_or_disconnect(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        dialog.slm_adapter = mock.Mock()
+        dialog.slm_adapter.is_connected.return_value = False
+        with mock.patch.object(dialog, "_connect_slm") as connect_slm, mock.patch.object(
+            dialog,
+            "_disconnect_slm",
+        ) as disconnect_slm:
+            dialog._toggle_slm_connection()
+        connect_slm.assert_called_once_with()
+        disconnect_slm.assert_not_called()
+
+        dialog.slm_adapter.is_connected.return_value = True
+        with mock.patch.object(dialog, "_connect_slm") as connect_slm, mock.patch.object(
+            dialog,
+            "_disconnect_slm",
+        ) as disconnect_slm:
+            dialog._toggle_slm_connection()
+        connect_slm.assert_not_called()
+        disconnect_slm.assert_called_once_with()
+        dialog.close()
+
+    def test_update_slm_controls_tracks_toggle_button_text_and_enabled_states(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        dialog.slm_adapter = mock.Mock()
+        dialog.combo_slm_device.clear()
+        dialog.combo_slm_device.addItem("SLM A", "slm-a")
+
+        dialog.slm_adapter.is_connected.return_value = True
+        dialog.slm_adapter.connection_info.return_value = {"device_serial_hint": "ABC123"}
+        dialog._update_slm_controls()
+        self.assertFalse(dialog.combo_slm_device.isEnabled())
+        self.assertFalse(dialog.btn_refresh_slm.isEnabled())
+        self.assertTrue(dialog.btn_toggle_slm_connection.isEnabled())
+        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Disconnect")
+        self.assertTrue(dialog.btn_load_patterns.isEnabled())
+        self.assertEqual(dialog.lbl_slm_status_value.text(), "Connected: ABC123")
+
+        dialog.slm_adapter.is_connected.return_value = False
+        dialog._update_slm_controls()
+        self.assertTrue(dialog.combo_slm_device.isEnabled())
+        self.assertTrue(dialog.btn_refresh_slm.isEnabled())
+        self.assertTrue(dialog.btn_toggle_slm_connection.isEnabled())
+        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Connect")
+        self.assertFalse(dialog.btn_load_patterns.isEnabled())
+        self.assertEqual(dialog.lbl_slm_status_value.text(), "Not connected")
+
+        dialog.combo_slm_device.clear()
+        dialog._update_slm_controls()
+        self.assertFalse(dialog.combo_slm_device.isEnabled())
+        self.assertTrue(dialog.btn_refresh_slm.isEnabled())
+        self.assertFalse(dialog.btn_toggle_slm_connection.isEnabled())
+        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Connect")
+        self.assertEqual(dialog.lbl_slm_status_value.text(), "No SLM detected")
+        dialog.close()
+
+    def test_refresh_slm_devices_preserves_existing_selection(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        devices = [
+            {"display": "SLM A", "path": "slm-a"},
+            {"display": "SLM B", "path": "slm-b"},
+        ]
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        dialog.slm_adapter = mock.Mock()
+        dialog.slm_adapter.list_devices.return_value = devices
+        dialog.slm_adapter.is_connected.return_value = False
+
+        dialog.combo_slm_device.addItem("SLM A", "slm-a")
+        dialog.combo_slm_device.addItem("SLM B", "slm-b")
+        dialog.combo_slm_device.setCurrentIndex(1)
+
+        dialog._refresh_slm_devices()
+
+        self.assertEqual(dialog.combo_slm_device.currentData(), "slm-b")
+        self.assertEqual(dialog.combo_slm_device.count(), 2)
+        dialog.close()
 
 
 if __name__ == "__main__":

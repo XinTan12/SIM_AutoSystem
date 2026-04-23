@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/skill.md\")",
+      "Bash(curl -s \"https://api.github.com/repos/obra/superpowers/contents/\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(item['name'], item.get\\('download_url',''\\)\\) for item in data]\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebSearch",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(gh api *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import urllib.request; print\\('ok'\\)\")",
+      "Bash(python3 -c \"print\\('hello'\\)\")",
+      "PowerShell(Invoke-WebRequest -Uri \"https://api.github.com/repos/anthropics/skills/contents/skills/frontend-design/SKILL.md\" -UseBasicParsing | Select-Object -ExpandProperty Content | ConvertFrom-Json | Select-Object -ExpandProperty content | ForEach-Object { [System.Text.Encoding]::UTF8.GetString\\([System.Convert]::FromBase64String\\($_ -replace \"`n\",\"\"\\)\\) })",
+      "PowerShell($resp = Invoke-WebRequest -Uri \"https://api.github.com/repos/anthropics/skills/contents/skills/frontend-design/SKILL.md\" -UseBasicParsing; $json = $resp.Content | ConvertFrom-Json; $b64 = $json.content -replace \"`n\",\"\" -replace \"`r\",\"\"; [System.Text.Encoding]::UTF8.GetString\\([System.Convert]::FromBase64String\\($b64\\)\\))",
+      "PowerShell($resp = Invoke-WebRequest -Uri \"https://api.github.com/repos/obra/superpowers/contents/README.md\" -UseBasicParsing; $json = $resp.Content | ConvertFrom-Json; $b64 = $json.content -replace \"`n\",\"\" -replace \"`r\",\"\"; [System.Text.Encoding]::UTF8.GetString\\([System.Convert]::FromBase64String\\($b64\\)\\))"
+    ]
+  }
+}

@@ -167,9 +167,9 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
             def __init__(self):
                 self.set_calls = []
                 self.values = {
-                    501: 0.0062,
+                    501: 0.031649,
                     502: 0.0155,
-                    503: 0.0004,
+                    503: 0.0,
                     504: 16,
                 }
 
@@ -274,12 +274,107 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
         self.assertEqual(result["applied_readout_speed_text"], "Fast scan")
         self.assertEqual(result["applied_bit_depth"], 12)
         self.assertEqual(result["supported_bit_depths"], [8, 12, 16])
-        self.assertEqual(result["recommended_inter_frame_gap_us"], 6500)
-        self.assertEqual(result["timing_readout_time_s"], 0.0062)
+        self.assertEqual(result["recommended_inter_frame_gap_us"], 32649)
+        self.assertEqual(result["timing_readout_time_s"], 0.031649)
         self.assertEqual(result["timing_cyclic_trigger_period_s"], 0.0155)
-        self.assertEqual(result["timing_min_trigger_blanking_s"], 0.0004)
+        self.assertEqual(result["timing_min_trigger_blanking_s"], 0.0)
         self.assertIn((504, 12), adapter._dcam_camera.set_calls)
         self.assertIn((505, 2), adapter._dcam_camera.set_calls)
+
+    def test_apply_config_omits_recommended_gap_when_readout_time_is_unavailable(self):
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.values = {
+                    502: 0.0120,
+                    503: 0.0003,
+                    504: 16,
+                }
+
+            def prop_setgetvalue(self, prop_id, value):
+                if prop_id == 401:
+                    return 3
+                if prop_id == 504:
+                    self.values[prop_id] = int(value)
+                    return float(int(value))
+                if prop_id == 505:
+                    return 2
+                return float(value)
+
+            def prop_getvalue(self, prop_id):
+                if prop_id == 501:
+                    raise RuntimeError("TIMING_READOUTTIME unavailable")
+                return self.values[prop_id]
+
+            def prop_queryvalue(self, prop_id, value):
+                if prop_id == 401:
+                    return 3
+                if prop_id == 504 and value in {12, 16}:
+                    return value
+                return False
+
+            def prop_getvaluetext(self, prop_id, value):
+                return "Fast scan" if prop_id == 401 and int(value) == 3 else str(value)
+
+            def lasterr(self):
+                return type("Err", (), {"name": "none"})()
+
+        dcamapi4 = type(
+            "FakeDcamapi4",
+            (),
+            {
+                "DCAM_IDPROP": type(
+                    "Props",
+                    (),
+                    {
+                        "TRIGGERSOURCE": 101,
+                        "TRIGGERACTIVE": 102,
+                        "TRIGGER_MODE": 103,
+                        "TRIGGERPOLARITY": 104,
+                        "READOUTSPEED": 401,
+                        "BITSPERCHANNEL": 504,
+                        "IMAGE_PIXELTYPE": 505,
+                        "SUBARRAYMODE": 201,
+                        "SUBARRAYHPOS": 202,
+                        "SUBARRAYVPOS": 203,
+                        "SUBARRAYHSIZE": 204,
+                        "SUBARRAYVSIZE": 205,
+                        "EXPOSURETIME": 301,
+                        "TIMING_READOUTTIME": 501,
+                        "TIMING_CYCLICTRIGGERPERIOD": 502,
+                        "TIMING_MINTRIGGERBLANKING": 503,
+                    },
+                ),
+                "DCAMPROP": type(
+                    "DcamProp",
+                    (),
+                    {
+                        "TRIGGERSOURCE": type("TriggerSource", (), {"EXTERNAL": 1}),
+                        "TRIGGERACTIVE": type("TriggerActive", (), {"LEVEL": 3}),
+                        "TRIGGER_MODE": type("TriggerMode", (), {"NORMAL": 5}),
+                        "TRIGGERPOLARITY": type("TriggerPolarity", (), {"POSITIVE": 6}),
+                        "MODE": type("Mode", (), {"OFF": 0, "ON": 1}),
+                        "READOUTSPEED": type("ReadoutSpeed", (), {"FASTEST": 0x7FFFFFFF}),
+                        "BITSPERCHANNEL": type("BitsPerChannel", (), {"_12": 12, "_16": 16}),
+                    },
+                ),
+                "DCAM_PIXELTYPE": type("PixelType", (), {"MONO8": 1, "MONO16": 2}),
+            },
+        )()
+
+        adapter = FusionBtCameraAdapter()
+        adapter._initialized = True
+        adapter._dcamapi4 = dcamapi4
+        adapter._dcam_camera = FakeCamera()
+        adapter._connection_info = {"model": "ORCA-Fusion BT", "camera_id": "C15440-20UP"}
+        adapter._ensure_camera_open = mock.Mock(return_value=dict(adapter._connection_info))
+
+        result = adapter.apply_config(CameraConfig(bit_depth=16))
+
+        self.assertIsNone(result["timing_readout_time_s"])
+        self.assertNotIn("recommended_inter_frame_gap_us", result)
 
     def test_flash_camera_uses_standard_scan_and_falls_back_to_16_bit_combo(self):
         from sim_control.adapters import FusionBtCameraAdapter
@@ -383,7 +478,7 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
         self.assertEqual(result["applied_readout_speed_text"], "Standard scan")
         self.assertEqual(result["supported_bit_depths"], [12, 16])
         self.assertEqual(result["applied_bit_depth"], 16)
-        self.assertEqual(result["recommended_inter_frame_gap_us"], 3000)
+        self.assertEqual(result["recommended_inter_frame_gap_us"], 6900)
 
 
 class SimAcquisitionControllerTests(unittest.TestCase):

@@ -61,6 +61,15 @@ QPushButton {
 QPushButton:hover {
     background: #e4ecf8;
 }
+QPushButton#btn_refresh_slm,
+QPushButton#btn_toggle_slm_connection,
+QPushButton#btn_load_patterns,
+QPushButton#btn_refresh_lines,
+QPushButton#btn_pulse_test,
+QPushButton#btn_save_close,
+QPushButton#btn_cancel {
+    padding: 0 18px;
+}
 QRadioButton {
     font-size: 15px;
     font-weight: 600;
@@ -104,7 +113,7 @@ QLabel#lbl_error {
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_root">
    <property name="spacing">
-    <number>30</number>
+    <number>18</number>
    </property>
    <property name="leftMargin">
     <number>30</number>
@@ -116,7 +125,7 @@ QLabel#lbl_error {
     <number>30</number>
    </property>
    <property name="bottomMargin">
-    <number>100</number>
+    <number>30</number>
    </property>
    <item>
     <widget class="QLabel" name="dialogHeader">
@@ -179,13 +188,13 @@ QLabel#lbl_error {
         <number>24</number>
        </property>
        <property name="topMargin">
-        <number>24</number>
+        <number>14</number>
        </property>
        <property name="rightMargin">
         <number>24</number>
        </property>
        <property name="bottomMargin">
-        <number>24</number>
+        <number>14</number>
        </property>
        <item>
         <spacer name="verticalSpacer_laser_top">
@@ -316,7 +325,7 @@ QLabel#lbl_error {
              </widget>
             </item>
             <item row="1" column="1">
-             <widget class="QRadioButton" name="radio_laser_640">
+             <widget class="QRadioButton" name="radio_laser_647">
               <property name="minimumSize">
                <size>
                 <width>180</width>
@@ -330,8 +339,8 @@ QLabel#lbl_error {
                 <bold>true</bold>
                </font>
               </property>
-              <property name="text">
-               <string>640 nm</string>
+               <property name="text">
+                <string>647 nm</string>
               </property>
              </widget>
             </item>
@@ -508,13 +517,13 @@ QLabel#lbl_error {
                  <widget class="QComboBox" name="combo_slm_device">
                   <property name="minimumSize">
                    <size>
-                    <width>260</width>
+                    <width>174</width>
                     <height>36</height>
                    </size>
                   </property>
                   <property name="maximumSize">
                    <size>
-                    <width>420</width>
+                    <width>280</width>
                     <height>16777215</height>
                    </size>
                   </property>
@@ -522,6 +531,38 @@ QLabel#lbl_error {
                    <font>
                     <family>Arial</family>
                    </font>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btn_refresh_slm">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>120</width>
+                    <height>36</height>
+                   </size>
+                  </property>
+                  <property name="maximumSize">
+                   <size>
+                    <width>120</width>
+                    <height>36</height>
+                   </size>
+                  </property>
+                  <property name="font">
+                   <font>
+                    <family>Arial</family>
+                    <weight>75</weight>
+                    <bold>true</bold>
+                   </font>
+                  </property>
+                  <property name="text">
+                   <string>Refresh</string>
                   </property>
                  </widget>
                 </item>
@@ -559,7 +600,25 @@ QLabel#lbl_error {
                  </spacer>
                 </item>
                 <item>
-                 <widget class="QPushButton" name="btn_connect_slm">
+                 <widget class="QPushButton" name="btn_toggle_slm_connection">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                    <horstretch>100</horstretch>
+                    <verstretch>30</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>150</width>
+                    <height>36</height>
+                   </size>
+                  </property>
+                  <property name="maximumSize">
+                   <size>
+                    <width>150</width>
+                    <height>36</height>
+                   </size>
+                  </property>
                   <property name="font">
                    <font>
                     <family>Arial</family>
@@ -589,20 +648,6 @@ QLabel#lbl_error {
                  </spacer>
                 </item>
                 <item>
-                 <widget class="QPushButton" name="btn_disconnect_slm">
-                  <property name="font">
-                   <font>
-                    <family>Arial</family>
-                    <weight>75</weight>
-                    <bold>true</bold>
-                   </font>
-                  </property>
-                  <property name="text">
-                   <string>Disconnect</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
                  <spacer name="horizontalSpacer_3">
                   <property name="orientation">
                    <enum>Qt::Horizontal</enum>
@@ -620,6 +665,24 @@ QLabel#lbl_error {
                 </item>
                 <item>
                  <widget class="QPushButton" name="btn_load_patterns">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>120</width>
+                    <height>36</height>
+                   </size>
+                  </property>
+                  <property name="maximumSize">
+                   <size>
+                    <width>120</width>
+                    <height>36</height>
+                   </size>
+                  </property>
                   <property name="font">
                    <font>
                     <family>Arial</family>
@@ -1364,7 +1427,7 @@ QLabel#lbl_error {
           <widget class="QGroupBox" name="group_daq">
            <property name="maximumSize">
             <size>
-             <width>700</width>
+             <width>860</width>
              <height>720</height>
             </size>
            </property>
@@ -1380,19 +1443,19 @@ QLabel#lbl_error {
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_daq_group">
             <property name="spacing">
-             <number>16</number>
+             <number>10</number>
             </property>
             <property name="leftMargin">
              <number>24</number>
             </property>
             <property name="topMargin">
-             <number>50</number>
+             <number>20</number>
             </property>
             <property name="rightMargin">
              <number>24</number>
             </property>
             <property name="bottomMargin">
-             <number>60</number>
+             <number>20</number>
             </property>
             <item>
              <layout class="QHBoxLayout" name="horizontalLayout_daq_device">
@@ -1453,6 +1516,24 @@ QLabel#lbl_error {
               </item>
               <item>
                <widget class="QPushButton" name="btn_refresh_lines">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>120</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>36</height>
+                 </size>
+                </property>
                 <property name="font">
                  <font>
                   <family>Arial</family>
@@ -1468,21 +1549,12 @@ QLabel#lbl_error {
              </layout>
             </item>
             <item>
-             <layout class="QFormLayout" name="formLayout_daq">
-              <property name="fieldGrowthPolicy">
-               <enum>QFormLayout::FieldsStayAtSizeHint</enum>
-              </property>
-              <property name="labelAlignment">
-               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-              </property>
-              <property name="formAlignment">
-               <set>Qt::AlignHCenter|Qt::AlignTop</set>
-              </property>
+             <layout class="QGridLayout" name="formLayout_daq">
               <property name="horizontalSpacing">
                <number>16</number>
               </property>
               <property name="verticalSpacing">
-               <number>12</number>
+               <number>8</number>
               </property>
               <item row="0" column="0">
                <widget class="QLabel" name="label_slm_enable_line">
@@ -1679,7 +1751,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="4" column="0">
+              <item row="0" column="2">
                <widget class="QLabel" name="label_laser_405_line">
                 <property name="minimumSize">
                  <size>
@@ -1707,7 +1779,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="4" column="1">
+              <item row="0" column="3">
                <widget class="QComboBox" name="combo_laser_405_line">
                 <property name="minimumSize">
                  <size>
@@ -1734,7 +1806,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="5" column="0">
+              <item row="1" column="2">
                <widget class="QLabel" name="label_laser_488_line">
                 <property name="minimumSize">
                  <size>
@@ -1762,7 +1834,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="5" column="1">
+              <item row="1" column="3">
                <widget class="QComboBox" name="combo_laser_488_line">
                 <property name="minimumSize">
                  <size>
@@ -1789,7 +1861,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="6" column="0">
+              <item row="2" column="2">
                <widget class="QLabel" name="label_laser_561_line">
                 <property name="minimumSize">
                  <size>
@@ -1817,7 +1889,7 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="6" column="1">
+              <item row="2" column="3">
                <widget class="QComboBox" name="combo_laser_561_line">
                 <property name="minimumSize">
                  <size>
@@ -1844,8 +1916,8 @@ QLabel#lbl_error {
                 </property>
                </widget>
               </item>
-              <item row="7" column="0">
-               <widget class="QLabel" name="label_laser_640_line">
+              <item row="3" column="2">
+                <widget class="QLabel" name="label_laser_647_line">
                 <property name="minimumSize">
                  <size>
                   <width>120</width>
@@ -1864,16 +1936,16 @@ QLabel#lbl_error {
                   <pointsize>10</pointsize>
                  </font>
                 </property>
-                <property name="text">
-                 <string>Laser 640</string>
+                 <property name="text">
+                  <string>Laser 647</string>
                 </property>
                 <property name="alignment">
                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
                 </property>
                </widget>
               </item>
-              <item row="7" column="1">
-               <widget class="QComboBox" name="combo_laser_640_line">
+              <item row="3" column="3">
+                <widget class="QComboBox" name="combo_laser_647_line">
                 <property name="minimumSize">
                  <size>
                   <width>200</width>
@@ -1941,45 +2013,36 @@ QLabel#lbl_error {
               <property name="title">
                <string>Timing</string>
               </property>
-              <layout class="QFormLayout" name="formLayout_daq_timing">
-               <property name="fieldGrowthPolicy">
-                <enum>QFormLayout::FieldsStayAtSizeHint</enum>
-               </property>
-               <property name="labelAlignment">
-                <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-               </property>
-               <property name="formAlignment">
-                <set>Qt::AlignHCenter|Qt::AlignTop</set>
-               </property>
+              <layout class="QGridLayout" name="formLayout_daq_timing">
                <property name="horizontalSpacing">
                 <number>16</number>
                </property>
                <property name="verticalSpacing">
-                <number>12</number>
+                <number>8</number>
                </property>
                <property name="leftMargin">
-                <number>20</number>
+                <number>15</number>
                </property>
                <property name="topMargin">
-                <number>20</number>
+                <number>18</number>
                </property>
                <property name="rightMargin">
-                <number>20</number>
+                <number>15</number>
                </property>
                <property name="bottomMargin">
-                <number>20</number>
+                <number>18</number>
                </property>
                <item row="0" column="0">
                 <widget class="QLabel" name="label_sample_rate">
                  <property name="minimumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>0</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2001,13 +2064,13 @@ QLabel#lbl_error {
                 <widget class="QSpinBox" name="spin_sample_rate">
                  <property name="minimumSize">
                   <size>
-                   <width>200</width>
+                   <width>150</width>
                    <height>36</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>260</width>
+                   <width>180</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2027,17 +2090,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="1" column="0">
+               <item row="0" column="2">
                 <widget class="QLabel" name="label_edge_pulse">
                  <property name="minimumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>0</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2055,17 +2118,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="1" column="1">
+               <item row="0" column="3">
                 <widget class="QSpinBox" name="spin_edge_pulse_us">
                  <property name="minimumSize">
                   <size>
-                   <width>200</width>
+                   <width>150</width>
                    <height>36</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>260</width>
+                   <width>180</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2085,17 +2148,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="2" column="0">
+               <item row="1" column="0">
                 <widget class="QLabel" name="label_inter_frame_gap">
                  <property name="minimumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>0</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>140</width>
+                   <width>155</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2113,17 +2176,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="2" column="1">
+               <item row="1" column="1">
                 <widget class="QSpinBox" name="spin_inter_frame_gap_us">
                  <property name="minimumSize">
                   <size>
-                   <width>200</width>
+                   <width>150</width>
                    <height>36</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>260</width>
+                   <width>180</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2140,17 +2203,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="3" column="0">
+               <item row="1" column="2">
                 <widget class="QLabel" name="label_slm_enable_guard">
                  <property name="minimumSize">
                   <size>
-                   <width>120</width>
+                   <width>155</width>
                    <height>0</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>140</width>
+                   <width>155</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2168,17 +2231,17 @@ QLabel#lbl_error {
                  </property>
                 </widget>
                </item>
-               <item row="3" column="1">
+               <item row="1" column="3">
                 <widget class="QSpinBox" name="spin_slm_enable_guard_us">
                  <property name="minimumSize">
                   <size>
-                   <width>200</width>
+                   <width>150</width>
                    <height>36</height>
                   </size>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>260</width>
+                   <width>180</width>
                    <height>16777215</height>
                   </size>
                  </property>
@@ -2251,10 +2314,22 @@ QLabel#lbl_error {
               <item>
                <widget class="QPushButton" name="btn_pulse_test">
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>140</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>140</width>
+                  <height>36</height>
+                 </size>
                 </property>
                 <property name="font">
                  <font>
@@ -2342,10 +2417,28 @@ QLabel#lbl_error {
          <height>20</height>
         </size>
        </property>
-      </spacer>
+     </spacer>
      </item>
      <item>
       <widget class="QPushButton" name="btn_save_close">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>170</width>
+         <height>36</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>170</width>
+         <height>36</height>
+        </size>
+       </property>
        <property name="font">
         <font>
          <family>Arial</family>
@@ -2372,10 +2465,28 @@ QLabel#lbl_error {
          <height>20</height>
         </size>
        </property>
-      </spacer>
+     </spacer>
      </item>
      <item>
       <widget class="QPushButton" name="btn_cancel">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>120</width>
+         <height>36</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>120</width>
+         <height>36</height>
+        </size>
+       </property>
        <property name="font">
         <font>
          <family>Arial</family>

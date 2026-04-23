@@ -98,6 +98,36 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         self.assertEqual(config.camera.bit_depth, 16)
 
+    def test_app_config_loader_migrates_legacy_640_laser_fields_to_647(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "daq": {
+                    "device_name": "Dev2",
+                    "slm_enable_line": "Dev2/port0/line0",
+                    "slm_trigger_line": "Dev2/port0/line1",
+                    "slm_finish_line": "Dev2/port0/line2",
+                    "camera_trigger_line": "Dev2/port0/line5",
+                    "laser_405_line": "Dev2/port0/line8",
+                    "laser_488_line": "Dev2/port0/line6",
+                    "laser_561_line": "Dev2/port0/line7",
+                    "laser_640_line": "Dev2/port0/line9",
+                },
+                "selected_laser_nm": 640,
+            }
+        )
+
+        self.assertEqual(config.selected_laser_nm, 647)
+        self.assertEqual(getattr(config.daq, "laser_647_line", None), "Dev2/port0/line9")
+        self.assertFalse(hasattr(config.daq, "laser_640_line"))
+
+        payload = app_config_to_dict(config)
+
+        self.assertEqual(payload["selected_laser_nm"], 647)
+        self.assertEqual(payload["daq"].get("laser_647_line"), "Dev2/port0/line9")
+        self.assertNotIn("laser_640_line", payload["daq"])
+
     def test_real_device_detection_replaces_stale_camera_identity(self):
         from sim_control.models import AppConfig, CameraConfig
 

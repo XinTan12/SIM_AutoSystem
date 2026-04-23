@@ -35,6 +35,9 @@
 - 相机方案：Hamamatsu ORCA-Fusion BT，通过 `DCAM-API` / `DCAM-SDK4` 控制。
 - SLM 方案：Kopin / Forth Dimension Displays `QXGA-R11-STR`，通过 `R11CommLib` 控制。
 - DAQ 方案：NI USB-6423，负责输出 `slm_enable_line`、`slm_trigger_line`、`slm_finish_line`、`camera_trigger_line` 以及激光触发线的同步 TTL。
+- 当前项目内的 NI USB-6423 规范接线映射固定为：`slm_enable=port0/line0`、`slm_trigger=port0/line1`、`slm_finish=port0/line2`、`camera_trigger=port0/line5`、`laser_405=port0/line8`、`laser_488=port0/line6`、`laser_561=port0/line7`、`laser_647=port0/line9`。
+- Hamamatsu runtime timing 中的 `Actual Inter Frame Gap` 当前按保守读出等待计算：`ceil(TIMING_READOUTTIME * 1_000_000) + ceil(TIMING_MINTRIGGERBLANKING * 1_000_000) + 1000 us`；若读不到 `TIMING_READOUTTIME`，采集逻辑回退到配置中的 `inter_frame_gap_us`。
+- SIM 侧第四路红光命名已统一为 `647`；默认配置文件使用 `laser_647_line`，加载旧配置时会自动把 `laser_640_line` / `selected_laser_nm=640` 迁移到新命名。
 - 当前 `FusionBtCameraAdapter` 与 `KopinSlmAdapter` 已具备仿真模式和对真实 SDK 绑定的扩展点。
 - 真实 DLL 名称、加载路径与函数签名的集成入口集中在 `sim_control/adapters.py`。
 - `SDK/` 目录当前已包含 Hamamatsu `DCAM-SDK4` 材料，以及 FDD `R11` 相关工具、驱动和文档。
@@ -58,6 +61,7 @@
 - 将真实相机与 SLM SDK 逐步接入现有适配器层。
 - 打通 9 帧采集到 `(9, H, W)` `numpy.uint16` 输出栈的稳定接口。
 - 明确重建模块与特征分析模块的输入输出接口，并把最终决策结果接回微流控流程。
+- 将 SIM live 预览维持为低延迟 `latest-frame-wins` 模式：采集线程持续取帧，GUI 端只轮询并渲染当前最新快照，允许丢弃中间帧以避免载物台移动或主线程忙碌时积压旧帧。
 
 ## 已知风险与待确认事项
 - 厂商 SDK 的真实 DLL 名称、导出函数和调用签名仍需结合本机安装内容做最终核对。
@@ -69,11 +73,19 @@
 - 核实 `config/sim_control_config.json` 中与 SDK 路径、设备配置和时序相关的字段是否足以支撑真实硬件接入。
 - 在 `sim_control/adapters.py` 中补齐 Hamamatsu `DCAM-SDK4` 的真实绑定实现。
 - 在 `sim_control/adapters.py` 中补齐 `R11CommLib` 的真实绑定实现。
-- 验证 NI USB-6423 的 TTL 线位与 9 帧采集时序是否满足联动要求。
+- 在真机上验证 NI USB-6423 规范线位 `0/1/2/5/8/6/7/9` 与 9 帧采集时序是否满足联动要求。
 - 明确重建模块接收 `(9, H, W)` `numpy.uint16` 栈后的接口形式、返回结果和回调链路。
 - 在后续每次状态变化后持续维护本文件和决策日志，保证跨对话记忆有效。
 
 ## 最近更新
+- 2026-04-23：修正 SIM 采集时序显示与 runtime gap 计算：`Actual Inter Frame Gap` 改为基于 Hamamatsu `TIMING_READOUTTIME`、`TIMING_MINTRIGGERBLANKING` 和 1000 us 安全余量的保守读出等待；DAQ 摘要显示名改为 `cam_trigger_line`；SIM 设置窗口 DAQ 页改为更紧凑的双列布局并压缩过大留白，避免通道与 Timing 控件在最小窗口下重叠。
+- 2026-04-23：集成主窗口中用户点击 SIM `Abort` 后会立即把预览框清为黑色并清除最后一帧缓存；`control_wangbo/main.py` 启动加载 `lastConfiguration.json` 的路径已统一为 `control_wangbo/lastConfiguration.json`，同时保留原有 `保存了pppppppppp` 调试打印。
+- 2026-04-23：将 `sim_control/preview.py` 的 live 预览从逐帧 Qt queued signal 推送改为线程安全的最新帧快照缓存，并在 `control_wangbo/main.py` 中接入基于 `QTimer` 的主线程轮询显示；live 预览现以低延迟优先，只显示最新帧，减少载物台移动时旧帧积压导致的长时间卡顿。
+- 2026-04-23：统一 `SimSettingsDialog` 中 Pattern、DAQ 和底部操作区的主要按钮外观，将 `Refresh`、`load`、`Pulse Test`、`Save and Close`、`Cancel` 全部调整为与 SLM 连接切换按钮一致的圆角、固定高度和带左右留白的紧凑按钮样式。
+- 2026-04-23：将 Pattern 页 `btn_toggle_slm_connection` 调整为固定宽度按钮，参考 SIM 相机连接按钮的交互，避免 `Connect` / `Disconnect` 文案切换时按钮尺寸变化导致布局抖动。
+- 2026-04-23：调整集成主窗口与 `SimSettingsDialog` 的交互，打开 SIM 参数设置前会先挂起 live，关闭后按原请求恢复；同时将 Pattern 页的 SLM 连接区改为设备下拉框右侧 `Refresh` 按钮加单一 `Connect` / `Disconnect` 切换按钮，并把首轮 DAQ/SLM 枚举延后到对话框显示后执行以降低卡顿。
+- 2026-04-23：将 SIM 侧第四路红光命名从 `640` 统一为 `647`，并为旧 `laser_640_line` / `selected_laser_nm=640` 配置加入自动迁移兼容。
+- 2026-04-23：根据最新实物接线，将项目内 NI USB-6423 默认/规范接线映射更新为 `0/1/2/5/8/6/7/9`，同步修改默认配置与默认映射相关测试。
 - 2026-04-23：强化跨对话记忆工作流，新对话固定先读取 `AGENTS.md`、`PROJECT_MEMORY.md` 和决策日志；若任务涉及具体模块，再补读相关代码与配置。
 - 2026-04-23：约定只要本次会话修改了项目，结束前至少更新本文件“最近更新”部分，并按需要同步修正受影响章节。
 - 2026-04-23：建立仓库内跨对话记忆机制，新增 `PROJECT_MEMORY.md` 与 `docs/project_memory/decision_log.md`。

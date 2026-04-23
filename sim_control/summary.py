@@ -42,10 +42,10 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
         f"  slm_enable_line: {daq.slm_enable_line}",
         f"  slm_trigger_line: {daq.slm_trigger_line}",
         f"  slm_finish_line: {daq.slm_finish_line}",
-        f"  camera_trigger_line: {daq.camera_trigger_line}",
+        f"  cam_trigger_line: {daq.camera_trigger_line}",
         f"  laser_405_line: {daq.laser_405_line}",
         f"  laser_488_line: {daq.laser_488_line}",
         f"  laser_561_line: {daq.laser_561_line}",
-        f"  laser_640_line: {daq.laser_640_line}",
+        f"  laser_647_line: {daq.laser_647_line}",
     ]
     return "\n".join(summary_lines)

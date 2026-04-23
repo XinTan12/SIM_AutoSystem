@@ -630,12 +630,9 @@ class FusionBtCameraAdapter:
         timing_readout_time_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_READOUTTIME)
         timing_cyclic_trigger_period_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_CYCLICTRIGGERPERIOD)
         timing_min_trigger_blanking_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_MINTRIGGERBLANKING)
-        exposure_s = max(0.0, float(config.exposure_us) / 1_000_000.0)
-        tc_s = max(0.0, float(timing_cyclic_trigger_period_s or 0.0))
+        readout_s = None if timing_readout_time_s is None else max(0.0, float(timing_readout_time_s))
         min_tb_s = max(0.0, float(timing_min_trigger_blanking_s or 0.0))
-        recommended_gap_s = max(tc_s - exposure_s, min_tb_s, 0.0)
-        recommended_gap_us = int(math.ceil(recommended_gap_s * 1_000_000.0)) + 1000
-        return {
+        summary = {
             "camera_model": str(self._connection_info.get("model", "")),
             "camera_id": str(self._connection_info.get("camera_id", "")),
             "applied_readout_speed_value": int(round(float(applied_readout_speed_value))),
@@ -648,8 +645,14 @@ class FusionBtCameraAdapter:
             "timing_readout_time_s": timing_readout_time_s,
             "timing_cyclic_trigger_period_s": timing_cyclic_trigger_period_s,
             "timing_min_trigger_blanking_s": timing_min_trigger_blanking_s,
-            "recommended_inter_frame_gap_us": recommended_gap_us,
         }
+        if readout_s is not None:
+            summary["recommended_inter_frame_gap_us"] = (
+                int(math.ceil(readout_s * 1_000_000.0))
+                + int(math.ceil(min_tb_s * 1_000_000.0))
+                + 1000
+            )
+        return summary
 
     def initialize(self) -> None:
         if self._initialized:

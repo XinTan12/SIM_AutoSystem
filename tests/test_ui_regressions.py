@@ -232,6 +232,53 @@ class UiRegressionTests(unittest.TestCase):
             "SIM settings dialog should not apply invalid font point sizes.",
         )
 
+    def test_sim_settings_daq_channel_controls_do_not_overlap_at_minimum_size(self):
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+        dialog.resize(920, 660)
+        dialog.show()
+        self.app.processEvents()
+
+        ui.tabs.setCurrentWidget(ui.tab_daq)
+        self.app.processEvents()
+
+        labels = [
+            ui.label_slm_enable_line,
+            ui.label_slm_trigger_line,
+            ui.label_slm_finish_line,
+            ui.label_camera_trigger_line,
+            ui.label_laser_405_line,
+            ui.label_laser_488_line,
+            ui.label_laser_561_line,
+            ui.label_laser_647_line,
+        ]
+        combos = [
+            ui.combo_slm_enable_line,
+            ui.combo_slm_trigger_line,
+            ui.combo_slm_finish_line,
+            ui.combo_camera_trigger_line,
+            ui.combo_laser_405_line,
+            ui.combo_laser_488_line,
+            ui.combo_laser_561_line,
+            ui.combo_laser_647_line,
+        ]
+
+        for label in labels:
+            self.assertGreaterEqual(label.geometry().height(), 20)
+        for combo in combos:
+            self.assertGreaterEqual(combo.geometry().height(), 36)
+
+        for left_index, left_combo in enumerate(combos):
+            left_rect = left_combo.geometry()
+            for right_combo in combos[left_index + 1 :]:
+                self.assertFalse(
+                    left_rect.intersects(right_combo.geometry()),
+                    f"{left_combo.objectName()} overlaps {right_combo.objectName()}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
