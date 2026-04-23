@@ -39,3 +39,14 @@ This folder is the new top-level workspace for the microfluidics + SIM automatio
 - `FusionBtCameraAdapter` and `KopinSlmAdapter` currently include simulation mode plus extension points for real SDK bindings.
 - Real DLL names, loading paths, and function signatures should be integrated via `sim_control/adapters.py`.
 - The `SDK/` folder currently includes Hamamatsu `DCAM-SDK4` material and the FDD `R11` bundle with `R11CommLib`, WinUSB drivers, MetroCon, sequence catalogues, and protocol documentation.
+
+## 跨对话记忆机制
+- 每次新对话开始时，必须先读取 `AGENTS.md`、`PROJECT_MEMORY.md` 和 `docs/project_memory/decision_log.md`，再开始分析、设计或实施。
+- 完成上述记忆文件读取后，如果用户请求涉及具体模块、配置或故障，再补充读取与任务直接相关的代码、配置文件、测试文件，以及必要的相关设计文档或最近变更；不要在无必要时全仓库扫描。
+- 将 `PROJECT_MEMORY.md` 视为项目当前状态的工作摘要；如果它与代码、配置文件或更具体的文档冲突，以更新且更具体的事实为准，并在本次会话结束前回写记忆文件。
+- 只要本次会话对项目做出了修改，无论是代码、配置、文档还是工作流调整，结束前都必须同步更新 `PROJECT_MEMORY.md`。
+- 每次发生项目修改时，至少更新 `PROJECT_MEMORY.md` 的“最近更新”部分；如果修改还影响了项目状态、架构边界、接口、依赖、硬件接入方式、关键待办或风险判断，还必须同步更新对应章节内容。
+- 只有在关键设计决策、长期约束或方向性选择发生变化时，才更新 `docs/project_memory/decision_log.md`。每条记录至少包含日期、决策、原因和影响。
+- 记忆文件只记录提炼后的事实、约束、决策、待办和下一步，不保存整段聊天记录。
+- 不要在记忆文件中记录密钥、许可证、口令、个人隐私或无必要的机器本地敏感信息。
+- 该记忆机制不改变现有边界约束：`control_wangbo/` 仍默认视为只读，除非用户明确要求修改。
