@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import functools
 from datetime import datetime
 from pathlib import Path
 import traceback
@@ -43,6 +44,7 @@ from .config_store import (
 from .controller import SimAcquisitionController
 from .models import (
     AppConfig,
+    CameraConfig,
     DAQ_ROLE_ORDER,
     DaqLineConfig,
     SimTaskConfig,
@@ -52,6 +54,115 @@ from .models import (
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
+
+
+def _catch_to_error(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except Exception as exc:
+            self._set_error(str(exc))
+    return wrapper
+
+
+def read_timing_config_from_widgets(
+    spin_sample_rate: QSpinBox,
+    spin_edge_pulse_us: QSpinBox,
+    spin_inter_frame_gap_us: QSpinBox,
+    spin_slm_enable_guard_us: QSpinBox,
+) -> TimingConfig:
+    return TimingConfig(
+        sample_rate_hz=spin_sample_rate.value(),
+        edge_pulse_us=spin_edge_pulse_us.value(),
+        inter_frame_gap_us=spin_inter_frame_gap_us.value(),
+        slm_enable_guard_us=spin_slm_enable_guard_us.value(),
+    )
+
+
+def write_timing_config_to_widgets(
+    config: TimingConfig,
+    spin_sample_rate: QSpinBox,
+    spin_edge_pulse_us: QSpinBox,
+    spin_inter_frame_gap_us: QSpinBox,
+    spin_slm_enable_guard_us: QSpinBox,
+) -> None:
+    spin_sample_rate.setValue(config.sample_rate_hz)
+    spin_edge_pulse_us.setValue(config.edge_pulse_us)
+    spin_inter_frame_gap_us.setValue(config.inter_frame_gap_us)
+    spin_slm_enable_guard_us.setValue(config.slm_enable_guard_us)
+
+
+def read_selected_laser_nm(laser_group: QButtonGroup) -> int:
+    checked = laser_group.checkedId()
+    if checked <= 0:
+        raise ValueError("Please select one laser wavelength.")
+    return checked
+
+
+def write_selected_laser_to_widgets(
+    laser_nm: int,
+    laser_buttons: dict[int, QRadioButton],
+) -> None:
+    laser_button = laser_buttons.get(laser_nm, laser_buttons[488])
+    laser_button.setChecked(True)
+
+
+def read_daq_config_from_line_combos(
+    line_combos: dict[str, QComboBox],
+    device_name: str | None = None,
+) -> DaqLineConfig:
+    selected_device_name = None
+    if device_name is not None:
+        selected_device_name = device_name.strip()
+        if not selected_device_name:
+            raise ValueError("Please select a DAQ device.")
+
+    selections = {}
+    for role, combo in line_combos.items():
+        value = combo.currentText().strip()
+        if not value:
+            raise ValueError(f"DAQ line not selected for {ROLE_LABELS[role]}")
+        selections[role] = value
+
+    if selected_device_name is None:
+        selected_device_name, _, _ = parse_line_name(next(iter(selections.values())))
+    return DaqLineConfig(device_name=selected_device_name, **selections)
+
+
+def populate_daq_line_combos(
+    line_combos: dict[str, QComboBox],
+    lines: list[str],
+    current_values: dict[str, str],
+    config: DaqLineConfig,
+    device_name: str,
+) -> None:
+    for role, combo in line_combos.items():
+        target_value = current_values.get(role) or getattr(config, role)
+        if target_value and not target_value.startswith(f"{device_name}/"):
+            target_value = default_daq_line_name(device_name, role)
+        fallback_value = default_daq_line_name(device_name, role)
+
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(lines)
+            if target_value in lines:
+                combo.setCurrentText(target_value)
+            elif fallback_value in lines:
+                combo.setCurrentText(fallback_value)
+        finally:
+            combo.blockSignals(False)
+
+
+def browse_pattern_file(parent: QWidget, index: int) -> str | None:
+    path, _ = QFileDialog.getOpenFileName(
+        parent,
+        f"Select Pattern {index + 1}",
+        str(Path.cwd()),
+        "Pattern Files (*.bmp *.png *.tif *.tiff *.jpg *.jpeg *.bin);;All Files (*.*)",
+    )
+    return path or None
 
 
 ROLE_LABELS = {
@@ -201,33 +312,25 @@ class SimSettingsDialog(QDialog):
 
     def _populate_widgets_from_config(self, config: AppConfig) -> None:
         self._preferred_daq_device = config.daq.device_name
-        self.spin_sample_rate.setValue(config.timing.sample_rate_hz)
-        self.spin_edge_pulse_us.setValue(config.timing.edge_pulse_us)
-        self.spin_inter_frame_gap_us.setValue(config.timing.inter_frame_gap_us)
-        self.spin_slm_enable_guard_us.setValue(config.timing.slm_enable_guard_us)
+        write_timing_config_to_widgets(
+            config.timing,
+            self.spin_sample_rate, self.spin_edge_pulse_us,
+            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
+        )
         for index, pattern_path in enumerate(config.pattern_files):
             self._set_pattern_path(index, pattern_path)
-        laser_button = self.laser_buttons.get(config.selected_laser_nm, self.laser_buttons[488])
-        laser_button.setChecked(True)
+        write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
 
     def _current_daq_config(self) -> DaqLineConfig:
-        device_name = self.combo_daq_device.currentText().strip()
-        if not device_name:
-            raise ValueError("Please select a DAQ device.")
-        selections = {}
-        for role, combo in self.line_combos.items():
-            value = combo.currentText().strip()
-            if not value:
-                raise ValueError(f"DAQ line not selected for {ROLE_LABELS[role]}")
-            selections[role] = value
-        return DaqLineConfig(device_name=device_name, **selections)
+        return read_daq_config_from_line_combos(
+            self.line_combos,
+            device_name=self.combo_daq_device.currentText(),
+        )
 
     def _current_timing_config(self) -> TimingConfig:
-        return TimingConfig(
-            sample_rate_hz=self.spin_sample_rate.value(),
-            edge_pulse_us=self.spin_edge_pulse_us.value(),
-            inter_frame_gap_us=self.spin_inter_frame_gap_us.value(),
-            slm_enable_guard_us=self.spin_slm_enable_guard_us.value(),
+        return read_timing_config_from_widgets(
+            self.spin_sample_rate, self.spin_edge_pulse_us,
+            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
         )
 
     def _current_pattern_files(self) -> list[str]:
@@ -237,10 +340,7 @@ class SimSettingsDialog(QDialog):
         return files
 
     def _selected_laser_nm(self) -> int:
-        checked = self.laser_group.checkedId()
-        if checked <= 0:
-            raise ValueError("Please select one laser wavelength.")
-        return checked
+        return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> AppConfig:
         self.config.daq = self._current_daq_config()
@@ -255,9 +355,6 @@ class SimSettingsDialog(QDialog):
             combo.clear()
             combo.blockSignals(False)
         self._refresh_test_targets()
-
-    def _default_line_for_role(self, device_name: str, role: str) -> str:
-        return default_daq_line_name(device_name, role)
 
     def _refresh_daq_devices(self) -> None:
         current_device = self.combo_daq_device.currentText().strip() or self._preferred_daq_device
@@ -288,20 +385,13 @@ class SimSettingsDialog(QDialog):
             if selected_device:
                 self._set_error(f"No DAQ lines available for {selected_device}.")
             return
-        for role, combo in self.line_combos.items():
-            target_value = current_values.get(role) or getattr(self.config.daq, role)
-            if target_value and not target_value.startswith(f"{selected_device}/"):
-                target_value = self._default_line_for_role(selected_device, role)
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(lines)
-            if target_value in lines:
-                combo.setCurrentText(target_value)
-            else:
-                fallback_value = self._default_line_for_role(selected_device, role)
-                if fallback_value in lines:
-                    combo.setCurrentText(fallback_value)
-            combo.blockSignals(False)
+        populate_daq_line_combos(
+            self.line_combos,
+            lines,
+            current_values,
+            self.config.daq,
+            selected_device,
+        )
         self._refresh_test_targets()
 
     def _refresh_slm_devices(self) -> None:
@@ -540,12 +630,7 @@ class SimSettingsDialog(QDialog):
             QMessageBox.critical(self, "Save Settings", str(exc))
 
     def _browse_pattern(self, index: int) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Select Pattern {index + 1}",
-            str(Path.cwd()),
-            "Pattern Files (*.bmp *.png *.tif *.tiff *.jpg *.jpeg *.bin);;All Files (*.*)",
-        )
+        path = browse_pattern_file(self, index)
         if path:
             self._set_pattern_path(index, path)
             self._loaded_pattern_result = None
@@ -844,24 +929,17 @@ class SimControlWindow(QMainWindow):
         self.spin_roi_height.setValue(config.camera.roi_height)
         self.spin_exposure_us.setValue(config.camera.exposure_us)
         self.spin_timeout_ms.setValue(config.camera.timeout_ms)
-        self.spin_sample_rate.setValue(config.timing.sample_rate_hz)
-        self.spin_edge_pulse_us.setValue(config.timing.edge_pulse_us)
-        self.spin_inter_frame_gap_us.setValue(config.timing.inter_frame_gap_us)
-        self.spin_slm_enable_guard_us.setValue(config.timing.slm_enable_guard_us)
+        write_timing_config_to_widgets(
+            config.timing,
+            self.spin_sample_rate, self.spin_edge_pulse_us,
+            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
+        )
         for index, edit in enumerate(self.pattern_edits):
             edit.setText(config.pattern_files[index])
-        laser_button = self.laser_buttons.get(config.selected_laser_nm, self.laser_buttons[488])
-        laser_button.setChecked(True)
+        write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
 
     def _current_daq_config(self) -> DaqLineConfig:
-        selections = {}
-        for role, combo in self.line_combos.items():
-            value = combo.currentText().strip()
-            if not value:
-                raise ValueError(f"DAQ line not selected for {ROLE_LABELS[role]}")
-            selections[role] = value
-        device_name, _, _ = parse_line_name(next(iter(selections.values())))
-        return DaqLineConfig(device_name=device_name, **selections)
+        return read_daq_config_from_line_combos(self.line_combos)
 
     def _current_camera_config(self) -> CameraConfig:
         return CameraConfig(
@@ -875,21 +953,16 @@ class SimControlWindow(QMainWindow):
         )
 
     def _current_timing_config(self) -> TimingConfig:
-        return TimingConfig(
-            sample_rate_hz=self.spin_sample_rate.value(),
-            edge_pulse_us=self.spin_edge_pulse_us.value(),
-            inter_frame_gap_us=self.spin_inter_frame_gap_us.value(),
-            slm_enable_guard_us=self.spin_slm_enable_guard_us.value(),
+        return read_timing_config_from_widgets(
+            self.spin_sample_rate, self.spin_edge_pulse_us,
+            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
         )
 
     def _current_pattern_files(self) -> list[str]:
         return [edit.text().strip() for edit in self.pattern_edits]
 
     def _selected_laser_nm(self) -> int:
-        checked = self.laser_group.checkedId()
-        if checked <= 0:
-            raise ValueError("Please select one laser wavelength.")
-        return checked
+        return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> None:
         self.config.daq = self._current_daq_config()
@@ -908,14 +981,13 @@ class SimControlWindow(QMainWindow):
         if not lines:
             lines = [f"{default_device}/port0/line{i}" for i in range(16)]
 
-        for role, combo in self.line_combos.items():
-            target_value = current_values.get(role) or getattr(self.config.daq, role)
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(lines)
-            if target_value in lines:
-                combo.setCurrentText(target_value)
-            combo.blockSignals(False)
+        populate_daq_line_combos(
+            self.line_combos,
+            lines,
+            current_values,
+            self.config.daq,
+            default_device,
+        )
         self._log(f"Loaded {len(lines)} DAQ line options.")
 
     def _validate_wiring(self) -> None:
@@ -927,101 +999,79 @@ class SimControlWindow(QMainWindow):
             self._set_error(str(exc))
             QMessageBox.critical(self, "DAQ Wiring", str(exc))
 
+    @_catch_to_error
     def _load_config_from_disk(self) -> None:
-        try:
-            self.config = load_app_config(self.config.config_path or DEFAULT_CONFIG_PATH)
-            self._populate_widgets_from_config(self.config)
-            self._refresh_device_lines()
-            self._log(f"Config loaded from {self.config.config_path}")
-        except Exception as exc:
-            self._set_error(str(exc))
+        self.config = load_app_config(self.config.config_path or DEFAULT_CONFIG_PATH)
+        self._populate_widgets_from_config(self.config)
+        self._refresh_device_lines()
+        self._log(f"Config loaded from {self.config.config_path}")
 
+    @_catch_to_error
     def _save_config_to_disk(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            path = save_app_config(self.config, self.config.config_path or DEFAULT_CONFIG_PATH)
-            self._log(f"Config saved to {path}")
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        path = save_app_config(self.config, self.config.config_path or DEFAULT_CONFIG_PATH)
+        self._log(f"Config saved to {path}")
 
+    @_catch_to_error
     def _initialize_hardware(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            self.controller.apply_daq_config(self.config.daq)
-            self.controller.initialize_hardware()
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        self.controller.apply_daq_config(self.config.daq)
+        self.controller.initialize_hardware()
 
+    @_catch_to_error
     def _initialize_camera(self) -> None:
-        try:
-            self.controller.initialize_camera()
-        except Exception as exc:
-            self._set_error(str(exc))
+        self.controller.initialize_camera()
 
+    @_catch_to_error
     def _apply_camera_settings(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            self.controller.apply_camera_config(self.config.camera)
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        self.controller.apply_camera_config(self.config.camera)
 
+    @_catch_to_error
     def _arm_camera(self) -> None:
-        try:
-            self.controller.arm_camera(frame_count=9)
-        except Exception as exc:
-            self._set_error(str(exc))
+        self.controller.arm_camera(frame_count=9)
 
+    @_catch_to_error
     def _disarm_camera(self) -> None:
-        try:
-            self.controller.disarm_camera()
-        except Exception as exc:
-            self._set_error(str(exc))
+        self.controller.disarm_camera()
 
+    @_catch_to_error
     def _program_patterns(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            self.controller.prepare_patterns(self.config.pattern_files)
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        self.controller.prepare_patterns(self.config.pattern_files)
 
+    @_catch_to_error
     def _prepare_experiment(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            self.controller.apply_daq_config(self.config.daq)
-            self.controller.initialize_hardware()
-            self.controller.apply_camera_config(self.config.camera)
-            self.controller.prepare_patterns(self.config.pattern_files)
-            self._log("Experiment prepared.")
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        self.controller.apply_daq_config(self.config.daq)
+        self.controller.initialize_hardware()
+        self.controller.apply_camera_config(self.config.camera)
+        self.controller.prepare_patterns(self.config.pattern_files)
+        self._log("Experiment prepared.")
 
+    @_catch_to_error
     def _run_single_acquisition(self) -> None:
-        try:
-            self._sync_config_from_widgets()
-            task = SimTaskConfig(
-                laser_wavelength_nm=self.config.selected_laser_nm,
-                pattern_files=list(self.config.pattern_files),
-                camera=self.config.camera,
-                timing=self.config.timing,
-            )
-            task_id = self.controller.start_single_acquisition(task)
-            self.current_task_id = task_id
-            self.lbl_current_task.setText(task_id)
-            self.lbl_current_laser.setText(f"{task.laser_wavelength_nm} nm")
-            self.pipeline_labels["task_id"].setText(task_id)
-            self.pipeline_labels["reconstruction"].setText("Queued")
-            self.pipeline_labels["features"].setText("Waiting")
-            self.pipeline_labels["decision"].setText("Waiting")
-            self._log(f"Acquisition started: {task_id}")
-        except Exception as exc:
-            self._set_error(str(exc))
+        self._sync_config_from_widgets()
+        task = SimTaskConfig(
+            laser_wavelength_nm=self.config.selected_laser_nm,
+            pattern_files=list(self.config.pattern_files),
+            camera=self.config.camera,
+            timing=self.config.timing,
+        )
+        task_id = self.controller.start_single_acquisition(task)
+        self.current_task_id = task_id
+        self.lbl_current_task.setText(task_id)
+        self.lbl_current_laser.setText(f"{task.laser_wavelength_nm} nm")
+        self.pipeline_labels["task_id"].setText(task_id)
+        self.pipeline_labels["reconstruction"].setText("Queued")
+        self.pipeline_labels["features"].setText("Waiting")
+        self.pipeline_labels["decision"].setText("Waiting")
+        self._log(f"Acquisition started: {task_id}")
 
+    @_catch_to_error
     def _stop_acquisition(self) -> None:
-        try:
-            self.controller.stop()
-            self._log("Stop requested.")
-        except Exception as exc:
-            self._set_error(str(exc))
+        self.controller.stop()
+        self._log("Stop requested.")
 
     def _clear_result(self) -> None:
         self.current_task_id = "-"
@@ -1073,12 +1123,7 @@ class SimControlWindow(QMainWindow):
         self._set_error(f"Feature extraction failed for {task_id}: {message}")
 
     def _browse_pattern(self, index: int) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Select Pattern {index + 1}",
-            str(Path.cwd()),
-            "Pattern Files (*.bmp *.png *.tif *.tiff *.jpg *.jpeg *.bin);;All Files (*.*)",
-        )
+        path = browse_pattern_file(self, index)
         if path:
             self.pattern_edits[index].setText(path)
 

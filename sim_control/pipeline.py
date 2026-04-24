@@ -14,8 +14,18 @@ class ReconstructionWorker(QObject):
 
     @pyqtSlot(object)
     def slot_reconstruct(self, batch: AcquisitionBatch) -> None:
+        """Reconstruct a preview image from a 9-frame SIM stack.
+
+        Input: AcquisitionBatch with stack shaped (9, H, W) uint16.
+        Output: ReconstructionResult with preview_image shaped (H, W) uint16.
+        """
         try:
-            preview = np.mean(batch.stack.astype(np.float32), axis=0)
+            if batch.stack is None:
+                raise ValueError("batch.stack is None")
+            stack = np.asarray(batch.stack)
+            if stack.ndim != 3 or stack.shape[0] != 9:
+                raise ValueError(f"Expected stack shape (9, H, W), got {stack.shape}")
+            preview = np.mean(stack.astype(np.float32), axis=0)
             preview = np.clip(preview, 0, 65535).astype(np.uint16)
             result = ReconstructionResult(
                 task_id=batch.task_id,
@@ -38,8 +48,15 @@ class FeatureWorker(QObject):
 
     @pyqtSlot(object)
     def slot_extract(self, recon_result: ReconstructionResult) -> None:
+        """Extract intensity features from a reconstructed preview image.
+
+        Input: ReconstructionResult with preview_image shaped (H, W).
+        Output: FeatureResult with features dict containing mean/std/max/min intensity.
+        """
         try:
-            image = recon_result.preview_image.astype(np.float32)
+            if recon_result.preview_image is None:
+                raise ValueError("preview_image is None")
+            image = np.asarray(recon_result.preview_image, dtype=np.float32)
             result = FeatureResult(
                 task_id=recon_result.task_id,
                 features={
@@ -58,6 +75,11 @@ class FeatureWorker(QObject):
 
 class DecisionEngine:
     def decide(self, feature_result: FeatureResult) -> DecisionResult:
+        """Decide keep/sort/invalid based on extracted features.
+
+        Input: FeatureResult with features dict (requires 'mean_intensity').
+        Output: DecisionResult with decision string and score.
+        """
         mean_intensity = float(feature_result.features.get("mean_intensity", 0.0))
         if mean_intensity <= 0:
             return DecisionResult(

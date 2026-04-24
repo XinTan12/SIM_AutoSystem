@@ -12,11 +12,14 @@ from .models import (
     SimTaskConfig,
     TimingConfig,
 )
+from .protocols import CameraAdapter, DaqAdapter, SlmAdapter
 
 __all__ = [
     "AcquisitionBatch",
     "AppConfig",
+    "CameraAdapter",
     "CameraConfig",
+    "DaqAdapter",
     "DaqLineConfig",
     "DEFAULT_CONFIG_PATH",
     "DecisionResult",
@@ -25,6 +28,7 @@ __all__ = [
     "SimAcquisitionController",
     "SimControlWindow",
     "SimTaskConfig",
+    "SlmAdapter",
     "TimingConfig",
     "load_app_config",
     "save_app_config",

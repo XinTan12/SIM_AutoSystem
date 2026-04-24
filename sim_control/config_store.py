@@ -11,6 +11,8 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "sim_control_config.json"
 LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
+CURRENT_CONFIG_VERSION = 1
+
 
 def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
     merged = list(values[:desired_length])
@@ -19,19 +21,32 @@ def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
     return merged
 
 
-def _normalize_daq_payload(payload: dict | None) -> dict:
-    normalized = dict(payload or {})
-    legacy_laser_line = normalized.pop("laser_640_line", "")
-    if legacy_laser_line and "laser_647_line" not in normalized:
-        normalized["laser_647_line"] = legacy_laser_line
-    return normalized
+def _migrate_v0_to_v1(payload: dict) -> dict:
+    """Rename laser_640 → laser_647 in DAQ lines and selected_laser_nm."""
+    daq = dict(payload.get("daq") or {})
+    legacy_laser_line = daq.pop("laser_640_line", "")
+    if legacy_laser_line and "laser_647_line" not in daq:
+        daq["laser_647_line"] = legacy_laser_line
+    payload["daq"] = daq
+    selected = payload.get("selected_laser_nm")
+    if selected is not None and int(selected) == 640:
+        payload["selected_laser_nm"] = 647
+    payload["config_version"] = 1
+    return payload
 
 
-def _normalize_selected_laser_nm(value: object) -> int:
-    selected_laser_nm = int(value if value is not None else 488)
-    if selected_laser_nm == 640:
-        return 647
-    return selected_laser_nm
+_MIGRATIONS: list[tuple[int, callable]] = [
+    (0, _migrate_v0_to_v1),
+]
+
+
+def _run_migrations(payload: dict) -> dict:
+    version = int(payload.get("config_version", 0))
+    for from_version, migrate_fn in _MIGRATIONS:
+        if version <= from_version:
+            payload = migrate_fn(payload)
+            version = int(payload.get("config_version", from_version + 1))
+    return payload
 
 
 def app_config_to_dict(config: AppConfig) -> dict:
@@ -43,16 +58,17 @@ def app_config_to_dict(config: AppConfig) -> dict:
 
 
 def app_config_from_dict(payload: dict) -> AppConfig:
-    daq = DaqLineConfig(**_normalize_daq_payload(payload.get("daq", {})))
-    camera = CameraConfig(**payload.get("camera", {}))
-    timing = TimingConfig(**payload.get("timing", {}))
-    backend_payload = payload.get("backend", {})
+    payload = _run_migrations(dict(payload))
+    daq = DaqLineConfig(**(payload.get("daq") or {}))
+    camera = CameraConfig(**(payload.get("camera") or {}))
+    timing = TimingConfig(**(payload.get("timing") or {}))
+    backend_payload = payload.get("backend") or {}
     backend = BackendConfig(
         fusion_bt_sdk_path=str(backend_payload.get("fusion_bt_sdk_path", "")),
         slm_sdk_path=str(backend_payload.get("slm_sdk_path", "")),
     )
     pattern_files = _merge_list(payload.get("pattern_files", []))
-    selected_laser_nm = _normalize_selected_laser_nm(payload.get("selected_laser_nm", 488))
+    selected_laser_nm = int(payload.get("selected_laser_nm", 488))
     config_path = str(payload.get("config_path", DEFAULT_CONFIG_PATH))
     return AppConfig(
         daq=daq,
@@ -61,6 +77,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         backend=backend,
         pattern_files=pattern_files,
         selected_laser_nm=selected_laser_nm,
+        config_version=CURRENT_CONFIG_VERSION,
         config_path=config_path,
     )
 

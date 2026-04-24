@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtCore import QEvent, Qt, pyqtSlot,pyqtSignal,QTimer
+from PyQt5.QtCore import QEvent, QMetaObject, Qt, pyqtSlot,pyqtSignal,QTimer
 from PyQt5.QtGui import QImage, QPixmap
 import PyQt5.QtWidgets as qw
 import CellSorting_ui
@@ -50,6 +50,38 @@ SIM_EXPOSURE_MIN_MS = 1
 SIM_EXPOSURE_MAX_MS = 10_000
 SIM_EXPOSURE_DEFAULT_MS = 10
 SIM_BIT_DEPTH_DEFAULT = 16
+
+
+def setup_scrollable_cellsorting_ui(window, ui):
+    content_widget = qw.QWidget()
+    ui.setupUi(content_widget)
+    content_size = content_widget.size()
+    content_widget.setMinimumSize(content_size)
+    content_widget.resize(content_size)
+
+    scroll_area = QScrollArea(window)
+    scroll_area.setObjectName("cellsortingScrollArea")
+    scroll_area.setFrameShape(qw.QFrame.NoFrame)
+    scroll_area.setWidgetResizable(False)
+    scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    scroll_area.setWidget(content_widget)
+
+    layout = qw.QVBoxLayout(window)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    layout.addWidget(scroll_area)
+
+    window.setObjectName(content_widget.objectName())
+    window.setWindowTitle(content_widget.windowTitle())
+    window.setCursor(content_widget.cursor())
+    window.setMouseTracking(content_widget.hasMouseTracking())
+    window.resize(content_size)
+    QMetaObject.connectSlotsByName(window)
+
+    window.cellsorting_content_widget = content_widget
+    window.cellsorting_scroll_area = scroll_area
+    return scroll_area, content_widget
 
 
 def clone_sim_app_config(config):
@@ -151,7 +183,7 @@ class MainWindow(qw.QWidget):
         super().__init__()
         # 初始化UI
         self.ui = CellSorting_ui.Ui_Single_Cell_Sorting()
-        self.ui.setupUi(self)
+        setup_scrollable_cellsorting_ui(self, self.ui)
         self.ui.lb_sCMOS_cameraView.installEventFilter(self)
         self.sim_app_config = load_app_config()
         self.sim_camera_adapter = None

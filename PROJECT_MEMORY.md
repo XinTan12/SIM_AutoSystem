@@ -78,6 +78,9 @@
 - 在后续每次状态变化后持续维护本文件和决策日志，保证跨对话记忆有效。
 
 ## 最近更新
+- 2026-04-24：`sim_control/gui.py` 局部重构（不涉及 `control_wangbo/`）：保留现有 `_catch_to_error` 装饰器，提取 `read_daq_config_from_line_combos()`、`populate_daq_line_combos()` 和 `browse_pattern_file()` 以消除 SimSettingsDialog 与 SimControlWindow 的重复逻辑；Window 侧 DAQ line 刷新现在也会在设备不匹配时回退到当前设备默认线位。`.venv\Scripts\python.exe -m pytest tests/ -q` 通过，80 条测试全部通过。
+- 2026-04-24：架构改进（不涉及 `control_wangbo/`）：新增 `sim_control/protocols.py`（CameraAdapter / SlmAdapter / DaqAdapter 协议接口）、`sim_control/acquisition_core.py`（纯 Python 采集核心，脱离 Qt 依赖）；提取 GUI 配置同步共享函数消除 `gui.py` 中 SimSettingsDialog 与 SimControlWindow 的重复代码；`pipeline.py` 各阶段增加输入校验与接口文档；`preview.py` 移除冗余 `_running` 标志，统一使用线程安全的 `threading.Event` 控制停止；`config_store.py` 引入 `config_version` + 链式迁移机制，旧 640→647 迁移纳入 v0→v1 步骤；`models.py` 的 `AppConfig` 新增 `config_version` 字段。全部 80 条测试通过，无回归。
+- 2026-04-23：为 `control_wangbo/main.py` 启动的集成主窗口增加 `QScrollArea` 包装层；生成式 `CellSorting_ui` 内容仍保持 1800x1000 固定设计尺寸，窗口缩小时可通过底部和右侧滚动条查看全部界面内容。
 - 2026-04-23：修正 SIM 采集时序显示与 runtime gap 计算：`Actual Inter Frame Gap` 改为基于 Hamamatsu `TIMING_READOUTTIME`、`TIMING_MINTRIGGERBLANKING` 和 1000 us 安全余量的保守读出等待；DAQ 摘要显示名改为 `cam_trigger_line`；SIM 设置窗口 DAQ 页改为更紧凑的双列布局并压缩过大留白，避免通道与 Timing 控件在最小窗口下重叠。
 - 2026-04-23：集成主窗口中用户点击 SIM `Abort` 后会立即把预览框清为黑色并清除最后一帧缓存；`control_wangbo/main.py` 启动加载 `lastConfiguration.json` 的路径已统一为 `control_wangbo/lastConfiguration.json`，同时保留原有 `保存了pppppppppp` 调试打印。
 - 2026-04-23：将 `sim_control/preview.py` 的 live 预览从逐帧 Qt queued signal 推送改为线程安全的最新帧快照缓存，并在 `control_wangbo/main.py` 中接入基于 `QTimer` 的主线程轮询显示；live 预览现以低延迟优先，只显示最新帧，减少载物台移动时旧帧积压导致的长时间卡顿。

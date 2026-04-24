@@ -25,7 +25,6 @@ class SimPreviewWorker(QObject):
 
     def __init__(self, gui_preview_fps_limit: int = 30) -> None:
         super().__init__()
-        self._running = False
         self._stop_requested = threading.Event()
         self._camera: FusionBtCameraAdapter | None = None
         self._config = CameraConfig()
@@ -35,14 +34,12 @@ class SimPreviewWorker(QObject):
         self._frame_sequence = 0
 
     def prepare_for_start(self) -> None:
-        self._running = False
         self._stop_requested.clear()
         with self._snapshot_lock:
             self._latest_snapshot = None
             self._frame_sequence = 0
 
     def request_stop(self) -> None:
-        self._running = False
         self._stop_requested.set()
         with self._snapshot_lock:
             self._latest_snapshot = None
@@ -70,7 +67,6 @@ class SimPreviewWorker(QObject):
         self._camera = payload["camera"]
         self._config = payload["config"]
         self._timeout_ms = int(payload.get("timeout_ms", 100))
-        self._running = True
         frame_counter = 0
         last_fps_at = time.perf_counter()
         fps = 0
@@ -81,11 +77,11 @@ class SimPreviewWorker(QObject):
             if self._stop_requested.is_set():
                 return
             self.signal_status_changed.emit("preview_started", {"camera_config": self._config.__dict__})
-            while self._running and not self._stop_requested.is_set():
+            while not self._stop_requested.is_set():
                 try:
                     frame = self._camera.read_preview_frame(self._timeout_ms)
                 except HardwareError:
-                    if self._stop_requested.is_set() or not self._running or not self._camera.preview_active:
+                    if self._stop_requested.is_set() or not self._camera.preview_active:
                         break
                     raise
                 if self._stop_requested.is_set():
@@ -101,7 +97,6 @@ class SimPreviewWorker(QObject):
         except Exception as exc:
             self.signal_error.emit(f"{exc}\n{traceback.format_exc()}")
         finally:
-            self._running = False
             if self._camera is not None:
                 try:
                     self._camera.stop_preview()

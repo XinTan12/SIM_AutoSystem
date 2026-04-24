@@ -161,6 +161,7 @@ class AppConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     selected_laser_nm: int = 488
+    config_version: int = 1
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import traceback
 from typing import Any
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
+from .acquisition_core import run_single_acquisition
 from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter
 from .models import BackendConfig, CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, new_task_id
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
@@ -22,70 +23,25 @@ class SimAcquisitionWorker(QObject):
         daq_config: DaqLineConfig = payload["daq_config"]
         pattern_result: PatternPreparationResult = payload["pattern_result"]
         waveform_builder: NIDaqWaveformBuilder = payload["waveform_builder"]
-        daq: NIDaqAdapter = payload["daq_adapter"]
-        camera: FusionBtCameraAdapter = payload["camera_adapter"]
-        slm: KopinSlmAdapter = payload["slm_adapter"]
+        daq = payload["daq_adapter"]
+        camera = payload["camera_adapter"]
+        slm = payload["slm_adapter"]
 
         try:
-            self.signal_status_changed.emit(
-                "acquisition_starting",
-                {"task_id": task_id, "laser_wavelength_nm": task.laser_wavelength_nm},
-            )
-            plan = waveform_builder.build(
+            batch = run_single_acquisition(
+                task=task,
                 daq_config=daq_config,
-                timing=task.timing,
-                laser_wavelength_nm=task.laser_wavelength_nm,
-                exposure_us=task.camera.exposure_us,
-                frame_count=9,
+                pattern_result=pattern_result,
+                camera=camera,
+                slm=slm,
+                daq=daq,
+                waveform_builder=waveform_builder,
+                task_id=task_id,
+                on_status=lambda status, data: self.signal_status_changed.emit(status, data),
             )
-            self.signal_status_changed.emit(
-                "waveform_ready",
-                {"task_id": task_id, "sample_count": plan.sample_count, "duration_s": plan.duration_s},
-            )
-            camera.apply_config(task.camera)
-            camera.arm(frame_count=9)
-            slm.activate_prepared_patterns()
-            daq.play_waveform(daq_config.device_name, plan)
-            stack, timestamps = camera.read_frame_sequence(
-                frame_count=9,
-                pattern_files=pattern_result.pattern_files,
-                laser_wavelength_nm=task.laser_wavelength_nm,
-            )
-            for index, timestamp in enumerate(timestamps, start=1):
-                self.signal_status_changed.emit(
-                    "frame_captured",
-                    {"task_id": task_id, "frame_index": index, "timestamp": timestamp},
-                )
-            self.signal_status_changed.emit(
-                "acquisition_complete",
-                {"task_id": task_id, "stack_shape": list(stack.shape)},
-            )
-            self.signal_acquisition_ready.emit(
-                {
-                    "task_id": task_id,
-                    "stack": stack,
-                    "timestamps": timestamps,
-                    "laser_wavelength_nm": task.laser_wavelength_nm,
-                    "exposure_us": task.camera.exposure_us,
-                    "pattern_files": list(pattern_result.pattern_files),
-                    "metadata": {
-                        "pattern_handles": list(pattern_result.handles),
-                        "waveform": plan.metadata,
-                        "daq_device": daq_config.device_name,
-                    },
-                }
-            )
+            self.signal_acquisition_ready.emit(batch)
         except Exception as exc:
             self.signal_acquisition_failed.emit(task_id, f"{exc}\n{traceback.format_exc()}")
-        finally:
-            try:
-                camera.disarm()
-            except Exception:
-                pass
-            try:
-                daq.set_all_low(daq_config.device_name)
-            except Exception:
-                pass
 
 
 class SimAcquisitionController(QObject):
