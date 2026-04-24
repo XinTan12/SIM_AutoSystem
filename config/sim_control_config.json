@@ -44,5 +44,6 @@
     ""
   ],
   "selected_laser_nm": 488,
+  "config_version": 1,
   "config_path": "E:\\Intelligent_SR\\SIM_AutoSystem\\config\\sim_control_config.json"
 }
