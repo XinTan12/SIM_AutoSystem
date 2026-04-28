@@ -46,6 +46,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
         summary = build_sim_settings_summary(config)
 
         self.assertIn("Laser: 488 nm", summary)
+        self.assertIn("Pattern RO: (SLM 未连接)", summary)
         self.assertIn("cam_trigger_line: Dev2/port0/line5", summary)
         self.assertNotIn("camera_trigger_line", summary)
         self.assertIn("laser_647_line: Dev2/port0/line9", summary)
@@ -77,6 +78,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
         )
 
         self.assertIn("Bit Depth: 12-bit", summary)
+        self.assertIn("Pattern RO: (SLM 未连接)", summary)
         self.assertIn("TIMING_READOUTTIME: 31.649 ms", summary)
         self.assertIn("Actual Inter Frame Gap: 32649 us", summary)
 
@@ -94,6 +96,16 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("Bit Depth: 16-bit", summary)
         self.assertIn("TIMING_READOUTTIME: -", summary)
         self.assertIn("Actual Inter Frame Gap: 15000 us", summary)
+
+    def test_build_sim_settings_summary_shows_selected_running_order(self):
+        from sim_control.models import AppConfig
+        from sim_control.summary import build_sim_settings_summary
+
+        config = AppConfig(selected_running_order="488_3.5_2d_1ms")
+
+        summary = build_sim_settings_summary(config)
+
+        self.assertIn("Pattern RO: 488_3.5_2d_1ms", summary)
 
 
 if __name__ == "__main__":

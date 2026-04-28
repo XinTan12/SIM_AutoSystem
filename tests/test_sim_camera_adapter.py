@@ -529,6 +529,28 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         self.assertEqual(task.timing.inter_frame_gap_us, 6500)
         self.assertEqual(emitted_payloads[-1]["task"].timing.inter_frame_gap_us, 6500)
 
+    def test_start_single_acquisition_accepts_running_order_mode(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import PatternPreparationResult, SimTaskConfig
+
+        controller = SimAcquisitionController()
+        emitted_payloads = []
+        controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+        controller.pattern_result = PatternPreparationResult(
+            pattern_files=["488_3.5_2d_1ms"] * 9,
+            handles=[-1],
+            metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_1ms"},
+        )
+
+        try:
+            task = SimTaskConfig(running_order_name="488_3.5_2d_1ms")
+            controller.start_single_acquisition(task)
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        self.assertEqual(emitted_payloads[-1]["pattern_result"].handles, [-1])
+
 
 if __name__ == "__main__":
     unittest.main()

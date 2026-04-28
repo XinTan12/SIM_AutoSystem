@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QProgressBar,
     QRadioButton,
     QScrollArea,
     QSpinBox,
@@ -33,7 +34,7 @@ from PyQt5.QtWidgets import (
 )
 import tifffile
 
-from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter
+from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter, find_best_running_order
 from .config_store import (
     DEFAULT_CONFIG_PATH,
     app_config_from_dict,
@@ -52,6 +53,9 @@ from .models import (
     default_daq_line_name,
 )
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
+from .protocols import SlmAdapter
+from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
+from .led_indicator import LedIndicator
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
 
@@ -187,6 +191,24 @@ DAQ_PULSE_TEST_ROLES = (
 TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "test_captures"
 
 
+def create_camera_adapter_for_backend(backend):
+    if backend.simulation_mode:
+        return SimulatedCameraAdapter()
+    return FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path)
+
+
+def create_slm_adapter_for_backend(backend):
+    if backend.simulation_mode:
+        return SimulatedSlmAdapter()
+    return KopinSlmAdapter(sdk_path=backend.slm_sdk_path)
+
+
+def create_daq_adapter_for_backend(backend):
+    if backend.simulation_mode:
+        return SimulatedDaqAdapter()
+    return NIDaqAdapter()
+
+
 def clone_app_config(config: AppConfig) -> AppConfig:
     return app_config_from_dict(app_config_to_dict(config))
 
@@ -208,6 +230,7 @@ class SimSettingsDialog(QDialog):
         config: AppConfig | None = None,
         config_path: str | None = None,
         parent: QWidget | None = None,
+        slm_adapter: SlmAdapter | None = None,
     ):
         super().__init__(parent)
         source_config = config or load_app_config(config_path or DEFAULT_CONFIG_PATH)
@@ -216,15 +239,15 @@ class SimSettingsDialog(QDialog):
             self.config.config_path = config_path
 
         self.ui = Ui_SimSettingsDialog()
-        self.daq_adapter = NIDaqAdapter()
-        self.slm_adapter = KopinSlmAdapter(sdk_path=self.config.backend.slm_sdk_path)
+        self.daq_adapter = create_daq_adapter_for_backend(self.config.backend)
+        self.slm_adapter = slm_adapter or create_slm_adapter_for_backend(self.config.backend)
+        self._slm_externally_owned = slm_adapter is not None
         self._preferred_daq_device = self.config.daq.device_name
         self._loaded_pattern_result = None
         self._initial_hardware_refresh_pending = True
         self._build_ui()
         self._wire_signals()
         self._populate_widgets_from_config(self.config)
-        self._update_slm_controls()
 
     def _build_ui(self) -> None:
         self.ui.setupUi(self)
@@ -254,34 +277,6 @@ class SimSettingsDialog(QDialog):
         self.spin_inter_frame_gap_us = self.ui.spin_inter_frame_gap_us
         self.spin_slm_enable_guard_us = self.ui.spin_slm_enable_guard_us
 
-        self.pattern_edits = [
-            self.ui.edit_pattern_1,
-            self.ui.edit_pattern_2,
-            self.ui.edit_pattern_3,
-            self.ui.edit_pattern_4,
-            self.ui.edit_pattern_5,
-            self.ui.edit_pattern_6,
-            self.ui.edit_pattern_7,
-            self.ui.edit_pattern_8,
-            self.ui.edit_pattern_9,
-        ]
-        self.pattern_browse_buttons = [
-            self.ui.btn_browse_pattern_1,
-            self.ui.btn_browse_pattern_2,
-            self.ui.btn_browse_pattern_3,
-            self.ui.btn_browse_pattern_4,
-            self.ui.btn_browse_pattern_5,
-            self.ui.btn_browse_pattern_6,
-            self.ui.btn_browse_pattern_7,
-            self.ui.btn_browse_pattern_8,
-            self.ui.btn_browse_pattern_9,
-        ]
-        self.combo_slm_device = self.ui.combo_slm_device
-        self.btn_refresh_slm = self.ui.btn_refresh_slm
-        self.btn_toggle_slm_connection = self.ui.btn_toggle_slm_connection
-        self.btn_load_patterns = self.ui.btn_load_patterns
-        self.lbl_slm_status_value = self.ui.lbl_slm_status_value
-
         self.laser_group = QButtonGroup(self)
         self.laser_buttons = {
             405: self.ui.radio_laser_405,
@@ -298,17 +293,11 @@ class SimSettingsDialog(QDialog):
         self.btn_pulse_test.clicked.connect(self._run_pulse_test)
         self.btn_save_close.clicked.connect(self._save_and_accept)
         self.btn_cancel.clicked.connect(self.reject)
-        self.btn_refresh_slm.clicked.connect(self._refresh_slm_devices)
-        self.btn_toggle_slm_connection.clicked.connect(self._toggle_slm_connection)
-        self.btn_load_patterns.clicked.connect(self._load_patterns)
         for combo in self.line_combos.values():
             combo.currentTextChanged.connect(lambda _text: self._refresh_test_targets())
-        for index, button in enumerate(self.pattern_browse_buttons):
-            button.clicked.connect(lambda _checked=False, idx=index: self._browse_pattern(idx))
 
     def _perform_initial_hardware_refresh(self) -> None:
         self._refresh_daq_devices()
-        self._refresh_slm_devices()
 
     def _populate_widgets_from_config(self, config: AppConfig) -> None:
         self._preferred_daq_device = config.daq.device_name
@@ -317,8 +306,6 @@ class SimSettingsDialog(QDialog):
             self.spin_sample_rate, self.spin_edge_pulse_us,
             self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
         )
-        for index, pattern_path in enumerate(config.pattern_files):
-            self._set_pattern_path(index, pattern_path)
         write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
 
     def _current_daq_config(self) -> DaqLineConfig:
@@ -333,19 +320,12 @@ class SimSettingsDialog(QDialog):
             self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
         )
 
-    def _current_pattern_files(self) -> list[str]:
-        files = []
-        for edit in self.pattern_edits:
-            files.append((edit.property("full_path") or "").strip())
-        return files
-
     def _selected_laser_nm(self) -> int:
         return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> AppConfig:
         self.config.daq = self._current_daq_config()
         self.config.timing = self._current_timing_config()
-        self.config.pattern_files = self._current_pattern_files()
         self.config.selected_laser_nm = self._selected_laser_nm()
         return self.config
 
@@ -394,93 +374,6 @@ class SimSettingsDialog(QDialog):
         )
         self._refresh_test_targets()
 
-    def _refresh_slm_devices(self) -> None:
-        selected_path = self.combo_slm_device.currentData()
-        try:
-            devices = self.slm_adapter.list_devices()
-        except Exception as exc:
-            self.combo_slm_device.clear()
-            self.lbl_slm_status_value.setText("Unavailable")
-            self._update_slm_controls()
-            self._set_error(str(exc))
-            return
-        self.combo_slm_device.blockSignals(True)
-        self.combo_slm_device.clear()
-        for device in devices:
-            self.combo_slm_device.addItem(device["display"], device["path"])
-        if selected_path:
-            index = self.combo_slm_device.findData(selected_path)
-            if index >= 0:
-                self.combo_slm_device.setCurrentIndex(index)
-        self.combo_slm_device.blockSignals(False)
-        if not devices:
-            self.lbl_slm_status_value.setText("No SLM detected")
-        self._update_slm_controls()
-
-    def _selected_slm_device_path(self) -> str:
-        device_path = (self.combo_slm_device.currentData() or "").strip()
-        if not device_path:
-            raise ValueError("Please select an SLM device.")
-        return device_path
-
-    def _update_slm_controls(self, status_message: str | None = None) -> None:
-        connected = self.slm_adapter.is_connected()
-        has_devices = self.combo_slm_device.count() > 0
-        self.combo_slm_device.setEnabled(has_devices and not connected)
-        self.btn_refresh_slm.setEnabled(not connected)
-        self.btn_toggle_slm_connection.setEnabled(connected or has_devices)
-        self.btn_toggle_slm_connection.setText("Disconnect" if connected else "Connect")
-        self.btn_load_patterns.setEnabled(connected)
-        if status_message is not None:
-            self.lbl_slm_status_value.setText(status_message)
-            return
-        if connected:
-            info = self.slm_adapter.connection_info()
-            serial = info.get("device_serial_hint") or info.get("serial_number") or "Connected"
-            self.lbl_slm_status_value.setText(f"Connected: {serial}")
-        elif has_devices:
-            self.lbl_slm_status_value.setText("Not connected")
-        else:
-            self.lbl_slm_status_value.setText("No SLM detected")
-
-    def _toggle_slm_connection(self) -> None:
-        if self.slm_adapter.is_connected():
-            self._disconnect_slm()
-            return
-        self._connect_slm()
-
-    def _connect_slm(self) -> None:
-        try:
-            device_path = self._selected_slm_device_path()
-            info = self.slm_adapter.connect(device_path=device_path)
-            serial = info.get("device_serial_hint") or info.get("serial_number") or "Connected"
-            self._update_slm_controls(status_message=f"Connected: {serial}")
-            self._set_error("-")
-        except Exception as exc:
-            self._set_error(str(exc))
-            self._update_slm_controls()
-
-    def _disconnect_slm(self) -> None:
-        try:
-            self.slm_adapter.disconnect()
-            self._loaded_pattern_result = None
-            self._update_slm_controls(status_message="Not connected")
-            self._set_error("-")
-        except Exception as exc:
-            self._set_error(str(exc))
-
-    def _load_patterns(self) -> None:
-        try:
-            if not self.slm_adapter.is_connected():
-                raise HardwareError("Connect to an SLM device before clicking load.")
-            pattern_files = self._current_pattern_files()
-            device_path = self._selected_slm_device_path()
-            self._loaded_pattern_result = self.slm_adapter.program_patterns(pattern_files, device_path=device_path)
-            self._update_slm_controls(status_message="Connected: load complete")
-            self._set_error("-")
-        except Exception as exc:
-            self._set_error(str(exc))
-
     def _current_daq_config_for_test_targets(self) -> DaqLineConfig | None:
         device_name = self.combo_daq_device.currentText().strip()
         if not device_name:
@@ -519,7 +412,7 @@ class SimSettingsDialog(QDialog):
         tifffile.imwrite(path, np.asarray(image_data, dtype=np.uint16))
 
     def _run_camera_trigger_test(self, daq_config: DaqLineConfig) -> Path:
-        camera_adapter = FusionBtCameraAdapter(sdk_path=self.config.backend.fusion_bt_sdk_path)
+        camera_adapter = create_camera_adapter_for_backend(self.config.backend)
         output_path = self._test_capture_path("camera_pulse", "camera_trigger")
         _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
         try:
@@ -555,19 +448,33 @@ class SimSettingsDialog(QDialog):
     def _run_sim_acquisition_test(self, daq_config: DaqLineConfig) -> Path:
         if not self.slm_adapter.is_connected():
             raise HardwareError("SIM采集测试前需要先连接 SLM。")
-        if self._loaded_pattern_result is None or not self._loaded_pattern_result.handles:
-            raise HardwareError("SIM采集测试前需要先加载 9 个 pattern。")
+        self.config.timing = self._current_timing_config()
+        self.config.selected_laser_nm = self._selected_laser_nm()
+        running_orders = self.slm_adapter.list_running_orders()
+        ro_index, ro_name, warnings = find_best_running_order(
+            running_orders,
+            wavelength_nm=self.config.selected_laser_nm,
+            exposure_us=self.config.camera.exposure_us,
+        )
+        if ro_index is None:
+            raise HardwareError("; ".join(warnings) or "未找到匹配的 SLM Running Order。")
+        result = self.slm_adapter.select_running_order(ro_index)
+        self._loaded_pattern_result = result["pattern_result"]
+        self.config.selected_running_order = ro_name
 
-        camera_adapter = FusionBtCameraAdapter(sdk_path=self.config.backend.fusion_bt_sdk_path)
-        output_path = self._test_capture_path("sim_acquisition", "sim_acquisition_488nm_10ms")
+        camera_adapter = create_camera_adapter_for_backend(self.config.backend)
+        exposure_ms = max(1, int(round(float(self.config.camera.exposure_us) / 1000.0)))
+        output_path = self._test_capture_path(
+            "sim_acquisition",
+            f"sim_acquisition_{self.config.selected_laser_nm}nm_{exposure_ms}ms",
+        )
         camera_config = clone_app_config(self.config).camera
-        camera_config.exposure_us = 10_000
         waveform_builder = NIDaqWaveformBuilder()
         plan = waveform_builder.build(
             daq_config=daq_config,
             timing=self._current_timing_config(),
-            laser_wavelength_nm=488,
-            exposure_us=10_000,
+            laser_wavelength_nm=self.config.selected_laser_nm,
+            exposure_us=camera_config.exposure_us,
             frame_count=9,
         )
         try:
@@ -578,7 +485,7 @@ class SimSettingsDialog(QDialog):
             stack, _timestamps = camera_adapter.read_frame_sequence(
                 frame_count=9,
                 pattern_files=list(self._loaded_pattern_result.pattern_files),
-                laser_wavelength_nm=488,
+                laser_wavelength_nm=self.config.selected_laser_nm,
             )
             self._write_uint16_tiff(output_path, stack)
             return output_path
@@ -629,38 +536,26 @@ class SimSettingsDialog(QDialog):
             self._set_error(str(exc))
             QMessageBox.critical(self, "Save Settings", str(exc))
 
-    def _browse_pattern(self, index: int) -> None:
-        path = browse_pattern_file(self, index)
-        if path:
-            self._set_pattern_path(index, path)
-            self._loaded_pattern_result = None
-            if self.slm_adapter.is_connected():
-                self._update_slm_controls(status_message="Connected: reload required")
-
     def _set_error(self, message: str) -> None:
         clean_message = message.strip()
         if not clean_message or clean_message == "-":
             self.lbl_error.setText("-")
+            self.lbl_error.setToolTip("")
             self.lbl_error.hide()
             return
         self.lbl_error.setText(clean_message)
+        self.lbl_error.setToolTip(clean_message)
         self.lbl_error.show()
 
     def get_config(self) -> AppConfig:
         return clone_app_config(self._sync_config_from_widgets())
 
-    def _set_pattern_path(self, index: int, path: str) -> None:
-        edit = self.pattern_edits[index]
-        clean_path = path.strip()
-        edit.setProperty("full_path", clean_path)
-        edit.setToolTip(clean_path)
-        edit.setText(Path(clean_path).name if clean_path else "")
-
     def closeEvent(self, event) -> None:  # noqa: N802
-        try:
-            self.slm_adapter.disconnect()
-        except Exception:
-            pass
+        if not self._slm_externally_owned:
+            try:
+                self.slm_adapter.disconnect()
+            except Exception:
+                pass
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -689,6 +584,7 @@ class SimControlWindow(QMainWindow):
         self.pattern_edits: list[QLineEdit] = []
         self.laser_buttons: dict[int, QRadioButton] = {}
         self.pipeline_labels: dict[str, QLabel] = {}
+        self.hardware_leds: dict[str, LedIndicator] = {}
         self.current_task_id = "-"
         self.current_laser_nm = self.config.selected_laser_nm
 
@@ -849,6 +745,22 @@ class SimControlWindow(QMainWindow):
         layout.addWidget(self.btn_stop, 0, 3)
         layout.addWidget(self.btn_clear_result, 0, 4)
 
+        hardware_row = QHBoxLayout()
+        for key, label_text in (("camera", "Camera"), ("slm", "SLM"), ("daq", "DAQ")):
+            led = LedIndicator("gray")
+            self.hardware_leds[key] = led
+            hardware_row.addWidget(led)
+            hardware_row.addWidget(QLabel(label_text))
+        hardware_row.addStretch(1)
+        layout.addLayout(hardware_row, 1, 0, 1, 5)
+
+        self.progress_acquisition = QProgressBar()
+        self.progress_acquisition.setRange(0, 9)
+        self.progress_acquisition.setValue(0)
+        self.progress_acquisition.setFormat("%v/9")
+        layout.addWidget(QLabel("Acquisition Progress"), 2, 0)
+        layout.addWidget(self.progress_acquisition, 2, 1, 1, 4)
+
         self.lbl_current_status = QLabel("Idle")
         self.lbl_current_frame = QLabel("-")
         self.lbl_current_laser = QLabel("-")
@@ -857,18 +769,18 @@ class SimControlWindow(QMainWindow):
         self.lbl_current_task = QLabel("-")
         self.lbl_current_error.setWordWrap(True)
 
-        layout.addWidget(QLabel("Status"), 1, 0)
-        layout.addWidget(self.lbl_current_status, 1, 1)
-        layout.addWidget(QLabel("Current Frame"), 1, 2)
-        layout.addWidget(self.lbl_current_frame, 1, 3)
-        layout.addWidget(QLabel("Current Laser"), 2, 0)
-        layout.addWidget(self.lbl_current_laser, 2, 1)
-        layout.addWidget(QLabel("Current Pattern"), 2, 2)
-        layout.addWidget(self.lbl_current_pattern, 2, 3)
-        layout.addWidget(QLabel("Task ID"), 3, 0)
-        layout.addWidget(self.lbl_current_task, 3, 1, 1, 3)
-        layout.addWidget(QLabel("Last Error"), 4, 0)
-        layout.addWidget(self.lbl_current_error, 4, 1, 1, 4)
+        layout.addWidget(QLabel("Status"), 3, 0)
+        layout.addWidget(self.lbl_current_status, 3, 1)
+        layout.addWidget(QLabel("Current Frame"), 3, 2)
+        layout.addWidget(self.lbl_current_frame, 3, 3)
+        layout.addWidget(QLabel("Current Laser"), 4, 0)
+        layout.addWidget(self.lbl_current_laser, 4, 1)
+        layout.addWidget(QLabel("Current Pattern"), 4, 2)
+        layout.addWidget(self.lbl_current_pattern, 4, 3)
+        layout.addWidget(QLabel("Task ID"), 5, 0)
+        layout.addWidget(self.lbl_current_task, 5, 1, 1, 3)
+        layout.addWidget(QLabel("Last Error"), 6, 0)
+        layout.addWidget(self.lbl_current_error, 6, 1, 1, 4)
         return group
 
     def _create_pipeline_group(self) -> QGroupBox:
@@ -1046,6 +958,15 @@ class SimControlWindow(QMainWindow):
         self.controller.apply_daq_config(self.config.daq)
         self.controller.initialize_hardware()
         self.controller.apply_camera_config(self.config.camera)
+        plan = self.controller.waveform_builder.build(
+            daq_config=self.config.daq,
+            timing=self.config.timing,
+            laser_wavelength_nm=self.config.selected_laser_nm,
+            exposure_us=self.config.camera.exposure_us,
+            frame_count=9,
+        )
+        for warning in plan.warnings:
+            self._log(f"WARNING: {warning}")
         self.controller.prepare_patterns(self.config.pattern_files)
         self._log("Experiment prepared.")
 
@@ -1085,13 +1006,39 @@ class SimControlWindow(QMainWindow):
 
     def _handle_status_changed(self, state: str, payload: dict) -> None:
         self.lbl_current_status.setText(state)
+        self._update_hardware_leds(state)
+        if state == "acquisition_starting":
+            self.progress_acquisition.setValue(0)
         if state == "frame_captured":
             frame_index = payload.get("frame_index", "-")
             self.lbl_current_frame.setText(str(frame_index))
             self.lbl_current_pattern.setText(str(frame_index))
+            try:
+                self.progress_acquisition.setValue(int(frame_index))
+            except (TypeError, ValueError):
+                pass
         if state == "acquisition_complete":
+            self.progress_acquisition.setValue(9)
             self.pipeline_labels["stack_shape"].setText(str(payload.get("stack_shape", "-")))
         self._log(f"[{state}] {payload}")
+
+    def _update_hardware_leds(self, state: str) -> None:
+        if state == "hardware_initializing":
+            for led in self.hardware_leds.values():
+                led.set_state("yellow")
+        elif state in {"hardware_initialized", "camera_initialized", "camera_connected", "camera_config_applied", "camera_armed"}:
+            self.hardware_leds["camera"].set_state("green")
+        elif state == "camera_disconnected":
+            self.hardware_leds["camera"].set_state("red")
+        elif state in {"slm_connected", "patterns_prepared"}:
+            self.hardware_leds["slm"].set_state("green")
+        elif state == "slm_disconnected":
+            self.hardware_leds["slm"].set_state("red")
+        elif state == "daq_config_applied":
+            self.hardware_leds["daq"].set_state("green")
+        elif state.endswith("failed") or state.endswith("error"):
+            for led in self.hardware_leds.values():
+                led.set_state("red")
 
     def _handle_acquisition_ready(self, batch) -> None:
         self.pipeline_labels["task_id"].setText(batch.task_id)
@@ -1101,6 +1048,9 @@ class SimControlWindow(QMainWindow):
 
     def _handle_acquisition_failed(self, task_id: str, message: str) -> None:
         self.pipeline_labels["reconstruction"].setText("Acquisition failed")
+        self.progress_acquisition.setValue(0)
+        for led in self.hardware_leds.values():
+            led.set_state("red")
         self._set_error(f"Acquisition failed for {task_id}: {message}")
 
     def _handle_reconstruction_ready(self, recon_result) -> None:

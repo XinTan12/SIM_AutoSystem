@@ -6,8 +6,10 @@ from typing import Any
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from .acquisition_core import run_single_acquisition
-from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter
-from .models import BackendConfig, CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, new_task_id
+from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter, find_best_running_order
+from .config_store import validate_app_config
+from .models import AppConfig, BackendConfig, CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, new_task_id
+from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
 
 
@@ -54,13 +56,12 @@ class SimAcquisitionController(QObject):
         super().__init__(parent)
         self.backend = backend or BackendConfig()
         self.waveform_builder = NIDaqWaveformBuilder()
-        self.daq_adapter = NIDaqAdapter()
-        self.camera_adapter = FusionBtCameraAdapter(sdk_path=self.backend.fusion_bt_sdk_path)
-        self.slm_adapter = KopinSlmAdapter(sdk_path=self.backend.slm_sdk_path)
+        self.camera_adapter, self.slm_adapter, self.daq_adapter = self._create_adapters(self.backend)
         self.daq_config = DaqLineConfig()
         self.camera_config = CameraConfig()
         self.pattern_result = PatternPreparationResult()
         self._latest_camera_timing: dict[str, Any] = {}
+        self._shutdown_requested = False
 
         self._thread = QThread(self)
         self._worker = SimAcquisitionWorker()
@@ -71,11 +72,24 @@ class SimAcquisitionController(QObject):
         self.signal_start_worker.connect(self._worker.slot_start)
         self._thread.start()
 
+    @staticmethod
+    def _create_adapters(backend: BackendConfig):
+        if backend.simulation_mode:
+            return SimulatedCameraAdapter(), SimulatedSlmAdapter(), SimulatedDaqAdapter()
+        return (
+            FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path),
+            KopinSlmAdapter(sdk_path=backend.slm_sdk_path),
+            NIDaqAdapter(),
+        )
+
     def shutdown(self) -> None:
+        self._shutdown_requested = True
         try:
             self.stop()
         except Exception:
             pass
+        self._thread.quit()
+        self._thread.wait(2000)
         try:
             self.camera_adapter.disconnect()
         except Exception:
@@ -84,8 +98,6 @@ class SimAcquisitionController(QObject):
             self.slm_adapter.disconnect()
         except Exception:
             pass
-        self._thread.quit()
-        self._thread.wait(2000)
 
     def initialize_hardware(self) -> None:
         self.signal_status_changed.emit("hardware_initializing", {})
@@ -170,12 +182,66 @@ class SimAcquisitionController(QObject):
         )
         return self.pattern_result
 
+    def select_running_order_for_task(self, wavelength_nm: int, exposure_us: int) -> dict[str, Any]:
+        running_orders = self.slm_adapter.list_running_orders()
+        ro_index, ro_name, warnings = find_best_running_order(
+            running_orders,
+            wavelength_nm=int(wavelength_nm),
+            exposure_us=int(exposure_us),
+        )
+        if ro_index is None:
+            raise HardwareError("; ".join(warnings) or "No matching SLM running order found.")
+        result = self.slm_adapter.select_running_order(ro_index)
+        pattern_result = result.get("pattern_result")
+        if not isinstance(pattern_result, PatternPreparationResult):
+            pattern_result = PatternPreparationResult(
+                pattern_files=[ro_name] * 9,
+                handles=[-1],
+                prepared_at=0.0,
+                metadata={
+                    "mode": "running_order",
+                    "running_order_index": ro_index,
+                    "running_order_name": ro_name,
+                },
+            )
+        self.pattern_result = pattern_result
+        payload = {
+            **dict(result),
+            "running_order_index": ro_index,
+            "running_order_name": ro_name,
+            "warnings": list(warnings),
+            "handles": list(self.pattern_result.handles),
+            "prepared_at": self.pattern_result.prepared_at,
+        }
+        self.signal_status_changed.emit("running_order_selected", payload)
+        return payload
+
     def start_single_acquisition(self, task: SimTaskConfig) -> str:
         if not self.pattern_result.handles:
             raise HardwareError("Patterns must be prepared before acquisition.")
         recommended_gap_us = self._latest_camera_timing.get("recommended_inter_frame_gap_us")
         if recommended_gap_us is not None:
             task.timing.inter_frame_gap_us = int(recommended_gap_us)
+        pattern_files = list(task.pattern_files)
+        selected_running_order = task.running_order_name
+        if self.pattern_result.metadata.get("mode") == "running_order":
+            selected_running_order = selected_running_order or str(
+                self.pattern_result.metadata.get("running_order_name", "")
+            )
+            pattern_files = list(self.pattern_result.pattern_files)
+            task.running_order_name = selected_running_order
+        validation_config = AppConfig(
+            daq=self.daq_config,
+            camera=task.camera,
+            timing=task.timing,
+            backend=self.backend,
+            pattern_files=pattern_files,
+            selected_running_order=selected_running_order,
+            selected_laser_nm=task.laser_wavelength_nm,
+        )
+        validation_errors = validate_app_config(validation_config)
+        if validation_errors:
+            raise ValueError("Invalid SIM acquisition config: " + "; ".join(validation_errors))
         task_id = new_task_id()
         payload = {
             "task_id": task_id,

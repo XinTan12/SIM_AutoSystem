@@ -54,16 +54,24 @@ class UiRegressionTests(unittest.TestCase):
         self.assertIn("Width", all_text)
         self.assertIn("Height", all_text)
         self.assertIn("Hardvare Connection (SIM Camera)", all_text)
+        self.assertIn("Hardvare Connection (SLM)", all_text)
         self.assertIn("Connect SIM Camera", all_text)
+        self.assertIn("Connect SLM", all_text)
         self.assertIn("Live", all_text)
         self.assertIn("Save", all_text)
         self.assertIn("Pre_T", all_text)
         self.assertIn("Post_T", all_text)
 
         self.assertTrue(hasattr(ui, "grp_hardvareConnection_sCMOS"))
+        self.assertTrue(hasattr(ui, "grp_hardvareConnection_SLM"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_camera"))
+        self.assertTrue(hasattr(ui, "cmb_SLM_device"))
         self.assertTrue(hasattr(ui, "btn_sCMOS_refresh"))
+        self.assertTrue(hasattr(ui, "btn_SLM_refresh"))
+        self.assertTrue(hasattr(ui, "btn_SLM_connection"))
+        self.assertTrue(hasattr(ui, "lbl_SLM_status"))
         self.assertTrue(hasattr(ui, "btn_sCMOS_live"))
+        self.assertTrue(hasattr(ui, "chb_sCMOS_autoContrast"))
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_X"))
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_Y"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_imageSize"))
@@ -78,13 +86,16 @@ class UiRegressionTests(unittest.TestCase):
         self.assertIsInstance(ui.spb_sCMOS_exposureTime, QtWidgets.QSpinBox)
         self.assertIsInstance(ui.cmb_sCMOS_imageSize, QtWidgets.QComboBox)
         self.assertIsInstance(ui.cmb_sCMOS_bitDepth, QtWidgets.QComboBox)
+        self.assertIsInstance(ui.chb_sCMOS_autoContrast, QtWidgets.QCheckBox)
+        self.assertFalse(ui.chb_sCMOS_autoContrast.isChecked())
+        self.assertEqual(ui.chb_sCMOS_autoContrast.text(), "Auto Contrast")
         self.assertEqual(
             [ui.cmb_sCMOS_imageSize.itemText(index) for index in range(ui.cmb_sCMOS_imageSize.count())],
             ["2304 x 2304", "1152 x 1152", "576 x 576"],
         )
         self.assertEqual(
             [ui.cmb_sCMOS_bitDepth.itemText(index) for index in range(ui.cmb_sCMOS_bitDepth.count())],
-            ["16-bit"],
+            ["8-bit", "12-bit", "16-bit"],
         )
         self.assertEqual(ui.spb_sCMOS_exposureTime.minimum(), 1)
         self.assertEqual(ui.spb_sCMOS_exposureTime.maximum(), 10_000)
@@ -153,7 +164,10 @@ class UiRegressionTests(unittest.TestCase):
 
         tab_titles = [ui.tabs.tabText(index) for index in range(ui.tabs.count())]
         self.assertNotIn("Camera", tab_titles)
-        self.assertEqual(tab_titles, ["Laser", "Patterns", "DAQ"])
+        self.assertEqual(tab_titles, ["Laser", "DAQ"])
+        self.assertFalse(hasattr(ui, "tab_patterns"))
+        self.assertFalse(hasattr(ui, "combo_slm_device"))
+        self.assertFalse(hasattr(ui, "btn_load_patterns"))
         self.assertTrue(hasattr(ui, "combo_test_target"))
         self.assertTrue(hasattr(ui, "btn_pulse_test"))
         self.assertIsInstance(ui.combo_test_target, QtWidgets.QComboBox)
@@ -177,39 +191,15 @@ class UiRegressionTests(unittest.TestCase):
             widget = getattr(ui, widget_name)
             self.assertIsNotNone(widget.parent())
 
-    def test_sim_settings_patterns_page_is_not_left_shifted_relative_to_other_tabs(self):
-        from PyQt5 import QtCore
-        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
-
-        dialog = QtWidgets.QDialog()
-        ui = Ui_SimSettingsDialog()
-        ui.setupUi(dialog)
-        dialog.show()
-        self.app.processEvents()
-
-        patterns_index = ui.tabs.indexOf(ui.tab_patterns)
-        ui.tabs.setCurrentIndex(patterns_index)
-        self.app.processEvents()
-
-        top_left = ui.group_pattern_connection.mapTo(dialog, QtCore.QPoint(0, 0))
-        self.assertGreaterEqual(
-            top_left.x(),
-            120,
-            "Patterns page content should stay centered instead of hugging the left edge.",
-        )
-
-    def test_sim_settings_patterns_page_keeps_expected_height_budget(self):
+    def test_sim_settings_dialog_uses_native_style_without_pattern_specific_rules(self):
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
         ui = Ui_SimSettingsDialog()
         ui.setupUi(dialog)
 
-        self.assertEqual(
-            ui.tab_patterns.minimumHeight(),
-            601,
-            "Patterns page should reserve the same vertical space budget as the other tabs.",
-        )
+        self.assertEqual(dialog.styleSheet(), "")
+        self.assertFalse(hasattr(ui, "group_pattern_connection"))
 
     def test_sim_settings_ui_setup_does_not_emit_invalid_font_size_warnings(self):
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
@@ -232,13 +222,29 @@ class UiRegressionTests(unittest.TestCase):
             "SIM settings dialog should not apply invalid font point sizes.",
         )
 
+    def test_sim_settings_dialog_uses_compact_geometry_and_segoe_ui_fonts(self):
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+
+        self.assertEqual(dialog.minimumSize().width(), 920)
+        self.assertEqual(dialog.minimumSize().height(), 600)
+        self.assertEqual(dialog.height(), 640)
+        self.assertEqual(dialog.font().family(), "Segoe UI")
+        self.assertEqual(ui.lbl_error.font().pointSize(), 11)
+        self.assertGreaterEqual(ui.lbl_error.maximumHeight(), 28)
+        self.assertEqual(ui.radio_laser_405.font().pointSize(), 13)
+        self.assertEqual(ui.radio_laser_405.minimumSize().height(), 56)
+
     def test_sim_settings_daq_channel_controls_do_not_overlap_at_minimum_size(self):
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
         ui = Ui_SimSettingsDialog()
         ui.setupUi(dialog)
-        dialog.resize(920, 660)
+        dialog.resize(920, 600)
         dialog.show()
         self.app.processEvents()
 

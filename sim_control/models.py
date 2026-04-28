@@ -99,12 +99,14 @@ class TimingConfig:
 class BackendConfig:
     fusion_bt_sdk_path: str = ""
     slm_sdk_path: str = ""
+    simulation_mode: bool = False
 
 
 @dataclass
 class SimTaskConfig:
     laser_wavelength_nm: int = 488
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
+    running_order_name: str = ""
     camera: CameraConfig = field(default_factory=CameraConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
 
@@ -160,8 +162,9 @@ class AppConfig:
     timing: TimingConfig = field(default_factory=TimingConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
+    selected_running_order: str = ""
     selected_laser_nm: int = 488
-    config_version: int = 1
+    config_version: int = 3
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

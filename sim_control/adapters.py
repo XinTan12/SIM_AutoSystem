@@ -4,6 +4,7 @@ import ctypes
 import importlib
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -42,6 +43,69 @@ R11_BITPLANE_BYTES = (R11_QXGA_WIDTH // 8) * R11_QXGA_HEIGHT
 R11_BITPLANE_PAGES = R11_BITPLANE_BYTES // R11_PAGE_SIZE
 _REVERSE_BITS_LUT = bytes(int(f"{index:08b}"[::-1], 2) for index in range(256))
 _SUPPORTED_CAMERA_BIT_DEPTHS = (8, 10, 12, 14, 16)
+_RUNNING_ORDER_NAME_RE = re.compile(
+    r"^(?P<wavelength>\d+)_(?P<pitch>\d+(?:\.\d+)?)_(?P<mode>[A-Za-z0-9]+)_"
+    r"(?P<exposure>\d+)ms(?P<single_angle>_ang0)?$"
+)
+
+
+def parse_running_order_name(name: str) -> dict[str, Any] | None:
+    match = _RUNNING_ORDER_NAME_RE.match(str(name).strip())
+    if match is None:
+        return None
+    try:
+        return {
+            "wavelength_nm": int(match.group("wavelength")),
+            "pitch": match.group("pitch"),
+            "mode": match.group("mode").lower(),
+            "exposure_ms": int(match.group("exposure")),
+            "single_angle": bool(match.group("single_angle")),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _target_running_order_exposure_ms(exposure_us: int) -> int:
+    exposure_us = int(exposure_us)
+    if exposure_us < 10_000:
+        return 1
+    if exposure_us < 50_000:
+        return 10
+    return 50
+
+
+def find_best_running_order(
+    running_orders: list[tuple[int, str]],
+    wavelength_nm: int,
+    exposure_us: int,
+) -> tuple[int | None, str, list[str]]:
+    target_exposure_ms = _target_running_order_exposure_ms(exposure_us)
+    warnings: list[str] = []
+    candidates: list[tuple[int, str]] = []
+    for index, name in running_orders:
+        parsed = parse_running_order_name(name)
+        if parsed is None:
+            continue
+        if parsed["single_angle"]:
+            continue
+        if parsed["wavelength_nm"] != int(wavelength_nm):
+            continue
+        if parsed["pitch"] != "3.5":
+            continue
+        if parsed["mode"] != "2d":
+            continue
+        if parsed["exposure_ms"] != target_exposure_ms:
+            continue
+        candidates.append((int(index), str(name)))
+
+    if candidates:
+        return candidates[0][0], candidates[0][1], warnings
+
+    warnings.append(
+        "No matching SLM running order found for "
+        f"{int(wavelength_nm)} nm, {target_exposure_ms} ms bucket, pitch 3.5, mode 2d."
+    )
+    return None, "", warnings
 
 
 def _resolve_r11_dll_path(user_path: str = "") -> Path:
@@ -199,6 +263,11 @@ class _R11CommLib:
         self.dll.R11_RpcRoGetName.restype = ctypes.c_int
         self.dll.R11_RpcRoGetSelected.argtypes = [ctypes.POINTER(ctypes.c_uint16)]
         self.dll.R11_RpcRoGetSelected.restype = ctypes.c_int
+        self.dll.R11_RpcRoSetSelected.argtypes = [ctypes.c_uint16]
+        self.dll.R11_RpcRoSetSelected.restype = ctypes.c_int
+        if hasattr(self.dll, "R11_RpcRoGetActivationType"):
+            self.dll.R11_RpcRoGetActivationType.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
+            self.dll.R11_RpcRoGetActivationType.restype = ctypes.c_int
         self.dll.R11_RpcRoActivate.argtypes = []
         self.dll.R11_RpcRoActivate.restype = ctypes.c_int
         self.dll.R11_RpcRoDeactivate.argtypes = []
@@ -284,10 +353,20 @@ class _R11CommLib:
         self._check(self.dll.R11_RpcRoGetSelected(ctypes.byref(value)), "R11_RpcRoGetSelected")
         return int(value.value)
 
+    def set_selected_running_order(self, index: int) -> None:
+        self._check(self.dll.R11_RpcRoSetSelected(ctypes.c_uint16(int(index))), "R11_RpcRoSetSelected")
+
     def get_running_order_name(self, index: int) -> str:
         buffer = ctypes.create_string_buffer(128)
         self._check(self.dll.R11_RpcRoGetName(index, buffer, len(buffer)), "R11_RpcRoGetName")
         return buffer.value.decode("utf-8", errors="ignore")
+
+    def get_running_order_activation_type(self) -> int | None:
+        if not hasattr(self.dll, "R11_RpcRoGetActivationType"):
+            return None
+        value = ctypes.c_uint8()
+        self._check(self.dll.R11_RpcRoGetActivationType(ctypes.byref(value)), "R11_RpcRoGetActivationType")
+        return int(value.value)
 
     def deactivate_running_order(self) -> None:
         self._check(self.dll.R11_RpcRoDeactivate(), "R11_RpcRoDeactivate")
@@ -848,6 +927,7 @@ class FusionBtCameraAdapter:
         frame_count: int,
         pattern_files: list[str],
         laser_wavelength_nm: int,
+        frame_callback: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]:
         if not self._armed:
             raise HardwareError("Camera must be armed before reading frame sequence.")
@@ -871,8 +951,11 @@ class FusionBtCameraAdapter:
             if transfer is False:
                 raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
             while captured < min(int(transfer.nFrameCount), frame_count):
-                timestamps.append(time.time())
                 captured += 1
+                timestamp = time.time()
+                timestamps.append(timestamp)
+                if frame_callback is not None:
+                    frame_callback(captured, timestamp)
 
         frames = np.empty((frame_count, self._camera_config.roi_height, self._camera_config.roi_width), dtype=np.uint16)
         for index in range(frame_count):
@@ -954,6 +1037,45 @@ class KopinSlmAdapter:
     def _connect(self, device_path: str | None = None) -> None:
         self.connect(device_path=device_path)
 
+    def list_running_orders(self) -> list[tuple[int, str]]:
+        if not self._initialized:
+            self.initialize()
+        if not self._device_open:
+            raise HardwareError("Connect to an SLM before listing running orders.")
+        running_order_count = self._sdk.get_running_order_count()
+        return [
+            (index, self._sdk.get_running_order_name(index))
+            for index in range(running_order_count)
+        ]
+
+    def select_running_order(self, ro_index: int) -> dict[str, Any]:
+        if not self._initialized:
+            self.initialize()
+        if not self._device_open:
+            raise HardwareError("Connect to an SLM before selecting a running order.")
+        ro_index = int(ro_index)
+        self._sdk.set_selected_running_order(ro_index)
+        ro_name = self._sdk.get_running_order_name(ro_index)
+        activation_type = self._sdk.get_running_order_activation_type()
+        self._prepared = PatternPreparationResult(
+            pattern_files=[ro_name] * 9,
+            handles=[-1],
+            prepared_at=time.time(),
+            metadata={
+                "mode": "running_order",
+                "running_order_index": ro_index,
+                "running_order_name": ro_name,
+                "activation_type": activation_type,
+                **self._device_info,
+            },
+        )
+        return {
+            "running_order_index": ro_index,
+            "running_order_name": ro_name,
+            "activation_type": activation_type,
+            "pattern_result": self._prepared,
+        }
+
     def _upload_pattern(self, bitplane_index: int, pattern_path: Path) -> None:
         payload = _load_r11_bitplane_file(pattern_path)
         page_base = bitplane_index * R11_BITPLANE_PAGES
@@ -1030,7 +1152,7 @@ class KopinSlmAdapter:
 
     def activate_prepared_patterns(self) -> None:
         if not self._prepared.handles:
-            raise HardwareError("No patterns programmed to SLM.")
+            raise HardwareError("No patterns or running order prepared on SLM.")
         self._connect(device_path=self._connected_device_path or None)
         self._sdk.activate_running_order()
 

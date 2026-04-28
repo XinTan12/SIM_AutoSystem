@@ -22,6 +22,7 @@ class WaveformPlan:
     sample_count: int
     duration_s: float
     metadata: dict[str, Any]
+    warnings: list[str]
 
 
 def parse_line_name(line_name: str) -> tuple[str, int, int]:
@@ -76,9 +77,18 @@ class NIDaqWaveformBuilder:
         gap_samples = self._us_to_samples(timing.inter_frame_gap_us, timing.sample_rate_hz)
         exposure_samples = self._us_to_samples(exposure_us, timing.sample_rate_hz)
         guard_samples = self._us_to_samples(timing.slm_enable_guard_us, timing.sample_rate_hz)
+        warnings: list[str] = []
 
         if exposure_samples <= 0:
             raise ValueError("Exposure converts to zero samples. Increase exposure or sample rate.")
+        if exposure_samples < 10:
+            warnings.append(
+                f"exposure_us={exposure_us} converts to only {exposure_samples} samples at {timing.sample_rate_hz} Hz."
+            )
+        if timing.inter_frame_gap_us < 1000:
+            warnings.append(
+                f"inter_frame_gap_us={timing.inter_frame_gap_us} is below the conservative 1000 us readout margin."
+            )
 
         per_frame_span = exposure_samples + gap_samples
         sample_count = (guard_samples * 2) + (frame_count * per_frame_span)
@@ -104,6 +114,12 @@ class NIDaqWaveformBuilder:
 
             trigger_end = min(frame_start + edge_pulse_samples, sample_count)
             finish_end = min(frame_end + edge_pulse_samples, sample_count)
+            if frame_index < frame_count - 1 and edge_pulse_samples > gap_samples:
+                warnings.append(
+                    "slm_finish pulse extends beyond the inter-frame gap before the next frame."
+                )
+            if frame_end + edge_pulse_samples > sample_count:
+                warnings.append("slm_finish pulse is clipped at the end of the waveform.")
             matrix["slm_trigger_line"][frame_start:trigger_end] = 1
             matrix["slm_finish_line"][frame_end:finish_end] = 1
 
@@ -128,6 +144,7 @@ class NIDaqWaveformBuilder:
             sample_count=sample_count,
             duration_s=duration_s,
             metadata=metadata,
+            warnings=sorted(set(warnings)),
         )
 
     @staticmethod

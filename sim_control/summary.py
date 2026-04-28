@@ -28,8 +28,10 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
     daq = sim_config.daq
     camera = sim_config.camera
     selected_device = camera.device_label or f"#{camera.device_index}"
+    selected_ro = sim_config.selected_running_order or "(SLM 未连接)"
     summary_lines = [
         f"Laser: {sim_config.selected_laser_nm} nm",
+        f"Pattern RO: {selected_ro}",
         f"Selected SIM Camera: {selected_device}",
         f"Exposure: {_sim_exposure_us_to_ms(camera.exposure_us)} ms",
         f"Bit Depth: {int(camera.bit_depth)}-bit",

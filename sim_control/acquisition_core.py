@@ -16,6 +16,7 @@ from .protocols import CameraAdapter, DaqAdapter, SlmAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
 
 StatusCallback = Callable[[str, dict[str, Any]], None]
+FrameCallback = Callable[[int, float], None]
 
 
 def _noop_status(status: str, payload: dict[str, Any]) -> None:
@@ -52,6 +53,14 @@ def run_single_acquisition(
         frame_count=9,
     )
     on_status("waveform_ready", {"task_id": task_id, "sample_count": plan.sample_count, "duration_s": plan.duration_s})
+    for warning in getattr(plan, "warnings", []):
+        on_status("waveform_warning", {"task_id": task_id, "message": warning})
+
+    emitted_frames: set[int] = set()
+
+    def emit_frame_captured(frame_index: int, timestamp: float) -> None:
+        emitted_frames.add(int(frame_index))
+        on_status("frame_captured", {"task_id": task_id, "frame_index": int(frame_index), "timestamp": float(timestamp)})
 
     try:
         camera.apply_config(task.camera)
@@ -62,6 +71,7 @@ def run_single_acquisition(
             frame_count=9,
             pattern_files=pattern_result.pattern_files,
             laser_wavelength_nm=task.laser_wavelength_nm,
+            frame_callback=emit_frame_captured,
         )
     finally:
         try:
@@ -74,7 +84,8 @@ def run_single_acquisition(
             pass
 
     for index, timestamp in enumerate(timestamps, start=1):
-        on_status("frame_captured", {"task_id": task_id, "frame_index": index, "timestamp": timestamp})
+        if index not in emitted_frames:
+            emit_frame_captured(index, timestamp)
 
     on_status("acquisition_complete", {"task_id": task_id, "stack_shape": list(stack.shape)})
 
@@ -87,6 +98,9 @@ def run_single_acquisition(
         pattern_files=list(pattern_result.pattern_files),
         metadata={
             "pattern_handles": list(pattern_result.handles),
+            "pattern_mode": pattern_result.metadata.get("mode", ""),
+            "running_order_name": task.running_order_name
+            or str(pattern_result.metadata.get("running_order_name", "")),
             "waveform": plan.metadata,
             "daq_device": daq_config.device_name,
         },

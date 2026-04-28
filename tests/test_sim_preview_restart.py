@@ -79,6 +79,7 @@ class SpinBoxSpy:
         self._value = value
         self._maximum = maximum
         self._enabled = enabled
+        self.single_step = None
 
     def value(self):
         return self._value
@@ -100,6 +101,9 @@ class SpinBoxSpy:
 
     def setValue(self, value):
         self._value = value
+
+    def setSingleStep(self, value):
+        self.single_step = value
 
 
 class SignalBlockingSpinBoxSpy(SpinBoxSpy):
@@ -193,6 +197,95 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         self.assertEqual(save_flags, [False])
         self.assertEqual(timer.start_calls, [150])
+
+    def test_camera_setting_change_refreshes_slm_running_order_without_camera_connection(self):
+        legacy_main = load_legacy_main_module()
+        save_flags = []
+        refresh_calls = []
+        window = SimpleNamespace(
+            sim_camera_connected=False,
+            sim_slm_connected=True,
+            sim_app_config=SimpleNamespace(selected_running_order="old_ro"),
+            sync_sim_camera_config_from_ui=lambda save_to_disk=True: save_flags.append(save_to_disk),
+            select_current_sim_running_order=lambda save_to_disk=False: refresh_calls.append(save_to_disk),
+            refresh_sim_settings_summary=mock.Mock(),
+        )
+
+        legacy_main.MainWindow.on_sim_camera_setting_changed(window)
+
+        self.assertEqual(save_flags, [False])
+        self.assertEqual(refresh_calls, [False])
+        self.assertEqual(window.sim_app_config.selected_running_order, "old_ro")
+
+    def test_connected_camera_setting_change_applies_config_and_refreshes_runtime_timing(self):
+        legacy_main = load_legacy_main_module()
+        save_flags = []
+        refresh_calls = []
+        camera = SimpleNamespace(bit_depth=16)
+        timing_payload = {
+            "timing_readout_time_s": 0.0042,
+            "recommended_inter_frame_gap_us": 5200,
+        }
+        controller = SimpleNamespace(apply_camera_config=mock.Mock(return_value=timing_payload))
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_slm_connected=False,
+            sim_preview_requested=False,
+            sim_preview_active=False,
+            sim_acquisition_controller=controller,
+            sim_app_config=SimpleNamespace(camera=camera),
+            sim_runtime_timing_snapshot={},
+            sync_sim_camera_config_from_ui=lambda save_to_disk=True: save_flags.append(save_to_disk),
+            refresh_sim_settings_summary=lambda: refresh_calls.append("refreshed"),
+        )
+
+        legacy_main.MainWindow.on_sim_camera_setting_changed(window)
+
+        self.assertEqual(save_flags, [False])
+        controller.apply_camera_config.assert_called_once_with(camera)
+        self.assertEqual(window.sim_runtime_timing_snapshot["timing_readout_time_s"], 0.0042)
+        self.assertEqual(window.sim_runtime_timing_snapshot["recommended_inter_frame_gap_us"], 5200)
+        self.assertEqual(refresh_calls, ["refreshed"])
+
+    def test_start_sim_preview_applies_camera_config_before_preview_start(self):
+        legacy_main = load_legacy_main_module()
+        events = []
+        camera = SimpleNamespace(bit_depth=16)
+        controller = SimpleNamespace(
+            apply_camera_config=mock.Mock(
+                side_effect=lambda camera_config: events.append("apply") or {
+                    "timing_readout_time_s": 0.0038,
+                    "recommended_inter_frame_gap_us": 4800,
+                }
+            )
+        )
+        preview_controller = SimpleNamespace(
+            start=mock.Mock(side_effect=lambda camera_config, timeout_ms=100: events.append("preview"))
+        )
+        window = SimpleNamespace(
+            sim_acquisition_in_progress=False,
+            sim_camera_connected=True,
+            sim_preview_stop_in_progress=False,
+            sim_preview_restart_requested=True,
+            sim_preview_requested=False,
+            sim_preview_active=False,
+            sim_app_config=SimpleNamespace(camera=camera),
+            sim_acquisition_controller=controller,
+            sim_preview_controller=preview_controller,
+            sim_runtime_timing_snapshot={},
+            sync_sim_camera_config_from_ui=lambda save_to_disk=True: events.append("sync"),
+            ensure_sim_runtime=lambda: None,
+            update_sim_camera_action_buttons=lambda: None,
+            refresh_sim_settings_summary=lambda: events.append("summary"),
+        )
+
+        legacy_main.MainWindow.start_sim_preview(window)
+
+        self.assertEqual(events[:3], ["sync", "apply", "summary"])
+        self.assertEqual(events[-1], "preview")
+        controller.apply_camera_config.assert_called_once_with(camera)
+        preview_controller.start.assert_called_once_with(camera, timeout_ms=200)
+        self.assertEqual(window.sim_runtime_timing_snapshot["recommended_inter_frame_gap_us"], 4800)
 
     def test_size_dropdown_activation_triggers_live_setting_change(self):
         legacy_main = load_legacy_main_module()
@@ -415,10 +508,12 @@ class SimPreviewRestartTests(unittest.TestCase):
             apply_daq_config=mock.Mock(),
             apply_camera_config=mock.Mock(),
             prepare_patterns=mock.Mock(),
+            select_running_order_for_task=mock.Mock(return_value={"running_order_name": "488_3.5_2d_1ms"}),
             start_single_acquisition=mock.Mock(return_value="task-1"),
         )
         window = SimpleNamespace(
             sim_camera_connected=True,
+            sim_slm_connected=True,
             sim_preview_active=True,
             sim_preview_requested=True,
             sim_preview_restart_requested=True,
@@ -446,6 +541,81 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(stop_calls, [True])
         self.assertTrue(window.sim_acquisition_in_progress)
         self.assertEqual(window.sim_current_task_id, "task-1")
+        controller.prepare_patterns.assert_not_called()
+        controller.select_running_order_for_task.assert_called_once_with(488, 10_000)
+
+    def test_trigger_sim_formal_acquisition_blocks_when_slm_is_disconnected(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AppConfig
+
+        warning_messages = []
+        controller = SimpleNamespace(
+            initialize_hardware=mock.Mock(),
+            apply_daq_config=mock.Mock(),
+            apply_camera_config=mock.Mock(),
+            select_running_order_for_task=mock.Mock(),
+            start_single_acquisition=mock.Mock(),
+        )
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_slm_connected=False,
+            sim_acquisition_in_progress=False,
+            sim_preview_requested=False,
+            sim_preview_active=False,
+            sim_preview_restart_requested=False,
+            sim_preview_stop_in_progress=False,
+            sim_preview_restart_timer=TimerSpy(),
+            sim_acquisition_controller=controller,
+            sim_app_config=AppConfig(),
+            sync_sim_camera_config_from_ui=lambda save_to_disk=False: None,
+            ensure_sim_runtime=lambda: None,
+            update_sim_camera_action_buttons=lambda: None,
+            set_sim_camera_controls_enabled=lambda enabled: None,
+        )
+
+        with mock.patch.object(legacy_main.qw.QMessageBox, "information", side_effect=lambda _parent, title, message: warning_messages.append((title, message))):
+            legacy_main.MainWindow.trigger_sim_formal_acquisition(window, trigger_source="test")
+
+        self.assertEqual(warning_messages, [("SIM SLM", "Please connect the SLM before starting SIM acquisition.")])
+        controller.initialize_hardware.assert_not_called()
+        controller.start_single_acquisition.assert_not_called()
+
+    def test_slot_handle_sim_acquisition_ready_accepts_acquisition_batch_object(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AcquisitionBatch
+
+        stack = np.arange(9 * 2 * 3, dtype=np.uint16).reshape(9, 2, 3)
+        batch = AcquisitionBatch(
+            task_id="task-2",
+            stack=stack,
+            timestamps=[float(index) for index in range(9)],
+            laser_wavelength_nm=488,
+            exposure_us=10_000,
+            pattern_files=[""] * 9,
+        )
+        action_updates = []
+        controls_enabled = []
+        starts = []
+        window = SimpleNamespace(
+            sim_acquisition_in_progress=True,
+            sim_camera_connected=True,
+            sim_resume_preview_after_acquisition=True,
+            sim_current_task_id="",
+            sim_last_acquisition_batch=None,
+            update_sim_camera_action_buttons=lambda: action_updates.append("updated"),
+            set_sim_camera_controls_enabled=lambda enabled: controls_enabled.append(enabled),
+            start_sim_preview=lambda: starts.append("start"),
+        )
+
+        legacy_main.MainWindow.slot_handle_sim_acquisition_ready(window, batch)
+
+        self.assertFalse(window.sim_acquisition_in_progress)
+        self.assertEqual(action_updates, ["updated"])
+        self.assertEqual(controls_enabled, [True])
+        self.assertIs(window.sim_last_acquisition_batch, batch)
+        np.testing.assert_array_equal(window.sim_last_preview_frame, stack[0])
+        self.assertEqual(window.sim_current_task_id, "task-2")
+        self.assertEqual(starts, ["start"])
 
     def test_open_sim_settings_does_not_probe_real_camera_when_connected(self):
         legacy_main = load_legacy_main_module()
@@ -459,9 +629,10 @@ class SimPreviewRestartTests(unittest.TestCase):
                 self.connected_callbacks.append(callback)
 
         class FakeDialog:
-            def __init__(self, config, parent):
+            def __init__(self, config, parent, slm_adapter=None):
                 self.config = config
                 self.parent = parent
+                self.slm_adapter = slm_adapter
                 self.exec_calls = 0
                 self.signal_settings_saved = FakeSignal()
                 dialog_instances.append(self)
@@ -476,6 +647,8 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_stop_in_progress=False,
             sim_acquisition_in_progress=False,
             sim_app_config=SimpleNamespace(),
+            ensure_sim_runtime=mock.Mock(),
+            sim_acquisition_controller=SimpleNamespace(slm_adapter="shared-slm"),
             prefer_real_sim_hardware=mock.Mock(),
             stop_sim_preview=mock.Mock(),
             start_sim_preview=mock.Mock(),
@@ -487,6 +660,7 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         window.prefer_real_sim_hardware.assert_not_called()
         self.assertEqual(len(dialog_instances), 1)
+        self.assertEqual(dialog_instances[0].slm_adapter, "shared-slm")
         self.assertEqual(
             dialog_instances[0].signal_settings_saved.connected_callbacks,
             [window.apply_sim_settings],
@@ -507,9 +681,10 @@ class SimPreviewRestartTests(unittest.TestCase):
                 self.connected_callbacks.append(callback)
 
         class FakeDialog:
-            def __init__(self, config, parent):
+            def __init__(self, config, parent, slm_adapter=None):
                 self.config = config
                 self.parent = parent
+                self.slm_adapter = slm_adapter
                 self.signal_settings_saved = FakeSignal()
                 dialog_instances.append(self)
 
@@ -525,6 +700,8 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_stop_in_progress=False,
             sim_acquisition_in_progress=False,
             sim_app_config=SimpleNamespace(),
+            ensure_sim_runtime=mock.Mock(),
+            sim_acquisition_controller=SimpleNamespace(slm_adapter="shared-slm"),
             prefer_real_sim_hardware=mock.Mock(),
             stop_sim_preview=lambda wait=True: stop_calls.append(wait),
             start_sim_preview=lambda: start_calls.append("start"),
@@ -537,6 +714,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(stop_calls, [True])
         self.assertEqual(start_calls, ["start"])
         self.assertEqual(len(dialog_instances), 1)
+        self.assertEqual(dialog_instances[0].slm_adapter, "shared-slm")
         window.prefer_real_sim_hardware.assert_not_called()
 
     def test_apply_sim_settings_avoids_camera_reprobe_when_connected(self):
@@ -548,7 +726,12 @@ class SimPreviewRestartTests(unittest.TestCase):
         window = SimpleNamespace(
             sim_camera_connected=True,
             sim_preview_active=True,
+            sim_slm_connected=True,
             sim_app_config=AppConfig(),
+            sim_acquisition_controller=SimpleNamespace(
+                apply_daq_config=mock.Mock(),
+                select_running_order_for_task=mock.Mock(return_value={"running_order_name": "488_3.5_2d_1ms"})
+            ),
             prefer_real_sim_hardware=mock.Mock(),
             sync_sim_camera_controls_from_config=mock.Mock(),
             refresh_sim_settings_summary=mock.Mock(),
@@ -560,6 +743,9 @@ class SimPreviewRestartTests(unittest.TestCase):
             legacy_main.MainWindow.apply_sim_settings(window, config)
 
         window.prefer_real_sim_hardware.assert_called_once_with(save_to_disk=True, probe_camera=False)
+        window.sim_acquisition_controller.apply_daq_config.assert_called_once_with(config.daq)
+        window.sim_acquisition_controller.select_running_order_for_task.assert_called_once_with(488, config.camera.exposure_us)
+        self.assertEqual(window.sim_app_config.selected_running_order, "488_3.5_2d_1ms")
         window.sync_sim_camera_controls_from_config.assert_called_once_with()
         window.refresh_sim_settings_summary.assert_called_once_with()
         window.refresh_sim_camera_devices.assert_called_once_with()
@@ -751,7 +937,7 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         self.assertEqual(bit_depth_combo.currentText(), "12-bit")
 
-    def test_refresh_sim_camera_bit_depth_choices_uses_supported_values_and_fallbacks_to_16_bit(self):
+    def test_refresh_sim_camera_bit_depth_choices_includes_user_facing_values_and_fallbacks_to_16_bit(self):
         legacy_main = load_legacy_main_module()
         camera = SimpleNamespace(bit_depth=10)
         bit_depth_combo = ComboBoxSpy(text="16-bit")
@@ -763,7 +949,7 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         legacy_main.MainWindow.refresh_sim_camera_bit_depth_choices(window, [12, 16])
 
-        self.assertEqual(bit_depth_combo.items, ["12-bit", "16-bit"])
+        self.assertEqual(bit_depth_combo.items, ["8-bit", "12-bit", "16-bit"])
         self.assertEqual(bit_depth_combo.currentText(), "16-bit")
         self.assertEqual(camera.bit_depth, 16)
 
@@ -1233,6 +1419,64 @@ class SimPreviewPollingTests(unittest.TestCase):
             controller._thread.quit()
             controller._thread.wait(2000)
 
+    def test_render_sim_preview_frame_uses_manual_contrast_when_auto_is_unchecked(self):
+        legacy_main = load_legacy_main_module()
+        label = QtWidgets.QLabel()
+        label.resize(16, 16)
+        frame = np.array([[0, 1000], [2000, 3000]], dtype=np.uint16)
+        manual_result = np.array([[0, 85], [170, 255]], dtype=np.uint8)
+        calls = []
+        window = SimpleNamespace(
+            ui=SimpleNamespace(
+                lb_sCMOS_cameraView=label,
+                spb_sCMOS_displayGray_max=SimpleNamespace(value=lambda: 3000),
+                chb_sCMOS_autoContrast=SimpleNamespace(isChecked=lambda: False),
+            ),
+            sim_auto_contrast_state=object(),
+            sim_last_preview_frame=None,
+        )
+
+        with mock.patch.object(
+            legacy_main,
+            "manual_uint16_to_uint8",
+            side_effect=lambda input_frame, gray_max: calls.append(("manual", input_frame.copy(), gray_max)) or manual_result,
+        ) as manual, mock.patch.object(legacy_main, "auto_uint16_to_uint8") as auto:
+            legacy_main.MainWindow._render_sim_preview_frame(window, frame)
+
+        manual.assert_called_once()
+        auto.assert_not_called()
+        self.assertEqual(calls[0][2], 3000)
+        np.testing.assert_array_equal(window.sim_last_preview_frame, frame)
+
+    def test_render_sim_preview_frame_uses_auto_contrast_when_checked(self):
+        legacy_main = load_legacy_main_module()
+        label = QtWidgets.QLabel()
+        label.resize(16, 16)
+        frame = np.array([[0, 1000], [2000, 3000]], dtype=np.uint16)
+        auto_result = np.array([[0, 10], [200, 255]], dtype=np.uint8)
+        state = object()
+        window = SimpleNamespace(
+            ui=SimpleNamespace(
+                lb_sCMOS_cameraView=label,
+                spb_sCMOS_displayGray_max=SimpleNamespace(value=lambda: 3000),
+                chb_sCMOS_autoContrast=SimpleNamespace(isChecked=lambda: True),
+            ),
+            sim_auto_contrast_state=state,
+            sim_last_preview_frame=None,
+        )
+
+        with mock.patch.object(legacy_main, "manual_uint16_to_uint8") as manual, mock.patch.object(
+            legacy_main,
+            "auto_uint16_to_uint8",
+            side_effect=lambda input_frame, input_state: auto_result,
+        ) as auto:
+            legacy_main.MainWindow._render_sim_preview_frame(window, frame)
+
+        manual.assert_not_called()
+        auto.assert_called_once()
+        self.assertIs(auto.call_args.args[1], state)
+        np.testing.assert_array_equal(window.sim_last_preview_frame, frame)
+
 
 class SimCameraSpinBoxCommitTests(unittest.TestCase):
     @classmethod
@@ -1240,6 +1484,27 @@ class SimCameraSpinBoxCommitTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance()
         if cls.app is None:
             cls.app = QtWidgets.QApplication([])
+
+    def test_snapping_exposure_spinbox_uses_bucketed_step_sequence(self):
+        legacy_main = load_legacy_main_module()
+        spinbox = legacy_main.SnappingExposureSpinBox()
+        spinbox.setRange(1, 10_000)
+
+        cases = [
+            (10, 1, 20),
+            (10, -1, 9),
+            (11, -1, 10),
+            (15, 1, 20),
+            (49, 1, 50),
+            (51, -1, 50),
+            (1, -1, 1),
+            (10_000, 1, 10_000),
+        ]
+        for start, steps, expected in cases:
+            with self.subTest(start=start, steps=steps):
+                spinbox.setValue(start)
+                spinbox.stepBy(steps)
+                self.assertEqual(spinbox.value(), expected)
 
     def test_configure_sim_camera_spinboxes_disables_keyboard_tracking(self):
         legacy_main = load_legacy_main_module()
@@ -1332,18 +1597,13 @@ class SimSettingsDialogTests(unittest.TestCase):
         self.assertEqual(button.minimumWidth(), width)
         self.assertEqual(button.maximumWidth(), width)
 
-    def test_dialog_defers_hardware_refresh_until_first_show(self):
+    def test_dialog_defers_daq_refresh_until_first_show(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig
 
-        with mock.patch.object(SimSettingsDialog, "_refresh_daq_devices", autospec=True) as refresh_daq, mock.patch.object(
-            SimSettingsDialog,
-            "_refresh_slm_devices",
-            autospec=True,
-        ) as refresh_slm:
+        with mock.patch.object(SimSettingsDialog, "_refresh_daq_devices", autospec=True) as refresh_daq:
             dialog = SimSettingsDialog(config=AppConfig())
             self.assertEqual(refresh_daq.call_count, 0)
-            self.assertEqual(refresh_slm.call_count, 0)
 
             dialog.show()
             self.app.processEvents()
@@ -1351,154 +1611,70 @@ class SimSettingsDialogTests(unittest.TestCase):
             self.app.processEvents()
 
             self.assertEqual(refresh_daq.call_count, 1)
-            self.assertEqual(refresh_slm.call_count, 1)
             dialog.close()
 
-    def test_pattern_page_exposes_refresh_and_toggle_slm_controls(self):
+    def test_dialog_no_longer_exposes_pattern_or_slm_controls(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig
 
         with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
             return_value=[],
-        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
+        ):
             dialog = SimSettingsDialog(config=AppConfig())
 
-        self.assertTrue(hasattr(dialog.ui, "btn_refresh_slm"))
-        self.assertTrue(hasattr(dialog.ui, "btn_toggle_slm_connection"))
-        self.assertTrue(hasattr(dialog.ui, "btn_load_patterns"))
-        self.assertEqual(dialog.ui.combo_slm_device.minimumWidth(), 174)
-        self.assertEqual(dialog.ui.combo_slm_device.maximumWidth(), 280)
-        self.assert_compact_action_button_style(dialog.ui.btn_refresh_slm, width=120)
-        self.assert_compact_action_button_style(dialog.ui.btn_toggle_slm_connection, width=150)
-        self.assert_compact_action_button_style(dialog.ui.btn_load_patterns, width=120)
-        self.assertGreater(
-            dialog.ui.horizontalLayout_slm_device.indexOf(dialog.ui.btn_refresh_slm),
-            dialog.ui.horizontalLayout_slm_device.indexOf(dialog.ui.combo_slm_device),
-        )
-        self.assertIn("padding: 0 18px;", dialog.styleSheet())
+        self.assertFalse(hasattr(dialog.ui, "tab_patterns"))
+        self.assertFalse(hasattr(dialog.ui, "combo_slm_device"))
+        self.assertFalse(hasattr(dialog.ui, "btn_load_patterns"))
+        self.assertFalse(hasattr(dialog, "pattern_edits"))
+        self.assertEqual(dialog.styleSheet(), "")
         dialog.close()
 
-    def test_daq_and_dialog_action_buttons_share_compact_button_style(self):
+    def test_dialog_accepts_external_slm_adapter_without_taking_lifecycle_ownership(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig
 
+        slm_adapter = mock.Mock()
+        slm_adapter.disconnect = mock.Mock()
         with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
             return_value=[],
-        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
-            dialog = SimSettingsDialog(config=AppConfig())
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), slm_adapter=slm_adapter)
 
-        self.assertTrue(hasattr(dialog.ui, "btn_refresh_lines"))
-        self.assertTrue(hasattr(dialog.ui, "btn_pulse_test"))
-        self.assertTrue(hasattr(dialog.ui, "btn_save_close"))
-        self.assertTrue(hasattr(dialog.ui, "btn_cancel"))
-        self.assert_compact_action_button_style(dialog.ui.btn_refresh_lines, width=120)
-        self.assert_compact_action_button_style(dialog.ui.btn_pulse_test, width=140)
-        self.assert_compact_action_button_style(dialog.ui.btn_save_close, width=170)
-        self.assert_compact_action_button_style(dialog.ui.btn_cancel, width=120)
-        self.assertIn("QPushButton#btn_refresh_lines", dialog.styleSheet())
-        self.assertIn("QPushButton#btn_save_close", dialog.styleSheet())
+        self.assertIs(dialog.slm_adapter, slm_adapter)
+        self.assertTrue(dialog._slm_externally_owned)
         dialog.close()
+        slm_adapter.disconnect.assert_not_called()
 
-    def test_toggle_slm_connection_routes_to_connect_or_disconnect(self):
+    def test_sim_acquisition_test_selects_running_order_on_shared_slm(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig
 
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(0, "488_3.5_2d_10ms")]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_10ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_10ms"] * 9, handles=[-1]),
+        }
         with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
             return_value=[],
-        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
-            dialog = SimSettingsDialog(config=AppConfig())
-
-        dialog.slm_adapter = mock.Mock()
-        dialog.slm_adapter.is_connected.return_value = False
-        with mock.patch.object(dialog, "_connect_slm") as connect_slm, mock.patch.object(
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), slm_adapter=slm_adapter)
+        dialog.daq_adapter = mock.Mock()
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
             dialog,
-            "_disconnect_slm",
-        ) as disconnect_slm:
-            dialog._toggle_slm_connection()
-        connect_slm.assert_called_once_with()
-        disconnect_slm.assert_not_called()
+            "_write_uint16_tiff",
+        ), mock.patch("sim_control.gui.create_camera_adapter_for_backend") as camera_factory:
+            camera = mock.Mock()
+            camera.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+            camera_factory.return_value = camera
+            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
 
-        dialog.slm_adapter.is_connected.return_value = True
-        with mock.patch.object(dialog, "_connect_slm") as connect_slm, mock.patch.object(
-            dialog,
-            "_disconnect_slm",
-        ) as disconnect_slm:
-            dialog._toggle_slm_connection()
-        connect_slm.assert_not_called()
-        disconnect_slm.assert_called_once_with()
-        dialog.close()
-
-    def test_update_slm_controls_tracks_toggle_button_text_and_enabled_states(self):
-        from sim_control.gui import SimSettingsDialog
-        from sim_control.models import AppConfig
-
-        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
-            "sim_control.gui.NIDaqAdapter.list_port0_lines",
-            return_value=[],
-        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
-            dialog = SimSettingsDialog(config=AppConfig())
-
-        dialog.slm_adapter = mock.Mock()
-        dialog.combo_slm_device.clear()
-        dialog.combo_slm_device.addItem("SLM A", "slm-a")
-
-        dialog.slm_adapter.is_connected.return_value = True
-        dialog.slm_adapter.connection_info.return_value = {"device_serial_hint": "ABC123"}
-        dialog._update_slm_controls()
-        self.assertFalse(dialog.combo_slm_device.isEnabled())
-        self.assertFalse(dialog.btn_refresh_slm.isEnabled())
-        self.assertTrue(dialog.btn_toggle_slm_connection.isEnabled())
-        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Disconnect")
-        self.assertTrue(dialog.btn_load_patterns.isEnabled())
-        self.assertEqual(dialog.lbl_slm_status_value.text(), "Connected: ABC123")
-
-        dialog.slm_adapter.is_connected.return_value = False
-        dialog._update_slm_controls()
-        self.assertTrue(dialog.combo_slm_device.isEnabled())
-        self.assertTrue(dialog.btn_refresh_slm.isEnabled())
-        self.assertTrue(dialog.btn_toggle_slm_connection.isEnabled())
-        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Connect")
-        self.assertFalse(dialog.btn_load_patterns.isEnabled())
-        self.assertEqual(dialog.lbl_slm_status_value.text(), "Not connected")
-
-        dialog.combo_slm_device.clear()
-        dialog._update_slm_controls()
-        self.assertFalse(dialog.combo_slm_device.isEnabled())
-        self.assertTrue(dialog.btn_refresh_slm.isEnabled())
-        self.assertFalse(dialog.btn_toggle_slm_connection.isEnabled())
-        self.assertEqual(dialog.btn_toggle_slm_connection.text(), "Connect")
-        self.assertEqual(dialog.lbl_slm_status_value.text(), "No SLM detected")
-        dialog.close()
-
-    def test_refresh_slm_devices_preserves_existing_selection(self):
-        from sim_control.gui import SimSettingsDialog
-        from sim_control.models import AppConfig
-
-        devices = [
-            {"display": "SLM A", "path": "slm-a"},
-            {"display": "SLM B", "path": "slm-b"},
-        ]
-        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
-            "sim_control.gui.NIDaqAdapter.list_port0_lines",
-            return_value=[],
-        ), mock.patch("sim_control.gui.KopinSlmAdapter.list_devices", return_value=[]):
-            dialog = SimSettingsDialog(config=AppConfig())
-
-        dialog.slm_adapter = mock.Mock()
-        dialog.slm_adapter.list_devices.return_value = devices
-        dialog.slm_adapter.is_connected.return_value = False
-
-        dialog.combo_slm_device.addItem("SLM A", "slm-a")
-        dialog.combo_slm_device.addItem("SLM B", "slm-b")
-        dialog.combo_slm_device.setCurrentIndex(1)
-
-        dialog._refresh_slm_devices()
-
-        self.assertEqual(dialog.combo_slm_device.currentData(), "slm-b")
-        self.assertEqual(dialog.combo_slm_device.count(), 2)
+        self.assertEqual(output_path, Path("dummy.tiff"))
+        slm_adapter.select_running_order.assert_called_once_with(0)
         dialog.close()
 
 

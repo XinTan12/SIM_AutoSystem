@@ -19,7 +19,8 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         self.assertEqual(backend.fusion_bt_sdk_path, "")
         self.assertEqual(backend.slm_sdk_path, "")
-        self.assertEqual(set(vars(backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path"})
+        self.assertFalse(backend.simulation_mode)
+        self.assertEqual(set(vars(backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path", "simulation_mode"})
 
     def test_legacy_backend_payload_ignores_removed_deprecated_flags(self):
         from sim_control.models import AppConfig, BackendConfig, CameraConfig
@@ -60,7 +61,8 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         self.assertEqual(merged.backend.fusion_bt_sdk_path, "E:/sdk/dcam")
         self.assertEqual(merged.backend.slm_sdk_path, "E:/sdk/r11")
-        self.assertEqual(set(vars(merged.backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path"})
+        self.assertFalse(merged.backend.simulation_mode)
+        self.assertEqual(set(vars(merged.backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path", "simulation_mode"})
         self.assertEqual(merged.camera.roi_width, 608)
         self.assertEqual(merged.camera.roi_height, 304)
         self.assertEqual(merged.camera.exposure_us, 25)
@@ -82,7 +84,59 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         self.assertEqual(config.backend.fusion_bt_sdk_path, "E:/sdk/dcam")
         self.assertEqual(config.backend.slm_sdk_path, "E:/sdk/r11")
-        self.assertEqual(set(vars(config.backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path"})
+        self.assertFalse(config.backend.simulation_mode)
+        self.assertEqual(set(vars(config.backend).keys()), {"fusion_bt_sdk_path", "slm_sdk_path", "simulation_mode"})
+
+    def test_v1_config_migration_adds_simulation_mode_default_false(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 1,
+                "backend": {
+                    "fusion_bt_sdk_path": "E:/sdk/dcam",
+                    "slm_sdk_path": "E:/sdk/r11",
+                },
+            }
+        )
+
+        self.assertEqual(config.config_version, 3)
+        self.assertFalse(config.backend.simulation_mode)
+        payload = app_config_to_dict(config)
+        self.assertFalse(payload["backend"]["simulation_mode"])
+        self.assertEqual(payload["selected_running_order"], "")
+        self.assertEqual(payload["config_version"], 3)
+
+    def test_v2_config_migration_adds_selected_running_order_default(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 2,
+                "backend": {
+                    "fusion_bt_sdk_path": "E:/sdk/dcam",
+                    "slm_sdk_path": "E:/sdk/r11",
+                    "simulation_mode": True,
+                },
+            }
+        )
+
+        self.assertEqual(config.config_version, 3)
+        self.assertEqual(config.selected_running_order, "")
+        payload = app_config_to_dict(config)
+        self.assertEqual(payload["selected_running_order"], "")
+        self.assertEqual(payload["config_version"], 3)
+
+    def test_selected_running_order_round_trips_through_config_dict(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+        from sim_control.models import AppConfig
+
+        config = AppConfig(selected_running_order="488_3.5_2d_1ms")
+
+        payload = app_config_to_dict(config)
+        loaded = app_config_from_dict(payload)
+
+        self.assertEqual(loaded.selected_running_order, "488_3.5_2d_1ms")
 
     def test_app_config_loader_defaults_camera_bit_depth_to_16_for_legacy_payloads(self):
         from sim_control.config_store import app_config_from_dict

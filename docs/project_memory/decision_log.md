@@ -5,6 +5,20 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-04-26
+
+### 决策：正式 SIM 采集使用预烧录 SLM Running Order，并由主界面共享单个 R11 adapter
+- 原因：
+  R11 WinUSB 设备不应被 `CellSorting` 主界面和 `SimSettingsDialog` 重复打开；预烧录 `.repz11` 已包含所需 `405/488/561/647 × 1/10/50ms × normal/_ang0` RO，正式采集只需按波长与曝光桶选择非 `_ang0`、`3.5/2d` RO。
+- 影响：
+  `SimSettingsDialog` 不再管理 SLM 连接或 pattern 文件；`control_wangbo` 主界面负责连接 SLM 并共享 `SimAcquisitionController.slm_adapter`。正式 SIM 采集在 SLM 未连接时阻止并提示，连接后选择 RO 并在采集路径中 activate。
+
+### 决策：RO 循环行为依赖 `.repz11` 内部 FINISH-controlled loop，而不是 SDK 运行时循环模式
+- 原因：
+  本地 repertoire 中 RO 使用 `[HWA h]`、`t.wait(20)` 和 `{f ...}` 结构，表示硬件触发后循环执行帧组直到收到 SPI_2 / FINISH；启用 SPI 线的 RO Selection 替代功能会占用 TRIGGER/FINISH，破坏当前 DAQ 线位语义。
+- 影响：
+  保持 `slm_trigger_line` 对应 SPI_1 / TRIGGER，`slm_finish_line` 对应 SPI_2 / FINISH。`1ms RO + 3ms camera exposure` 的预期行为是曝光窗口内重复 RO 直到 FINISH，但仍需真机示波器或图像结果验证。
+
 ## 2026-04-23
 
 ### 决策：跨对话记忆采用仓库内文档，而不是依赖聊天历史
