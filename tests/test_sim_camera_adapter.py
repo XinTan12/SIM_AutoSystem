@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -50,6 +51,55 @@ class CameraConfigTests(unittest.TestCase):
         restored = app_config_from_dict(payload)
 
         self.assertEqual(restored.camera.bit_depth, 12)
+
+
+def _fake_dcamapi4_for_roi_tests():
+    return type(
+        "FakeDcamapi4",
+        (),
+        {
+            "DCAM_IDPROP": type(
+                "Props",
+                (),
+                {
+                    "TRIGGERSOURCE": 101,
+                    "TRIGGERACTIVE": 102,
+                    "TRIGGER_MODE": 103,
+                    "TRIGGERPOLARITY": 104,
+                    "READOUTSPEED": 401,
+                    "SUBARRAYMODE": 201,
+                    "SUBARRAYHPOS": 202,
+                    "SUBARRAYVPOS": 203,
+                    "SUBARRAYHSIZE": 204,
+                    "SUBARRAYVSIZE": 205,
+                    "EXPOSURETIME": 301,
+                    "BITSPERCHANNEL": 504,
+                    "IMAGE_PIXELTYPE": 505,
+                    "TIMING_READOUTTIME": 501,
+                    "TIMING_CYCLICTRIGGERPERIOD": 502,
+                    "TIMING_MINTRIGGERBLANKING": 503,
+                },
+            ),
+            "DCAMPROP": type(
+                "DcamProp",
+                (),
+                {
+                    "TRIGGERSOURCE": type("TriggerSource", (), {"EXTERNAL": 1, "INTERNAL": 2}),
+                    "TRIGGERACTIVE": type("TriggerActive", (), {"LEVEL": 3, "EDGE": 4}),
+                    "TRIGGER_MODE": type("TriggerMode", (), {"NORMAL": 5}),
+                    "TRIGGERPOLARITY": type("TriggerPolarity", (), {"POSITIVE": 6}),
+                    "MODE": type("Mode", (), {"OFF": 0, "ON": 1}),
+                    "READOUTSPEED": type("ReadoutSpeed", (), {"FASTEST": 0x7FFFFFFF}),
+                    "BITSPERCHANNEL": type(
+                        "BitsPerChannel",
+                        (),
+                        {"_8": 8, "_10": 10, "_12": 12, "_14": 14, "_16": 16},
+                    ),
+                },
+            ),
+            "DCAM_PIXELTYPE": type("PixelType", (), {"MONO8": 1, "MONO16": 2}),
+        },
+    )()
 
 
 class FusionBtCameraAdapterTests(unittest.TestCase):
@@ -480,6 +530,212 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
         self.assertEqual(result["applied_bit_depth"], 16)
         self.assertEqual(result["recommended_inter_frame_gap_us"], 6900)
 
+    def test_flash_camera_clips_fusion_roi_to_dcam_subarray_limits(self):
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.set_calls = []
+                self.values = {
+                    201: 0,
+                    202: 0,
+                    203: 0,
+                    204: 2048,
+                    205: 2048,
+                    401: 2,
+                    501: 0.0056,
+                    502: 0.0120,
+                    503: 0.0003,
+                    504: 16,
+                    505: 2,
+                }
+
+            def prop_setgetvalue(self, prop_id, value):
+                self.set_calls.append((prop_id, value))
+                if prop_id in {204, 205} and int(value) > 2048:
+                    return False
+                self.values[prop_id] = int(value) if prop_id != 301 else float(value)
+                return float(self.values[prop_id])
+
+            def prop_getvalue(self, prop_id):
+                return self.values[prop_id]
+
+            def prop_queryvalue(self, prop_id, value):
+                if prop_id == 401:
+                    return 2
+                if prop_id == 504 and value in {12, 16}:
+                    return value
+                return False
+
+            def prop_getattr(self, prop_id):
+                if prop_id in {202, 203}:
+                    return SimpleNamespace(valuemin=0, valuemax=2044, valuestep=4)
+                if prop_id in {204, 205}:
+                    return SimpleNamespace(valuemin=4, valuemax=2048, valuestep=4)
+                return False
+
+            def prop_getvaluetext(self, prop_id, value):
+                if prop_id == 401 and int(value) == 2:
+                    return "Standard scan"
+                return str(value)
+
+            def lasterr(self):
+                return type("Err", (), {"name": "INVALIDPARAM"})()
+
+        dcamapi4 = _fake_dcamapi4_for_roi_tests()
+        adapter = FusionBtCameraAdapter()
+        adapter._initialized = True
+        adapter._dcamapi4 = dcamapi4
+        adapter._dcam_camera = FakeCamera()
+        adapter._connection_info = {"model": "ORCA-Flash4.0 V3", "camera_id": "C13440-20C"}
+        adapter._ensure_camera_open = mock.Mock(return_value=dict(adapter._connection_info))
+
+        config = CameraConfig(roi_width=2304, roi_height=2304, bit_depth=16)
+        result = adapter.apply_config(config)
+
+        self.assertEqual(config.roi_width, 2048)
+        self.assertEqual(config.roi_height, 2048)
+        self.assertEqual(result["applied_roi"], {"x": 0, "y": 0, "width": 2048, "height": 2048})
+        self.assertEqual(result["sensor_width"], 2048)
+        self.assertEqual(result["sensor_height"], 2048)
+        self.assertEqual(result["roi_step_px"], 4)
+        self.assertEqual(result["roi_size_presets"], [(2048, 2048), (1024, 1024), (512, 512)])
+        self.assertIn((204, 2048), adapter._dcam_camera.set_calls)
+        self.assertIn((205, 2048), adapter._dcam_camera.set_calls)
+        self.assertNotIn((204, 2304), adapter._dcam_camera.set_calls)
+
+    def test_flash_camera_clamps_nonzero_roi_origin_to_sensor_bounds_and_step(self):
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.set_calls = []
+                self.values = {
+                    201: 0,
+                    202: 0,
+                    203: 0,
+                    204: 2048,
+                    205: 2048,
+                    401: 2,
+                    501: 0.0056,
+                    502: 0.0120,
+                    503: 0.0003,
+                    504: 16,
+                    505: 2,
+                }
+
+            def prop_setgetvalue(self, prop_id, value):
+                self.set_calls.append((prop_id, value))
+                self.values[prop_id] = int(value) if prop_id != 301 else float(value)
+                return float(self.values[prop_id])
+
+            def prop_getvalue(self, prop_id):
+                return self.values[prop_id]
+
+            def prop_queryvalue(self, prop_id, value):
+                if prop_id == 401:
+                    return 2
+                if prop_id == 504 and value in {12, 16}:
+                    return value
+                return False
+
+            def prop_getattr(self, prop_id):
+                if prop_id in {202, 203}:
+                    return SimpleNamespace(valuemin=0, valuemax=2044, valuestep=4)
+                if prop_id in {204, 205}:
+                    return SimpleNamespace(valuemin=4, valuemax=2048, valuestep=4)
+                return False
+
+            def prop_getvaluetext(self, prop_id, value):
+                return str(value)
+
+            def lasterr(self):
+                return type("Err", (), {"name": "none"})()
+
+        dcamapi4 = _fake_dcamapi4_for_roi_tests()
+        adapter = FusionBtCameraAdapter()
+        adapter._initialized = True
+        adapter._dcamapi4 = dcamapi4
+        adapter._dcam_camera = FakeCamera()
+        adapter._connection_info = {"model": "ORCA-Flash4.0 V3", "camera_id": "C13440-20C"}
+        adapter._ensure_camera_open = mock.Mock(return_value=dict(adapter._connection_info))
+
+        config = CameraConfig(roi_x=1501, roi_y=1477, roi_width=1152, roi_height=1152, bit_depth=16)
+        result = adapter.apply_config(config)
+
+        self.assertEqual(result["applied_roi"], {"x": 896, "y": 896, "width": 1152, "height": 1152})
+        self.assertEqual(config.roi_x, 896)
+        self.assertEqual(config.roi_y, 896)
+        self.assertIn((202, 896), adapter._dcam_camera.set_calls)
+        self.assertIn((203, 896), adapter._dcam_camera.set_calls)
+
+    def test_fusion_camera_preserves_2304_full_frame_roi_when_supported(self):
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.set_calls = []
+                self.values = {
+                    201: 0,
+                    202: 0,
+                    203: 0,
+                    204: 2304,
+                    205: 2304,
+                    401: 3,
+                    501: 0.031649,
+                    502: 0.0155,
+                    503: 0.0,
+                    504: 16,
+                    505: 2,
+                }
+
+            def prop_setgetvalue(self, prop_id, value):
+                self.set_calls.append((prop_id, value))
+                self.values[prop_id] = int(value) if prop_id != 301 else float(value)
+                return float(self.values[prop_id])
+
+            def prop_getvalue(self, prop_id):
+                return self.values[prop_id]
+
+            def prop_queryvalue(self, prop_id, value):
+                if prop_id == 401:
+                    return 3
+                if prop_id == 504 and value in {12, 16}:
+                    return value
+                return False
+
+            def prop_getattr(self, prop_id):
+                if prop_id in {202, 203}:
+                    return SimpleNamespace(valuemin=0, valuemax=2300, valuestep=4)
+                if prop_id in {204, 205}:
+                    return SimpleNamespace(valuemin=4, valuemax=2304, valuestep=4)
+                return False
+
+            def prop_getvaluetext(self, prop_id, value):
+                return str(value)
+
+            def lasterr(self):
+                return type("Err", (), {"name": "none"})()
+
+        dcamapi4 = _fake_dcamapi4_for_roi_tests()
+        adapter = FusionBtCameraAdapter()
+        adapter._initialized = True
+        adapter._dcamapi4 = dcamapi4
+        adapter._dcam_camera = FakeCamera()
+        adapter._connection_info = {"model": "ORCA-Fusion BT", "camera_id": "C15440-20UP"}
+        adapter._ensure_camera_open = mock.Mock(return_value=dict(adapter._connection_info))
+
+        config = CameraConfig(roi_x=120, roi_y=80, roi_width=2304, roi_height=2304, bit_depth=16)
+        result = adapter.apply_config(config)
+
+        self.assertEqual(result["applied_roi"], {"x": 0, "y": 0, "width": 2304, "height": 2304})
+        self.assertEqual(result["roi_size_presets"], [(2304, 2304), (1152, 1152), (576, 576)])
+        self.assertEqual(config.roi_x, 0)
+        self.assertEqual(config.roi_y, 0)
+
 
 class SimAcquisitionControllerTests(unittest.TestCase):
     def test_apply_camera_config_emits_runtime_timing_payload(self):
@@ -507,6 +763,34 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         self.assertEqual(statuses[-1][0], "camera_config_applied")
         self.assertEqual(statuses[-1][1]["applied_bit_depth"], 12)
         self.assertEqual(statuses[-1][1]["supported_bit_depths"], [12, 16])
+
+    def test_apply_camera_config_syncs_applied_roi_from_adapter(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import CameraConfig
+
+        controller = SimAcquisitionController()
+        statuses = []
+        controller.signal_status_changed.connect(lambda status, payload: statuses.append((status, payload)))
+        controller.camera_adapter = mock.Mock()
+        controller.camera_adapter.apply_config.return_value = {
+            "applied_roi": {"x": 0, "y": 0, "width": 2048, "height": 2048},
+            "sensor_width": 2048,
+            "sensor_height": 2048,
+            "roi_step_px": 4,
+            "roi_size_presets": [(2048, 2048), (1024, 1024), (512, 512)],
+        }
+
+        try:
+            config = CameraConfig(roi_width=2304, roi_height=2304)
+            result = controller.apply_camera_config(config)
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        self.assertEqual(config.roi_width, 2048)
+        self.assertEqual(config.roi_height, 2048)
+        self.assertEqual(result["applied_roi"]["width"], 2048)
+        self.assertEqual(statuses[-1][1]["camera_config"]["roi_width"], 2048)
 
     def test_start_single_acquisition_overrides_gap_from_last_camera_timing(self):
         from sim_control.controller import SimAcquisitionController

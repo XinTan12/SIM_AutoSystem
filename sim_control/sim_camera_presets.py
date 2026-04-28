@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Final
 
 
@@ -23,42 +24,100 @@ _SIZE_TO_LABEL: Final[dict[tuple[int, int], str]] = {
 }
 
 
-def coerce_sim_camera_size(width: int, height: int) -> tuple[int, int]:
+def _normalize_size_presets(
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[tuple[int, int], ...]:
+    normalized = tuple((int(width), int(height)) for width, height in (presets or SIM_CAMERA_SIZE_PRESETS))
+    return normalized or SIM_CAMERA_SIZE_PRESETS
+
+
+def build_sim_camera_size_presets(sensor_width: int, sensor_height: int) -> tuple[tuple[int, int], ...]:
+    sensor_width = max(1, int(sensor_width))
+    sensor_height = max(1, int(sensor_height))
+    presets: list[tuple[int, int]] = []
+    for divisor in (1, 2, 4):
+        size = (max(1, sensor_width // divisor), max(1, sensor_height // divisor))
+        if size not in presets:
+            presets.append(size)
+    return tuple(presets)
+
+
+def labels_for_sim_camera_size_presets(
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[str, ...]:
+    return tuple(f"{width} x {height}" for width, height in _normalize_size_presets(presets))
+
+
+def coerce_sim_camera_size(
+    width: int,
+    height: int,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    normalized_presets = _normalize_size_presets(presets)
     size = (int(width), int(height))
-    if size in _SIZE_TO_LABEL:
+    if size in normalized_presets:
         return size
-    return DEFAULT_SIM_CAMERA_SIZE
+    return normalized_presets[0]
 
 
-def label_for_sim_camera_size(width: int, height: int) -> str:
-    return _SIZE_TO_LABEL[coerce_sim_camera_size(width, height)]
+def label_for_sim_camera_size(
+    width: int,
+    height: int,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> str:
+    roi_width, roi_height = coerce_sim_camera_size(width, height, presets)
+    return f"{roi_width} x {roi_height}"
 
 
-def size_from_sim_camera_label(label: str) -> tuple[int, int]:
-    return _LABEL_TO_SIZE.get(str(label).strip(), DEFAULT_SIM_CAMERA_SIZE)
+def size_from_sim_camera_label(
+    label: str,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    normalized_presets = _normalize_size_presets(presets)
+    label_to_size = {
+        f"{width} x {height}": (width, height)
+        for width, height in normalized_presets
+    }
+    return label_to_size.get(str(label).strip(), normalized_presets[0])
 
 
-def preset_index_for_sim_camera_size(width: int, height: int) -> int:
-    coerced = coerce_sim_camera_size(width, height)
-    return SIM_CAMERA_SIZE_PRESETS.index(coerced)
+def preset_index_for_sim_camera_size(
+    width: int,
+    height: int,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> int:
+    normalized_presets = _normalize_size_presets(presets)
+    coerced = coerce_sim_camera_size(width, height, normalized_presets)
+    return normalized_presets.index(coerced)
 
 
-def is_full_frame_sim_camera_size(width: int, height: int) -> bool:
-    return coerce_sim_camera_size(width, height) == SIM_CAMERA_SENSOR_SIZE
+def is_full_frame_sim_camera_size(
+    width: int,
+    height: int,
+    sensor_size: tuple[int, int] | None = None,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> bool:
+    return coerce_sim_camera_size(width, height, presets) == tuple(sensor_size or SIM_CAMERA_SENSOR_SIZE)
 
 
-def sim_camera_roi_origin_bounds(width: int, height: int) -> tuple[int, int]:
-    roi_width, roi_height = coerce_sim_camera_size(width, height)
-    sensor_width, sensor_height = SIM_CAMERA_SENSOR_SIZE
+def sim_camera_roi_origin_bounds(
+    width: int,
+    height: int,
+    sensor_size: tuple[int, int] | None = None,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    roi_width, roi_height = coerce_sim_camera_size(width, height, presets)
+    sensor_width, sensor_height = sensor_size or SIM_CAMERA_SENSOR_SIZE
     return (
         max(0, sensor_width - roi_width),
         max(0, sensor_height - roi_height),
     )
 
 
-def _align_sim_camera_roi_origin(value: int, max_value: int) -> int:
+def _align_sim_camera_roi_origin(value: int, max_value: int, step_px: int = SIM_CAMERA_ROI_STEP_PX) -> int:
     clamped = min(max(int(value), 0), int(max_value))
-    return int(clamped // SIM_CAMERA_ROI_STEP_PX) * SIM_CAMERA_ROI_STEP_PX
+    step_px = max(1, int(step_px))
+    return int(clamped // step_px) * step_px
 
 
 def normalize_sim_camera_roi(
@@ -66,14 +125,17 @@ def normalize_sim_camera_roi(
     height: int,
     roi_x: int,
     roi_y: int,
+    sensor_size: tuple[int, int] | None = None,
+    step_px: int = SIM_CAMERA_ROI_STEP_PX,
+    presets: Sequence[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int]:
-    roi_width, roi_height = coerce_sim_camera_size(width, height)
-    if is_full_frame_sim_camera_size(roi_width, roi_height):
+    roi_width, roi_height = coerce_sim_camera_size(width, height, presets)
+    if is_full_frame_sim_camera_size(roi_width, roi_height, sensor_size=sensor_size, presets=presets):
         return roi_width, roi_height, 0, 0
 
-    max_x, max_y = sim_camera_roi_origin_bounds(roi_width, roi_height)
-    normalized_x = _align_sim_camera_roi_origin(roi_x, max_x)
-    normalized_y = _align_sim_camera_roi_origin(roi_y, max_y)
+    max_x, max_y = sim_camera_roi_origin_bounds(roi_width, roi_height, sensor_size=sensor_size, presets=presets)
+    normalized_x = _align_sim_camera_roi_origin(roi_x, max_x, step_px=step_px)
+    normalized_y = _align_sim_camera_roi_origin(roi_y, max_y, step_px=step_px)
     return roi_width, roi_height, normalized_x, normalized_y
 
 
