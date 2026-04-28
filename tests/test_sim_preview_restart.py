@@ -953,6 +953,129 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(bit_depth_combo.currentText(), "16-bit")
         self.assertEqual(camera.bit_depth, 16)
 
+    def test_apply_sim_camera_runtime_capabilities_refreshes_flash_roi_presets(self):
+        legacy_main = load_legacy_main_module()
+        camera = SimpleNamespace(
+            roi_x=0,
+            roi_y=0,
+            roi_width=2304,
+            roi_height=2304,
+            exposure_us=20_000,
+            bit_depth=16,
+            timeout_ms=5000,
+            device_index=0,
+            device_label="0: C13440-20C [S/N: 305209]",
+        )
+        image_size_combo = ComboBoxSpy(text="2304 x 2304", enabled=True)
+        roi_x_spin = SpinBoxSpy(0, maximum=0, enabled=False)
+        roi_y_spin = SpinBoxSpy(0, maximum=0, enabled=False)
+        window = SimpleNamespace(
+            sim_app_config=SimpleNamespace(camera=camera, config_path="dummy.json"),
+            refresh_sim_settings_summary=mock.Mock(),
+            ui=SimpleNamespace(
+                cmb_sCMOS_imageSize=image_size_combo,
+                spb_sCMOS_ROI_X=roi_x_spin,
+                spb_sCMOS_ROI_Y=roi_y_spin,
+                spb_sCMOS_exposureTime=SpinBoxSpy(20),
+            ),
+        )
+        window.sync_sim_camera_roi_position_controls = (
+            lambda controls_enabled=None: legacy_main.MainWindow.sync_sim_camera_roi_position_controls(
+                window,
+                controls_enabled=controls_enabled,
+            )
+        )
+
+        legacy_main.MainWindow.apply_sim_camera_runtime_capabilities(
+            window,
+            {
+                "applied_roi": {"x": 0, "y": 0, "width": 2048, "height": 2048},
+                "sensor_width": 2048,
+                "sensor_height": 2048,
+                "roi_step_px": 4,
+                "roi_size_presets": [(2048, 2048), (1024, 1024), (512, 512)],
+            },
+            save_to_disk=False,
+        )
+
+        self.assertEqual(image_size_combo.items, ["2048 x 2048", "1024 x 1024", "512 x 512"])
+        self.assertEqual(image_size_combo.currentText(), "2048 x 2048")
+        self.assertEqual(camera.roi_width, 2048)
+        self.assertEqual(camera.roi_height, 2048)
+        self.assertEqual(roi_x_spin.maximum(), 0)
+        self.assertEqual(roi_y_spin.maximum(), 0)
+        self.assertFalse(roi_x_spin.isEnabled())
+        self.assertFalse(roi_y_spin.isEnabled())
+
+    def test_connect_button_persists_applied_flash_roi_from_runtime_payload(self):
+        legacy_main = load_legacy_main_module()
+        camera = SimpleNamespace(
+            roi_x=0,
+            roi_y=0,
+            roi_width=2304,
+            roi_height=2304,
+            exposure_us=20_000,
+            timeout_ms=1000,
+            device_index=0,
+            device_label="",
+            bit_depth=16,
+        )
+        controller = SimpleNamespace(
+            connect_camera=mock.Mock(return_value={"supported_bit_depths": [12, 16]}),
+            apply_camera_config=mock.Mock(
+                return_value={
+                    "applied_roi": {"x": 0, "y": 0, "width": 2048, "height": 2048},
+                    "sensor_width": 2048,
+                    "sensor_height": 2048,
+                    "roi_step_px": 4,
+                    "roi_size_presets": [(2048, 2048), (1024, 1024), (512, 512)],
+                    "supported_bit_depths": [12, 16],
+                }
+            ),
+            disconnect_camera=mock.Mock(),
+        )
+        image_size_combo = ComboBoxSpy(text="2304 x 2304", enabled=True)
+        window = SimpleNamespace(
+            sim_camera_connected=False,
+            sim_available_cameras=[{"index": 0, "display": "0: C13440-20C [S/N: 305209]"}],
+            sim_app_config=SimpleNamespace(camera=camera, config_path="dummy.json"),
+            sim_acquisition_controller=controller,
+            ensure_sim_runtime=lambda: None,
+            set_sim_camera_controls_enabled=lambda enabled: None,
+            update_sim_camera_action_buttons=lambda: None,
+            refresh_sim_settings_summary=lambda: None,
+            sim_runtime_timing_snapshot={},
+            ui=SimpleNamespace(
+                cmb_sCMOS_camera=ComboBoxSpy(current_index=0),
+                cmb_sCMOS_imageSize=image_size_combo,
+                spb_sCMOS_ROI_X=SpinBoxSpy(0, maximum=0, enabled=False),
+                spb_sCMOS_ROI_Y=SpinBoxSpy(0, maximum=0, enabled=False),
+                spb_sCMOS_exposureTime=SpinBoxSpy(20),
+                cmb_sCMOS_bitDepth=ComboBoxSpy(text="16-bit"),
+            ),
+        )
+        window.sync_sim_camera_roi_position_controls = (
+            lambda controls_enabled=None: legacy_main.MainWindow.sync_sim_camera_roi_position_controls(
+                window,
+                controls_enabled=controls_enabled,
+            )
+        )
+        window.sync_sim_camera_config_from_ui = (
+            lambda save_to_disk=True: legacy_main.MainWindow.sync_sim_camera_config_from_ui(
+                window,
+                save_to_disk=save_to_disk,
+            )
+        )
+
+        with mock.patch.object(legacy_main, "save_app_config") as save_mock:
+            legacy_main.MainWindow.btn_sCMOS_connection_function(window)
+
+        self.assertTrue(window.sim_camera_connected)
+        self.assertEqual(camera.roi_width, 2048)
+        self.assertEqual(camera.roi_height, 2048)
+        self.assertEqual(image_size_combo.items, ["2048 x 2048", "1024 x 1024", "512 x 512"])
+        save_mock.assert_called()
+
     def test_slot_handle_sim_acquisition_status_refreshes_summary_from_runtime_timing(self):
         legacy_main = load_legacy_main_module()
         refresh_calls = []

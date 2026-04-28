@@ -12,12 +12,12 @@
   },
   "camera": {
     "device_index": 0,
-    "device_label": "0: C15440-20UP [S/N: 501679]",
+    "device_label": "0: C13440-20C [S/N: 305209]",
     "roi_x": 0,
     "roi_y": 0,
-    "roi_width": 2304,
-    "roi_height": 2304,
-    "exposure_us": 100000,
+    "roi_width": 2048,
+    "roi_height": 2048,
+    "exposure_us": 20000,
     "bit_depth": 16,
     "timeout_ms": 5000,
     "trigger_mode": "external_level"
@@ -47,5 +47,5 @@
   "selected_running_order": "",
   "selected_laser_nm": 488,
   "config_version": 3,
-  "config_path": "E:\\Intelligent_SR\\SIM_AutoSystem\\config\\sim_control_config.json"
+  "config_path": "F:\\SIM_AutoSystem\\config\\sim_control_config.json"
 }

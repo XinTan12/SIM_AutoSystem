@@ -42,11 +42,13 @@ from sim_control.preview_contrast import AutoContrastState, auto_uint16_to_uint8
 from sim_control.summary import build_sim_settings_summary
 from sim_control.sim_camera_presets import (
     DEFAULT_SIM_CAMERA_SIZE,
+    SIM_CAMERA_SIZE_PRESETS,
     SIM_CAMERA_ROI_STEP_PX,
+    build_sim_camera_size_presets,
     fit_image_size_to_bounds,
     is_full_frame_sim_camera_size,
+    labels_for_sim_camera_size_presets,
     normalize_sim_camera_roi,
-    preset_index_for_sim_camera_size,
     sim_camera_roi_origin_bounds,
     size_from_sim_camera_label,
 )
@@ -255,6 +257,9 @@ class MainWindow(qw.QWidget):
         self.sim_last_preview_frame = None
         self.sim_last_preview_sequence = -1
         self.sim_auto_contrast_state = AutoContrastState()
+        self.sim_camera_sensor_size = DEFAULT_SIM_CAMERA_SIZE
+        self.sim_camera_size_presets = SIM_CAMERA_SIZE_PRESETS
+        self.sim_camera_roi_step_px = SIM_CAMERA_ROI_STEP_PX
         self.ui.chb_sCMOS_autoContrast.toggled.connect(lambda _checked: self.sim_auto_contrast_state.reset())
         self.sim_preview_restart_timer = QTimer(self)
         self.sim_preview_restart_timer.setSingleShot(True)
@@ -713,6 +718,38 @@ class MainWindow(qw.QWidget):
         runtime_timing = dict(getattr(self, "sim_runtime_timing_snapshot", {}) or {})
         self.ui.pte_simSummary.setPlainText(build_sim_settings_summary(sim_config, runtime_timing=runtime_timing))
 
+    def current_sim_camera_size_presets(self):
+        return tuple(getattr(self, "sim_camera_size_presets", SIM_CAMERA_SIZE_PRESETS) or SIM_CAMERA_SIZE_PRESETS)
+
+    def current_sim_camera_sensor_size(self):
+        return tuple(getattr(self, "sim_camera_sensor_size", DEFAULT_SIM_CAMERA_SIZE) or DEFAULT_SIM_CAMERA_SIZE)
+
+    def current_sim_camera_roi_step_px(self):
+        return max(1, int(getattr(self, "sim_camera_roi_step_px", SIM_CAMERA_ROI_STEP_PX) or SIM_CAMERA_ROI_STEP_PX))
+
+    def refresh_sim_camera_size_choices(self, selected_size=None):
+        combo = self.ui.cmb_sCMOS_imageSize
+        presets = MainWindow.current_sim_camera_size_presets(self)
+        if selected_size is None:
+            selected_size = (
+                int(self.sim_app_config.camera.roi_width),
+                int(self.sim_app_config.camera.roi_height),
+            )
+        selected_label = f"{int(selected_size[0])} x {int(selected_size[1])}"
+        labels = labels_for_sim_camera_size_presets(presets)
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for label in labels:
+                combo.addItem(label)
+            target_index = combo.findText(selected_label)
+            if target_index < 0:
+                target_index = 0
+            combo.setCurrentIndex(target_index)
+            combo.setCurrentText(combo.itemText(target_index))
+        finally:
+            combo.blockSignals(False)
+
     def configure_sim_camera_spinboxes(self):
         for spinbox in (
             self.ui.spb_sCMOS_ROI_X,
@@ -720,12 +757,20 @@ class MainWindow(qw.QWidget):
             self.ui.spb_sCMOS_exposureTime,
         ):
             spinbox.setKeyboardTracking(False)
-        self.ui.spb_sCMOS_ROI_X.setSingleStep(SIM_CAMERA_ROI_STEP_PX)
-        self.ui.spb_sCMOS_ROI_Y.setSingleStep(SIM_CAMERA_ROI_STEP_PX)
+        step_px = MainWindow.current_sim_camera_roi_step_px(self)
+        self.ui.spb_sCMOS_ROI_X.setSingleStep(step_px)
+        self.ui.spb_sCMOS_ROI_Y.setSingleStep(step_px)
 
     def sync_sim_camera_roi_position_controls(self, controls_enabled=None):
         camera = self.sim_app_config.camera
-        max_x, max_y = sim_camera_roi_origin_bounds(camera.roi_width, camera.roi_height)
+        presets = MainWindow.current_sim_camera_size_presets(self)
+        sensor_size = MainWindow.current_sim_camera_sensor_size(self)
+        max_x, max_y = sim_camera_roi_origin_bounds(
+            camera.roi_width,
+            camera.roi_height,
+            sensor_size=sensor_size,
+            presets=presets,
+        )
         blocked_widgets = (
             self.ui.spb_sCMOS_ROI_X,
             self.ui.spb_sCMOS_ROI_Y,
@@ -746,6 +791,8 @@ class MainWindow(qw.QWidget):
         roi_position_enabled = bool(controls_enabled) and not is_full_frame_sim_camera_size(
             camera.roi_width,
             camera.roi_height,
+            sensor_size=sensor_size,
+            presets=presets,
         )
         self.ui.spb_sCMOS_ROI_X.setEnabled(roi_position_enabled)
         self.ui.spb_sCMOS_ROI_Y.setEnabled(roi_position_enabled)
@@ -753,11 +800,17 @@ class MainWindow(qw.QWidget):
     def sync_sim_camera_controls_from_config(self):
         camera = self.sim_app_config.camera
         bit_depth_combo = getattr(self.ui, "cmb_sCMOS_bitDepth", None)
+        presets = MainWindow.current_sim_camera_size_presets(self)
+        sensor_size = MainWindow.current_sim_camera_sensor_size(self)
+        step_px = MainWindow.current_sim_camera_roi_step_px(self)
         roi_width, roi_height, roi_x, roi_y = normalize_sim_camera_roi(
             camera.roi_width,
             camera.roi_height,
             camera.roi_x,
             camera.roi_y,
+            sensor_size=sensor_size,
+            step_px=step_px,
+            presets=presets,
         )
         camera.roi_width = roi_width
         camera.roi_height = roi_height
@@ -772,8 +825,9 @@ class MainWindow(qw.QWidget):
         for widget in blocked_widgets:
             widget.blockSignals(True)
         try:
-            self.ui.cmb_sCMOS_imageSize.setCurrentIndex(
-                preset_index_for_sim_camera_size(camera.roi_width, camera.roi_height)
+            MainWindow.refresh_sim_camera_size_choices(
+                self,
+                selected_size=(camera.roi_width, camera.roi_height),
             )
             self.ui.spb_sCMOS_exposureTime.setValue(sim_exposure_us_to_ms(camera.exposure_us))
             if bit_depth_combo is not None:
@@ -822,12 +876,21 @@ class MainWindow(qw.QWidget):
     def sync_sim_camera_config_from_ui(self, save_to_disk=True):
         camera = self.sim_app_config.camera
         bit_depth_combo = getattr(self.ui, "cmb_sCMOS_bitDepth", None)
-        roi_width, roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        presets = MainWindow.current_sim_camera_size_presets(self)
+        sensor_size = MainWindow.current_sim_camera_sensor_size(self)
+        step_px = MainWindow.current_sim_camera_roi_step_px(self)
+        roi_width, roi_height = size_from_sim_camera_label(
+            self.ui.cmb_sCMOS_imageSize.currentText(),
+            presets=presets,
+        )
         roi_width, roi_height, roi_x, roi_y = normalize_sim_camera_roi(
             roi_width,
             roi_height,
             self.ui.spb_sCMOS_ROI_X.value(),
             self.ui.spb_sCMOS_ROI_Y.value(),
+            sensor_size=sensor_size,
+            step_px=step_px,
+            presets=presets,
         )
         camera.roi_x = roi_x
         camera.roi_y = roi_y
@@ -1079,7 +1142,10 @@ class MainWindow(qw.QWidget):
             qw.QMessageBox.warning(self, "SIM Camera", str(e))
 
     def on_sim_camera_size_activated(self, *_):
-        roi_width, roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        roi_width, roi_height = size_from_sim_camera_label(
+            self.ui.cmb_sCMOS_imageSize.currentText(),
+            presets=MainWindow.current_sim_camera_size_presets(self),
+        )
         if (
             roi_width == int(self.sim_app_config.camera.roi_width)
             and roi_height == int(self.sim_app_config.camera.roi_height)
@@ -1460,11 +1526,96 @@ class MainWindow(qw.QWidget):
                 self.start_sim_preview()
             qw.QMessageBox.warning(self, "SIM Acquisition Error", str(e))
 
+    def apply_sim_camera_runtime_capabilities(self, payload, save_to_disk=False):
+        payload = dict(payload or {})
+        if not hasattr(self, "sim_app_config"):
+            return
+        camera = self.sim_app_config.camera
+
+        sensor_width = payload.get("sensor_width")
+        sensor_height = payload.get("sensor_height")
+        if sensor_width is not None and sensor_height is not None:
+            try:
+                self.sim_camera_sensor_size = (
+                    max(1, int(sensor_width)),
+                    max(1, int(sensor_height)),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        roi_step_px = payload.get("roi_step_px")
+        if roi_step_px is not None:
+            try:
+                self.sim_camera_roi_step_px = max(1, int(roi_step_px))
+            except (TypeError, ValueError):
+                pass
+
+        roi_size_presets = payload.get("roi_size_presets")
+        normalized_presets = []
+        for preset in roi_size_presets or []:
+            try:
+                width, height = preset
+                normalized_presets.append((max(1, int(width)), max(1, int(height))))
+            except (TypeError, ValueError):
+                continue
+        if normalized_presets:
+            self.sim_camera_size_presets = tuple(normalized_presets)
+        elif sensor_width is not None and sensor_height is not None:
+            sensor_size = MainWindow.current_sim_camera_sensor_size(self)
+            self.sim_camera_size_presets = build_sim_camera_size_presets(
+                sensor_size[0],
+                sensor_size[1],
+            )
+
+        applied_roi = payload.get("applied_roi")
+        if isinstance(applied_roi, dict):
+            camera.roi_x = int(applied_roi.get("x", camera.roi_x))
+            camera.roi_y = int(applied_roi.get("y", camera.roi_y))
+            camera.roi_width = int(applied_roi.get("width", camera.roi_width))
+            camera.roi_height = int(applied_roi.get("height", camera.roi_height))
+        else:
+            camera.roi_width, camera.roi_height, camera.roi_x, camera.roi_y = normalize_sim_camera_roi(
+                camera.roi_width,
+                camera.roi_height,
+                camera.roi_x,
+                camera.roi_y,
+                sensor_size=MainWindow.current_sim_camera_sensor_size(self),
+                step_px=MainWindow.current_sim_camera_roi_step_px(self),
+                presets=MainWindow.current_sim_camera_size_presets(self),
+            )
+
+        ui = getattr(self, "ui", None)
+        if ui is not None and hasattr(ui, "cmb_sCMOS_imageSize"):
+            MainWindow.refresh_sim_camera_size_choices(
+                self,
+                selected_size=(camera.roi_width, camera.roi_height),
+            )
+        sync_roi_controls = getattr(self, "sync_sim_camera_roi_position_controls", None)
+        if callable(sync_roi_controls):
+            sync_roi_controls()
+        elif ui is not None and hasattr(ui, "spb_sCMOS_ROI_X") and hasattr(ui, "spb_sCMOS_ROI_Y"):
+            MainWindow.sync_sim_camera_roi_position_controls(self)
+
+        if save_to_disk:
+            save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+        refresh_summary = getattr(self, "refresh_sim_settings_summary", None)
+        if callable(refresh_summary):
+            refresh_summary()
+
     def update_sim_runtime_timing_from_payload(self, payload):
         payload = dict(payload or {})
         self.sim_runtime_timing_snapshot = payload
         if payload.get("applied_bit_depth") is not None and hasattr(self, "sim_app_config"):
             self.sim_app_config.camera.bit_depth = int(payload["applied_bit_depth"])
+        roi_capability_keys = {
+            "applied_roi",
+            "sensor_width",
+            "sensor_height",
+            "roi_step_px",
+            "roi_size_presets",
+        }
+        if roi_capability_keys.intersection(payload):
+            MainWindow.apply_sim_camera_runtime_capabilities(self, payload, save_to_disk=False)
         supported_bit_depths = payload.get("supported_bit_depths")
         if supported_bit_depths:
             MainWindow.refresh_sim_camera_bit_depth_choices(self, supported_bit_depths)
@@ -1553,7 +1704,10 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_fastCamera_displayGray_max']         = self.ui.spb_fastCamera_displayGray_max.value()
         configure_settings['spb_fastCamera_displayGray_max']         = self.ui.spb_fastCamera_displayGray_max.value()
         #Camera Settings模块 sCMOS
-        sim_roi_width, sim_roi_height = size_from_sim_camera_label(self.ui.cmb_sCMOS_imageSize.currentText())
+        sim_roi_width, sim_roi_height = size_from_sim_camera_label(
+            self.ui.cmb_sCMOS_imageSize.currentText(),
+            presets=MainWindow.current_sim_camera_size_presets(self),
+        )
         configure_settings['spb_sCMOS_pixelWidth']              = sim_roi_width
         configure_settings['spb_sCMOS_pixelHeight']             = sim_roi_height
         configure_settings['spb_sCMOS_exposureTime']            = normalize_legacy_sim_exposure_setting(
@@ -1666,7 +1820,10 @@ class MainWindow(qw.QWidget):
             # 设置Camera Settings模块 sCMOS
             sim_width = configure_settings.get('spb_sCMOS_pixelWidth', DEFAULT_SIM_CAMERA_SIZE[0])
             sim_height = configure_settings.get('spb_sCMOS_pixelHeight', DEFAULT_SIM_CAMERA_SIZE[1])
-            self.ui.cmb_sCMOS_imageSize.setCurrentIndex(preset_index_for_sim_camera_size(sim_width, sim_height))
+            MainWindow.refresh_sim_camera_size_choices(
+                self,
+                selected_size=(sim_width, sim_height),
+            )
             self.ui.spb_sCMOS_exposureTime.setValue(
                 normalize_legacy_sim_exposure_setting(
                     configure_settings.get('spb_sCMOS_exposureTime', SIM_EXPOSURE_DEFAULT_MS)
@@ -2287,11 +2444,26 @@ class MainWindow(qw.QWidget):
                 device_label=self.sim_app_config.camera.device_label,
             )
             camera_result = self.sim_acquisition_controller.apply_camera_config(self.sim_app_config.camera) or {}
+            if not isinstance(camera_result, dict):
+                camera_result = {}
             supported_bit_depths = camera_result.get("supported_bit_depths")
             if not supported_bit_depths and isinstance(connection_info, dict):
                 supported_bit_depths = connection_info.get("supported_bit_depths")
-            if supported_bit_depths:
-                MainWindow.refresh_sim_camera_bit_depth_choices(self, supported_bit_depths)
+            runtime_payload = {
+                "camera_config": dict(getattr(self.sim_app_config.camera, "__dict__", {})),
+                **dict(camera_result),
+            }
+            if supported_bit_depths and "supported_bit_depths" not in runtime_payload:
+                runtime_payload["supported_bit_depths"] = supported_bit_depths
+            MainWindow.update_sim_runtime_timing_from_payload(self, runtime_payload)
+            if {
+                "applied_roi",
+                "sensor_width",
+                "sensor_height",
+                "roi_step_px",
+                "roi_size_presets",
+            }.intersection(runtime_payload):
+                save_app_config(self.sim_app_config, self.sim_app_config.config_path)
         except Exception as e:
             try:
                 self.sim_acquisition_controller.disconnect_camera()

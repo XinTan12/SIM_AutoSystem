@@ -151,6 +151,12 @@ class SimAcquisitionController(QObject):
         result = self.camera_adapter.apply_config(config) or {}
         if result.get("applied_bit_depth") is not None:
             config.bit_depth = int(result["applied_bit_depth"])
+        applied_roi = result.get("applied_roi")
+        if isinstance(applied_roi, dict):
+            config.roi_x = int(applied_roi.get("x", config.roi_x))
+            config.roi_y = int(applied_roi.get("y", config.roi_y))
+            config.roi_width = int(applied_roi.get("width", config.roi_width))
+            config.roi_height = int(applied_roi.get("height", config.roi_height))
         self._latest_camera_timing = dict(result)
         payload = {"camera_config": dict(config.__dict__), **dict(result)}
         self.signal_status_changed.emit("camera_config_applied", payload)

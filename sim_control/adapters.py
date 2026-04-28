@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from .models import CameraConfig, PatternPreparationResult
+from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE, SIM_CAMERA_ROI_STEP_PX, build_sim_camera_size_presets
 from .waveform import WaveformPlan
 
 try:
@@ -626,6 +627,123 @@ class FusionBtCameraAdapter:
             return ""
         return "" if text is False or text is None else str(text)
 
+    def _get_property_attr(self, prop_id: int) -> Any | None:
+        if not hasattr(self._dcam_camera, "prop_getattr"):
+            return None
+        try:
+            attr = self._dcam_camera.prop_getattr(prop_id)
+        except Exception:
+            return None
+        return None if attr is False or attr is None else attr
+
+    @staticmethod
+    def _attr_int(attr: Any | None, name: str, default: int) -> int:
+        if attr is None:
+            return int(default)
+        try:
+            return int(round(float(getattr(attr, name))))
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _align_long_value(value: int, minimum: int, maximum: int, step: int) -> int:
+        minimum = int(minimum)
+        maximum = max(minimum, int(maximum))
+        step = max(1, int(step))
+        clamped = min(max(int(value), minimum), maximum)
+        return minimum + ((clamped - minimum) // step) * step
+
+    def _roi_axis_limits(self, offset_prop: int, size_prop: int, fallback_sensor_size: int) -> dict[str, int]:
+        offset_attr = self._get_property_attr(offset_prop)
+        size_attr = self._get_property_attr(size_prop)
+        sensor_size = max(1, self._attr_int(size_attr, "valuemax", fallback_sensor_size))
+        min_size = max(1, self._attr_int(size_attr, "valuemin", 1))
+        size_step = max(1, self._attr_int(size_attr, "valuestep", SIM_CAMERA_ROI_STEP_PX))
+        offset_step = max(1, self._attr_int(offset_attr, "valuestep", size_step))
+        max_offset = max(0, self._attr_int(offset_attr, "valuemax", sensor_size - min_size))
+        return {
+            "sensor_size": sensor_size,
+            "min_size": min(min_size, sensor_size),
+            "size_step": size_step,
+            "offset_step": offset_step,
+            "max_offset": max_offset,
+        }
+
+    def _resolve_roi_axis(self, requested_offset: int, requested_size: int, limits: dict[str, int]) -> tuple[int, int]:
+        sensor_size = int(limits["sensor_size"])
+        size = self._align_long_value(
+            requested_size,
+            limits["min_size"],
+            sensor_size,
+            limits["size_step"],
+        )
+        max_offset = max(0, min(int(limits["max_offset"]), sensor_size - size))
+        offset = self._align_long_value(
+            requested_offset,
+            0,
+            max_offset,
+            limits["offset_step"],
+        )
+        return offset, size
+
+    def _resolve_roi_config(self, config: CameraConfig) -> dict[str, Any]:
+        dcamapi4 = self._dcamapi4
+        fallback_width, fallback_height = DEFAULT_SIM_CAMERA_SIZE
+        h_limits = self._roi_axis_limits(
+            dcamapi4.DCAM_IDPROP.SUBARRAYHPOS,
+            dcamapi4.DCAM_IDPROP.SUBARRAYHSIZE,
+            fallback_sensor_size=fallback_width,
+        )
+        v_limits = self._roi_axis_limits(
+            dcamapi4.DCAM_IDPROP.SUBARRAYVPOS,
+            dcamapi4.DCAM_IDPROP.SUBARRAYVSIZE,
+            fallback_sensor_size=fallback_height,
+        )
+        roi_x, roi_width = self._resolve_roi_axis(config.roi_x, config.roi_width, h_limits)
+        roi_y, roi_height = self._resolve_roi_axis(config.roi_y, config.roi_height, v_limits)
+        sensor_width = int(h_limits["sensor_size"])
+        sensor_height = int(v_limits["sensor_size"])
+        roi_step_px = max(1, int(max(h_limits["offset_step"], v_limits["offset_step"])))
+        return {
+            "applied_roi": {
+                "x": int(roi_x),
+                "y": int(roi_y),
+                "width": int(roi_width),
+                "height": int(roi_height),
+            },
+            "sensor_width": sensor_width,
+            "sensor_height": sensor_height,
+            "roi_step_px": roi_step_px,
+            "roi_size_presets": list(build_sim_camera_size_presets(sensor_width, sensor_height)),
+        }
+
+    def _apply_roi_axis(self, offset_prop: int, size_prop: int, offset: int, size: int) -> None:
+        current_size = self._try_get_property(size_prop)
+        if current_size is not None and int(size) < int(round(current_size)):
+            self._set_property(size_prop, size)
+            self._set_property(offset_prop, offset)
+            return
+        self._set_property(offset_prop, offset)
+        self._set_property(size_prop, size)
+
+    def _apply_roi_config(self, roi_summary: dict[str, Any]) -> None:
+        dcamapi4 = self._dcamapi4
+        applied_roi = roi_summary["applied_roi"]
+        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.OFF)
+        self._apply_roi_axis(
+            dcamapi4.DCAM_IDPROP.SUBARRAYHPOS,
+            dcamapi4.DCAM_IDPROP.SUBARRAYHSIZE,
+            applied_roi["x"],
+            applied_roi["width"],
+        )
+        self._apply_roi_axis(
+            dcamapi4.DCAM_IDPROP.SUBARRAYVPOS,
+            dcamapi4.DCAM_IDPROP.SUBARRAYVSIZE,
+            applied_roi["y"],
+            applied_roi["height"],
+        )
+        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.ON)
+
     def _camera_signature(self) -> str:
         parts = [
             str(self._connection_info.get("model", "")),
@@ -818,12 +936,13 @@ class FusionBtCameraAdapter:
         supported_bit_depths, applied_bit_depth = self._resolve_bit_depth(config.bit_depth)
         self._apply_bit_depth(applied_bit_depth)
         config.bit_depth = int(applied_bit_depth)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.OFF)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYHPOS, config.roi_x)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYVPOS, config.roi_y)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYHSIZE, config.roi_width)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYVSIZE, config.roi_height)
-        self._set_property(dcamapi4.DCAM_IDPROP.SUBARRAYMODE, dcamapi4.DCAMPROP.MODE.ON)
+        roi_summary = self._resolve_roi_config(config)
+        self._apply_roi_config(roi_summary)
+        applied_roi = roi_summary["applied_roi"]
+        config.roi_x = int(applied_roi["x"])
+        config.roi_y = int(applied_roi["y"])
+        config.roi_width = int(applied_roi["width"])
+        config.roi_height = int(applied_roi["height"])
         exposure_s = config.exposure_us / 1_000_000.0
         self._set_property(dcamapi4.DCAM_IDPROP.EXPOSURETIME, exposure_s)
         summary = self._read_timing_summary(
@@ -832,6 +951,7 @@ class FusionBtCameraAdapter:
             applied_bit_depth=applied_bit_depth,
             applied_readout_speed_value=applied_readout_speed_value,
         )
+        summary.update(roi_summary)
         self._connection_info["supported_bit_depths"] = list(supported_bit_depths)
         return summary
 
