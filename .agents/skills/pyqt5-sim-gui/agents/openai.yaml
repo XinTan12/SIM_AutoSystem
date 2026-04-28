@@ -1,0 +1,4 @@
+interface:
+  display_name: "PyQt5 SIM GUI"
+  short_description: "Project-specific PyQt5 GUI rules for SIM_AutoSystem."
+  default_prompt: "Use this skill when editing the SIM_AutoSystem PyQt5 GUI."
