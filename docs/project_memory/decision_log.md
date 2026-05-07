@@ -7,6 +7,12 @@
 
 ## 2026-05-07
 
+### 决策：AI 工具项目说明统一以 `AGENTS.md` 为唯一权威入口
+- 原因：
+  `CLAUDE.md` 和 `AGENTS.md` 同时维护项目说明会导致 Claude Code、Codex、Cursor、Cline 等工具读到不同的路径、硬件边界和工作规则；统一到单一主指令文件可以避免双源漂移。
+- 影响：
+  `AGENTS.md` 负责保存稳定的项目说明、长期规则、架构边界、硬件约束和跨对话记忆规则。`CLAUDE.md` 仅保留 Claude Code 兼容薄壳，并通过 `@AGENTS.md` 引用主文件。后续任何 AI 工具需要修改项目说明时只修改 `AGENTS.md`；当前状态和最近更新仍写入 `PROJECT_MEMORY.md`，关键长期决策仍写入本文件。
+
 ### 决策：SIM9 采集回到 NI USB-6423 单 DAQ 路线，不再使用 PXIe-7857R / NI-RIO
 - 原因：
   项目计划已变更，当前目标只需要通过 USB-6423 采集卡完成 SIM 9 帧图像采集流程；继续维护 PXIe-7857R Python Host、NI-RIO bitfile 诊断和 LabVIEW rebuild 链路会增加无必要的配置面、依赖和硬件联调成本。

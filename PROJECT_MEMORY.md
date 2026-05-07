@@ -87,6 +87,7 @@
 - 在后续每次状态变化后持续维护本文件和决策日志，保证跨对话记忆有效。
 
 ## 最近更新
+- 2026-05-07：统一 AI 工具项目说明入口：`AGENTS.md` 已重写为唯一主指令文件，合并原 `CLAUDE.md` 与旧 `AGENTS.md` 的有效信息，并明确后续任何 AI 工具修改项目说明时只改 `AGENTS.md`；`CLAUDE.md` 已改为仅说明该规则并通过 `@AGENTS.md` 引用主文件的薄壳。
 - 2026-05-07：按项目计划变更回退到 USB-6423-only 代码状态。tracked 文件恢复到 `7241893`（2026-04-28，`Merge pull request #2 from XinTan12/codex/orca-flash-roi`），并删除未跟踪的 PXIe-7857R / NI-RIO / LabVIEW rebuild 相关模块、文档和测试面；当前只保留 USB-6423 波形驱动的 SIM 9 帧采集流程。回退前的工作区 diff、状态、未跟踪清单和被删未跟踪文件副本保存在 `.tmp/rollback-backup/`。
 - 2026-05-07：合并 `PROJECT_MEMORY.md` 中英文最近更新记录，删除英文最近更新章节；后续项目记忆更新统一写入中文“最近更新”。
 - 2026-04-28：新增 Hamamatsu ORCA-Flash 4.0 ROI 能力适配。`FusionBtCameraAdapter` 通过 `prop_getattr()` 读取 DCAM `SUBARRAYHPOS/HSIZE/VPOS/VSIZE` 属性范围，将请求的 ROI 尺寸和原点裁剪到相机支持的边界与步进，并按避免瞬时非法组合的顺序应用 subarray 大小/偏移变更。适配器返回 `applied_roi`、`sensor_width`、`sensor_height`、`roi_step_px` 和动态 `roi_size_presets`；controller 会从 `applied_roi` 同步 `CameraConfig`，集成的 `control_wangbo` SIM 相机 UI 会刷新图像尺寸选项、ROI spinbox 范围、summary/config 状态，并在连接后持久化硬件裁剪后的 ROI。验证：`.venv\Scripts\python.exe -m unittest tests.test_sim_camera_adapter tests.test_sim_preview_restart -q` 通过（64 项测试）；`.venv\Scripts\python.exe -m unittest discover -s tests -q` 通过（121 项测试）。
