@@ -5,6 +5,14 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-05-07
+
+### 决策：SIM9 采集回到 NI USB-6423 单 DAQ 路线，不再使用 PXIe-7857R / NI-RIO
+- 原因：
+  项目计划已变更，当前目标只需要通过 USB-6423 采集卡完成 SIM 9 帧图像采集流程；继续维护 PXIe-7857R Python Host、NI-RIO bitfile 诊断和 LabVIEW rebuild 链路会增加无必要的配置面、依赖和硬件联调成本。
+- 影响：
+  当前代码回退到 `7241893` 的 USB-6423-only 基线，并移除未跟踪的 PXIe-7857R / NI-RIO / LabVIEW rebuild 相关模块、文档和测试。后续 SIM 采集控制只围绕 USB-6423 波形输出、SLM Running Order、相机触发和激光 TTL 同步推进；不要恢复 `daq_backend`、`pxie7857r`、`rio_lines`、`nifpga`、`NIRioDaqAdapter` 或 NI-RIO bitfile preflight 入口。
+
 ## 2026-04-26
 
 ### 决策：正式 SIM 采集使用预烧录 SLM Running Order，并由主界面共享单个 R11 adapter

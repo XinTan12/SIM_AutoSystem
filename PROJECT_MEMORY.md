@@ -6,11 +6,13 @@
 - 本文件用于保存当前有效的项目事实、约束、待办和最近状态，服务于跨对话延续。
 - 如果本文件与代码、配置或更具体的文档冲突，以更新且更具体的事实为准，并在本次会话结束前修正本文件。
 - 只要本次会话对项目产生了修改，结束前必须同步更新本文件；即使修改范围较小，至少也要更新“最近更新”部分。
+- 后续“最近更新”只使用中文；不要再新增英文最近更新章节。
 - 本文件记录的是提炼后的项目记忆，不保存完整聊天记录。
 
 ## 当前状态说明
 - 本文件的初始内容基于仓库根目录 `AGENTS.md`、`README.md` 和当前目录结构整理。
 - 当前内容可作为后续对话的稳定起点，但仍应以实际代码、配置和硬件接入进展为最终依据。
+- 2026-05-07 起，项目计划回到 NI USB-6423 单 DAQ 路线；不再开发、维护或接入 NI PXIe-7857R / NI-RIO 控制链路。
 
 ## 项目目标
 - 构建面向微流控捕获与 SIM 成像联动的自动化系统。
@@ -35,6 +37,7 @@
 - 相机方案：Hamamatsu ORCA-Fusion BT，通过 `DCAM-API` / `DCAM-SDK4` 控制。
 - SLM 方案：Kopin / Forth Dimension Displays `QXGA-R11-STR`，通过 `R11CommLib` 控制。
 - DAQ 方案：NI USB-6423，负责输出 `slm_enable_line`、`slm_trigger_line`、`slm_finish_line`、`camera_trigger_line` 以及激光触发线的同步 TTL。
+- SIM 9 帧采集流程只使用 USB-6423 波形输出路径；PXIe-7857R / NI-RIO 相关 Python Host、bitfile 诊断、LabVIEW rebuild 工具和配置入口已从当前工作区回退移除。
 - 当前项目内的 NI USB-6423 规范接线映射固定为：`slm_enable=port0/line0`、`slm_trigger=port0/line1`、`slm_finish=port0/line2`、`camera_trigger=port0/line5`、`laser_405=port0/line8`、`laser_488=port0/line6`、`laser_561=port0/line7`、`laser_647=port0/line9`。
 - Hamamatsu runtime timing 中的 `Actual Inter Frame Gap` 当前按保守读出等待计算：`ceil(TIMING_READOUTTIME * 1_000_000) + ceil(TIMING_MINTRIGGERBLANKING * 1_000_000) + 1000 us`；若读不到 `TIMING_READOUTTIME`，采集逻辑回退到配置中的 `inter_frame_gap_us`。
 - SIM 侧第四路红光命名已统一为 `647`；默认配置文件使用 `laser_647_line`，加载旧配置时会自动把 `laser_640_line` / `selected_laser_nm=640` 迁移到新命名。
@@ -45,7 +48,7 @@
 - `SDK/` 目录当前已包含 Hamamatsu `DCAM-SDK4` 材料，以及 FDD `R11` 相关工具、驱动和文档。
 
 ## 环境与运行约定
-- 当前工作目录根为 `E:\Intelligent_SR\SIM_AutoSystem`。
+- 当前工作目录根为 `F:\SIM_AutoSystem`。
 - SIM 侧统一使用根目录 `.venv` 作为项目环境。
 - 不依赖 `control_wangbo/.venv`，该旧环境不属于当前主流程。
 - `start_sim_control.cmd` 直接通过 `.venv\Scripts\python.exe` 启动 `sim_control_app.py`。
@@ -57,6 +60,7 @@
 - 优先采用配置驱动，不把设备路径、TTL 线位和 SDK 定位写死在代码中。
 - 实时采集路径避免同步磁盘 I/O。
 - 硬件适配逻辑尽量集中在 `sim_control/adapters.py`。
+- 不再新增或恢复 `daq_backend`、`pxie7857r`、`rio_lines`、`nifpga`、`NIRioDaqAdapter`、NI-RIO bitfile preflight 或 PXIe-7857R LabVIEW rebuild 相关入口；后续 SIM9 采集以 USB-6423 为唯一 DAQ 控制路径。
 - 正式 SIM 采集要求 SLM 已连接并已能选择匹配 RO；未连接时应阻止采集，不再回退到空 `pattern_files`。
 - 当前 `.repz11` RO 的 1ms/10ms/50ms 循环能力由 repertoire 内 `[HWA h]` 与 FINISH 控制 loop 定义提供；不要启用占用 SPI_1/SPI_2 的 RO Selection 替代模式，否则会破坏现有 TRIGGER/FINISH 语义。
 
@@ -83,11 +87,17 @@
 - 在后续每次状态变化后持续维护本文件和决策日志，保证跨对话记忆有效。
 
 ## 最近更新
-- 2026-04-27：修复 SIM Running Order 曝光分档边界：`<10ms` 选择 `1ms RO`，`10ms.. <50ms` 选择 `10ms RO`，`>=50ms` 选择 `50ms RO`，避免 10ms 被误选到 1ms、50ms 被误选到 10ms。同时修复集成主界面 SIM 相机 ROI/曝光/bit depth 变更后的 runtime timing 刷新：相机已连接且 Live 未运行时立即重新 `apply_camera_config()` 并刷新 `TIMING_READOUTTIME` / `Actual Inter Frame Gap`；Live 运行时沿用重启 Live 路径并在启动前同步刷新 timing。顺手收紧 `SimSettingsDialog` DAQ group 内部上下 margin，消除 600px 最小高度下 DAQ 通道 combo 重叠。验证：`.venv\Scripts\python.exe -m pytest tests\test_running_orders.py tests\test_sim_preview_restart.py tests\test_sim_summary.py -q` 通过（54 passed, 12 subtests passed），`.venv\Scripts\python.exe -m pytest tests\ -q` 通过（105 passed, 12 subtests passed）。
+- 2026-05-07：按项目计划变更回退到 USB-6423-only 代码状态。tracked 文件恢复到 `7241893`（2026-04-28，`Merge pull request #2 from XinTan12/codex/orca-flash-roi`），并删除未跟踪的 PXIe-7857R / NI-RIO / LabVIEW rebuild 相关模块、文档和测试面；当前只保留 USB-6423 波形驱动的 SIM 9 帧采集流程。回退前的工作区 diff、状态、未跟踪清单和被删未跟踪文件副本保存在 `.tmp/rollback-backup/`。
+- 2026-05-07：合并 `PROJECT_MEMORY.md` 中英文最近更新记录，删除英文最近更新章节；后续项目记忆更新统一写入中文“最近更新”。
+- 2026-04-28：新增 Hamamatsu ORCA-Flash 4.0 ROI 能力适配。`FusionBtCameraAdapter` 通过 `prop_getattr()` 读取 DCAM `SUBARRAYHPOS/HSIZE/VPOS/VSIZE` 属性范围，将请求的 ROI 尺寸和原点裁剪到相机支持的边界与步进，并按避免瞬时非法组合的顺序应用 subarray 大小/偏移变更。适配器返回 `applied_roi`、`sensor_width`、`sensor_height`、`roi_step_px` 和动态 `roi_size_presets`；controller 会从 `applied_roi` 同步 `CameraConfig`，集成的 `control_wangbo` SIM 相机 UI 会刷新图像尺寸选项、ROI spinbox 范围、summary/config 状态，并在连接后持久化硬件裁剪后的 ROI。验证：`.venv\Scripts\python.exe -m unittest tests.test_sim_camera_adapter tests.test_sim_preview_restart -q` 通过（64 项测试）；`.venv\Scripts\python.exe -m unittest discover -s tests -q` 通过（121 项测试）。
+- 2026-04-27：在集成的 `control_wangbo` SIM 面板中新增用户可见的相机 bit depth 选项 `8-bit`、`12-bit` 和 `16-bit`。runtime 刷新始终保留这些用户选项，同时兼容硬件 adapter 回退到实际应用 bit depth；仿真模式报告 `[8, 12, 16]`，能应用有效请求，无效请求回退到 16-bit，并将仿真预览/采集帧限制到所选 bit depth。`SimSettingsDialog` 同步刷新为更大的 header、更大的底部按钮、更宽且居中的 Laser 控件，以及更紧凑的 DAQ 间距，以保持 920x600 无重叠回归。
+- 2026-04-27：新增 SIM live 预览 `Auto Contrast` 显示模式。集成 SIM 相机预览在 `#max_gray` 附近新增默认关闭的 `chb_sCMOS_autoContrast` 复选框；手动模式仍按 `0..#max_gray -> 0..255` 显示，自动模式使用 `sim_control/preview_contrast.py` 的 0.5/99.5 百分位 Lo/Hi 估计、像素采样上限和平滑 Lo/Hi 状态，以适配 latest-frame-wins 的响应式预览。该功能只影响显示，不改变原始相机帧、9 帧采集栈、重建输入或保存数据；测试覆盖手动转换、自动百分位、离群值、常量帧、平滑、UI 存在性和渲染分支选择。
+- 2026-04-27：同步 `control_wangbo/CellSorting_ui.ui` 与集成 runtime SIM 面板：将 `SIM Runtime` Camera/SLM/DAQ 状态组移入 Designer 源文件，保留隐藏的旧 `lbl_SLM_status` 以兼容，恢复 `.ui` 源中的 `cmb_sCMOS_bitDepth`，用 `.venv\Scripts\pyuic5.exe` 重新生成 `control_wangbo/CellSorting_ui.py`，并更新 `control_wangbo/main.py` 绑定静态 runtime 状态控件，避免运行时插入重复组。验证：`.venv\Scripts\python.exe -m pytest tests\test_ui_regressions.py tests\test_main_window_scroll_area.py -q` 通过（8 项测试）；`.venv\Scripts\python.exe -m pytest tests\ -q` 通过（105 项测试，12 个子测试）。
+- 2026-04-27：修复 SIM Running Order 曝光分档边界：`<10ms` 选择 `1ms RO`，`10ms.. <50ms` 选择 `10ms RO`，`>=50ms` 选择 `50ms RO`，避免 10ms 被误选到 1ms、50ms 被误选到 10ms。同时修复集成主界面 SIM 相机 ROI/曝光/bit depth 变更后的 runtime timing 刷新：相机已连接且 Live 未运行时立即重新 `apply_camera_config()` 并刷新 `TIMING_READOUTTIME` / `Actual Inter Frame Gap`；Live 运行时沿用重启 Live 路径并在启动前同步刷新 timing。顺手收紧 `SimSettingsDialog` DAQ group 内部上下 margin，消除 600px 最小高度下 DAQ 通道 combo 重叠。验证：`.venv\Scripts\python.exe -m pytest tests\test_running_orders.py tests\test_sim_preview_restart.py tests\test_sim_summary.py -q` 通过（54 项测试，12 个子测试），`.venv\Scripts\python.exe -m pytest tests\ -q` 通过（105 项测试，12 个子测试）。
 - 2026-04-27：修复 `control_wangbo/main.py` 集成 SIM GUI 的 6 项交互/UI 问题：曝光时间 spinbox 改为 snap 桶步进（1..10、20/30/40/50、100 起每 50ms），曝光变更在 SLM 已连接时即时刷新 Running Order 且交互过程不频繁写盘，保存设置后立即 apply DAQ 配置以刷新 Runtime DAQ Ready 状态；隐藏 SLM 连接区冗余 RO 标签并移除 SIM Runtime 底部 0/9 进度条。同时压缩 `SimSettingsDialog`，将显式字体统一为 Segoe UI、放大 Laser tab 选项，并在不改变 DAQ 内部布局的前提下把最小高度从 660 收紧到 600；`sim_control/ui_sim_settings_dialog.py` 已由项目 `.venv` 的 `pyuic5` 重新生成。
 - 2026-04-27：新增项目专用 Codex/Agents/Claude skill `.agents/skills/pyqt5-sim-gui`，用于约束后续 SIM GUI 开发保持 PyQt5、`pyuic5` 生成文件边界、实时采集线程边界、配置驱动硬件接入和 `control_wangbo/` 默认只读；该 skill 已同步到用户级 `C:\Users\user\.codex\skills\pyqt5-sim-gui`、`C:\Users\user\.agents\skills\pyqt5-sim-gui` 与 Claude Code 个人目录 `C:\Users\user\.claude\skills\pyqt5-sim-gui`。同时为 Claude Code 安装并启用 `python-plugin@laurigates-claude-plugins`、`testing-plugin@laurigates-claude-plugins`、`pyright@claude-code-lsps`，并安装全局 `pyright 1.1.409`；对应 Python/testing skills 也已同步到 Codex/Agents 用户级 skill 目录。
-- 2026-04-26：实现 SLM Running Order 迁移。`SimSettingsDialog` 只保留 Laser/DAQ，不再管理 SLM 连接或手动 9-pattern 加载；`control_wangbo` 主界面新增共享 SLM 连接控件，统一使用 `SimAcquisitionController.slm_adapter`。配置 schema 升到 v3 并新增 `selected_running_order`，summary 显示 `Pattern RO`；正式 SIM 采集在 SLM 未连接时阻止并提示，连接后按波长、曝光桶、`pitch == "3.5"`、`mode == "2d"`、非 `_ang0` 自动选择预烧录 RO。adapter 绑定 `R11_RpcRoSetSelected`，仿真 SLM 提供 24 个 RO，RO 模式以 `handles == [-1]` 表示。本地 SDK/repertoire 复核确认当前 `.repz11` 的循环行为来自 `[HWA h]` 与 FINISH 控制的 `{f ...}` 循环，不通过 SDK 运行时切换循环模式；保持 `slm_trigger_line` 对应 SPI_1/TRIGGER、`slm_finish_line` 对应 SPI_2/FINISH。验证：`.venv\Scripts\python.exe -m pytest tests/ -q` 通过，100 passed, 4 subtests passed。
-- 2026-04-24: Implemented SIM P0 robustness pass: added `BackendConfig.simulation_mode` with config schema v2 defaulting to `false`, introduced `sim_control/sim_adapters.py` for explicit no-hardware simulation, added config validation and waveform timing warnings, relayed 9-frame acquisition progress through `frame_captured`, added reusable LED/progress UI in SIM windows, and fixed `control_wangbo/main.py` to handle `AcquisitionBatch` objects from the controller. `.venv\Scripts\python.exe -m pytest tests/ -q` passed with 90 tests.
+- 2026-04-26：实现 SLM Running Order 迁移。`SimSettingsDialog` 只保留 Laser/DAQ，不再管理 SLM 连接或手动 9-pattern 加载；`control_wangbo` 主界面新增共享 SLM 连接控件，统一使用 `SimAcquisitionController.slm_adapter`。配置 schema 升到 v3 并新增 `selected_running_order`，summary 显示 `Pattern RO`；正式 SIM 采集在 SLM 未连接时阻止并提示，连接后按波长、曝光桶、`pitch == "3.5"`、`mode == "2d"`、非 `_ang0` 自动选择预烧录 RO。adapter 绑定 `R11_RpcRoSetSelected`，仿真 SLM 提供 24 个 RO，RO 模式以 `handles == [-1]` 表示。本地 SDK/repertoire 复核确认当前 `.repz11` 的循环行为来自 `[HWA h]` 与 FINISH 控制的 `{f ...}` 循环，不通过 SDK 运行时切换循环模式；保持 `slm_trigger_line` 对应 SPI_1/TRIGGER、`slm_finish_line` 对应 SPI_2/FINISH。验证：`.venv\Scripts\python.exe -m pytest tests/ -q` 通过（100 项测试，4 个子测试）。
+- 2026-04-24：完成 SIM P0 稳健性增强：新增 `BackendConfig.simulation_mode`，配置 schema 升到 v2 且默认 `false`；新增 `sim_control/sim_adapters.py` 用于显式无硬件仿真；增加配置校验与波形时序 warning；通过 `frame_captured` 传递 9 帧采集进度；在 SIM 窗口中新增可复用 LED/进度 UI；修复 `control_wangbo/main.py` 对 controller 返回 `AcquisitionBatch` 对象的处理。验证：`.venv\Scripts\python.exe -m pytest tests/ -q` 通过（90 项测试）。
 - 2026-04-24：`sim_control/gui.py` 局部重构（不涉及 `control_wangbo/`）：保留现有 `_catch_to_error` 装饰器，提取 `read_daq_config_from_line_combos()`、`populate_daq_line_combos()` 和 `browse_pattern_file()` 以消除 SimSettingsDialog 与 SimControlWindow 的重复逻辑；Window 侧 DAQ line 刷新现在也会在设备不匹配时回退到当前设备默认线位。`.venv\Scripts\python.exe -m pytest tests/ -q` 通过，80 条测试全部通过。
 - 2026-04-24：架构改进（不涉及 `control_wangbo/`）：新增 `sim_control/protocols.py`（CameraAdapter / SlmAdapter / DaqAdapter 协议接口）、`sim_control/acquisition_core.py`（纯 Python 采集核心，脱离 Qt 依赖）；提取 GUI 配置同步共享函数消除 `gui.py` 中 SimSettingsDialog 与 SimControlWindow 的重复代码；`pipeline.py` 各阶段增加输入校验与接口文档；`preview.py` 移除冗余 `_running` 标志，统一使用线程安全的 `threading.Event` 控制停止；`config_store.py` 引入 `config_version` + 链式迁移机制，旧 640→647 迁移纳入 v0→v1 步骤；`models.py` 的 `AppConfig` 新增 `config_version` 字段。全部 80 条测试通过，无回归。
 - 2026-04-23：为 `control_wangbo/main.py` 启动的集成主窗口增加 `QScrollArea` 包装层；生成式 `CellSorting_ui` 内容仍保持 1800x1000 固定设计尺寸，窗口缩小时可通过底部和右侧滚动条查看全部界面内容。
@@ -103,9 +113,3 @@
 - 2026-04-23：约定只要本次会话修改了项目，结束前至少更新本文件“最近更新”部分，并按需要同步修正受影响章节。
 - 2026-04-23：建立仓库内跨对话记忆机制，新增 `PROJECT_MEMORY.md` 与 `docs/project_memory/decision_log.md`。
 - 2026-04-23：在 `AGENTS.md` 中加入“新对话先读取项目记忆文件、会话结束按需回写”的工作流要求。
-
-## Recent Updates
-- 2026-04-28: Added Hamamatsu ORCA-Flash 4.0 ROI capability adaptation. `FusionBtCameraAdapter` now reads DCAM `SUBARRAYHPOS/HSIZE/VPOS/VSIZE` attribute ranges with `prop_getattr()`, clamps requested ROI size/origin to the camera-supported bounds and step, applies subarray changes in a size/offset order that avoids transient invalid combinations, and returns `applied_roi`, `sensor_width`, `sensor_height`, `roi_step_px`, and dynamic `roi_size_presets`. The controller syncs `CameraConfig` from `applied_roi`, and the integrated `control_wangbo` SIM camera UI refreshes image-size choices, ROI spinbox ranges, summary/config state, and persists the hardware-clipped ROI after connection. Verification: `.venv\Scripts\python.exe -m unittest tests.test_sim_camera_adapter tests.test_sim_preview_restart -q` passed (64 tests); `.venv\Scripts\python.exe -m unittest discover -s tests -q` passed (121 tests).
-- 2026-04-27: Added user-facing SIM camera bit depth choices `8-bit`, `12-bit`, and `16-bit` to the integrated `control_wangbo` SIM panel. Runtime refresh now always includes these user-facing options while preserving hardware adapter fallback to the actually applied bit depth; simulation mode reports `[8, 12, 16]`, applies valid requests, falls back invalid requests to 16-bit, and constrains generated preview/acquisition frames to the selected simulated bit depth. `SimSettingsDialog` was refreshed with a larger header, larger bottom buttons, wider centered Laser controls, and tighter DAQ spacing to preserve the 920x600 no-overlap regression.
-- 2026-04-27: Added SIM live preview `Auto Contrast` display mode. The integrated SIM camera preview now has a default-off `chb_sCMOS_autoContrast` checkbox near `#max_gray`; manual display remains `0..#max_gray -> 0..255`, while auto mode uses `sim_control/preview_contrast.py` with 0.5/99.5 percentile Lo/Hi estimation, capped pixel sampling, and smoothed Lo/Hi state for responsive latest-frame-wins preview. The feature is display-only and does not change raw camera frames, 9-frame acquisition stacks, reconstruction input, or saved data. Tests added for manual conversion, auto percentile behavior, outlier handling, constant frames, smoothing, UI presence, and render branch selection.
-- 2026-04-27: Synchronized `control_wangbo/CellSorting_ui.ui` with the integrated runtime SIM panel by moving the `SIM Runtime` Camera/SLM/DAQ status group into the Designer source, keeping the legacy `lbl_SLM_status` hidden for compatibility, restoring `cmb_sCMOS_bitDepth` in the `.ui` source, regenerating `control_wangbo/CellSorting_ui.py` with `.venv\Scripts\pyuic5.exe`, and updating `control_wangbo/main.py` to bind the static runtime status widgets instead of inserting a duplicate group. Verification: `.venv\Scripts\python.exe -m pytest tests\test_ui_regressions.py tests\test_main_window_scroll_area.py -q` passed (8 passed); `.venv\Scripts\python.exe -m pytest tests\ -q` passed (105 passed, 12 subtests passed).
