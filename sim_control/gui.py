@@ -53,7 +53,7 @@ from .models import (
     default_daq_line_name,
 )
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
-from .protocols import SlmAdapter
+from .protocols import CameraAdapter, SlmAdapter
 from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
 from .led_indicator import LedIndicator
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
@@ -181,6 +181,8 @@ ROLE_LABELS = {
 }
 
 SIM_ACQUISITION_TEST_ID = "sim_acquisition"
+SIM_ACQUISITION_TEST_EXPOSURE_US = 500_000
+SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US = 50_000
 DAQ_PULSE_TEST_ROLES = (
     "camera_trigger_line",
     "laser_405_line",
@@ -215,7 +217,11 @@ def clone_app_config(config: AppConfig) -> AppConfig:
 
 def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, str]]:
     items = [
-        (role, f"{ROLE_LABELS[role]} -> {getattr(daq_config, role)}")
+        (
+            role,
+            f"{'Camera Trigger + Capture' if role == 'camera_trigger_line' else ROLE_LABELS[role]} -> "
+            f"{getattr(daq_config, role)}",
+        )
         for role in DAQ_PULSE_TEST_ROLES
     ]
     items.append((SIM_ACQUISITION_TEST_ID, "SIM采集"))
@@ -231,6 +237,7 @@ class SimSettingsDialog(QDialog):
         config_path: str | None = None,
         parent: QWidget | None = None,
         slm_adapter: SlmAdapter | None = None,
+        camera_adapter: CameraAdapter | None = None,
     ):
         super().__init__(parent)
         source_config = config or load_app_config(config_path or DEFAULT_CONFIG_PATH)
@@ -241,7 +248,9 @@ class SimSettingsDialog(QDialog):
         self.ui = Ui_SimSettingsDialog()
         self.daq_adapter = create_daq_adapter_for_backend(self.config.backend)
         self.slm_adapter = slm_adapter or create_slm_adapter_for_backend(self.config.backend)
+        self.camera_adapter = camera_adapter or create_camera_adapter_for_backend(self.config.backend)
         self._slm_externally_owned = slm_adapter is not None
+        self._camera_externally_owned = camera_adapter is not None
         self._preferred_daq_device = self.config.daq.device_name
         self._loaded_pattern_result = None
         self._initial_hardware_refresh_pending = True
@@ -411,15 +420,33 @@ class SimSettingsDialog(QDialog):
     def _write_uint16_tiff(self, path: Path, image_data: np.ndarray) -> None:
         tifffile.imwrite(path, np.asarray(image_data, dtype=np.uint16))
 
+    def _camera_connected_for_test_cleanup(self) -> bool:
+        try:
+            return bool(self.camera_adapter.is_connected())
+        except Exception:
+            return False
+
+    def _cleanup_test_camera(self, was_connected_before_test: bool) -> None:
+        try:
+            self.camera_adapter.disarm()
+        except Exception:
+            pass
+        if self._camera_externally_owned and was_connected_before_test:
+            return
+        try:
+            self.camera_adapter.disconnect()
+        except Exception:
+            pass
+
     def _run_camera_trigger_test(self, daq_config: DaqLineConfig) -> Path:
-        camera_adapter = create_camera_adapter_for_backend(self.config.backend)
         output_path = self._test_capture_path("camera_pulse", "camera_trigger")
         _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
+        was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
-            camera_adapter.apply_config(self.config.camera)
-            camera_adapter.arm(frame_count=1)
+            self.camera_adapter.apply_config(self.config.camera)
+            self.camera_adapter.arm(frame_count=1)
             self.daq_adapter.pulse_line(daq_config.device_name, line_index, duration_s=0.1)
-            stack, _timestamps = camera_adapter.read_frame_sequence(
+            stack, _timestamps = self.camera_adapter.read_frame_sequence(
                 frame_count=1,
                 pattern_files=[""],
                 laser_wavelength_nm=self.config.selected_laser_nm,
@@ -427,14 +454,7 @@ class SimSettingsDialog(QDialog):
             self._write_uint16_tiff(output_path, stack[0])
             return output_path
         finally:
-            try:
-                camera_adapter.disarm()
-            except Exception:
-                pass
-            try:
-                camera_adapter.disconnect()
-            except Exception:
-                pass
+            self._cleanup_test_camera(was_camera_connected)
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
             except Exception:
@@ -450,11 +470,15 @@ class SimSettingsDialog(QDialog):
             raise HardwareError("SIM采集测试前需要先连接 SLM。")
         self.config.timing = self._current_timing_config()
         self.config.selected_laser_nm = self._selected_laser_nm()
+        camera_config = clone_app_config(self.config).camera
+        camera_config.exposure_us = SIM_ACQUISITION_TEST_EXPOSURE_US
+        timing_config = clone_app_config(self.config).timing
+        timing_config.inter_frame_gap_us = SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, warnings = find_best_running_order(
             running_orders,
             wavelength_nm=self.config.selected_laser_nm,
-            exposure_us=self.config.camera.exposure_us,
+            exposure_us=camera_config.exposure_us,
         )
         if ro_index is None:
             raise HardwareError("; ".join(warnings) or "未找到匹配的 SLM Running Order。")
@@ -462,27 +486,26 @@ class SimSettingsDialog(QDialog):
         self._loaded_pattern_result = result["pattern_result"]
         self.config.selected_running_order = ro_name
 
-        camera_adapter = create_camera_adapter_for_backend(self.config.backend)
-        exposure_ms = max(1, int(round(float(self.config.camera.exposure_us) / 1000.0)))
+        exposure_ms = max(1, int(round(float(camera_config.exposure_us) / 1000.0)))
         output_path = self._test_capture_path(
             "sim_acquisition",
             f"sim_acquisition_{self.config.selected_laser_nm}nm_{exposure_ms}ms",
         )
-        camera_config = clone_app_config(self.config).camera
         waveform_builder = NIDaqWaveformBuilder()
         plan = waveform_builder.build(
             daq_config=daq_config,
-            timing=self._current_timing_config(),
+            timing=timing_config,
             laser_wavelength_nm=self.config.selected_laser_nm,
             exposure_us=camera_config.exposure_us,
             frame_count=9,
         )
+        was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
-            camera_adapter.apply_config(camera_config)
-            camera_adapter.arm(frame_count=9)
+            self.camera_adapter.apply_config(camera_config)
+            self.camera_adapter.arm(frame_count=9)
             self.slm_adapter.activate_prepared_patterns()
             self.daq_adapter.play_waveform(daq_config.device_name, plan)
-            stack, _timestamps = camera_adapter.read_frame_sequence(
+            stack, _timestamps = self.camera_adapter.read_frame_sequence(
                 frame_count=9,
                 pattern_files=list(self._loaded_pattern_result.pattern_files),
                 laser_wavelength_nm=self.config.selected_laser_nm,
@@ -490,14 +513,7 @@ class SimSettingsDialog(QDialog):
             self._write_uint16_tiff(output_path, stack)
             return output_path
         finally:
-            try:
-                camera_adapter.disarm()
-            except Exception:
-                pass
-            try:
-                camera_adapter.disconnect()
-            except Exception:
-                pass
+            self._cleanup_test_camera(was_camera_connected)
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
             except Exception:
@@ -551,6 +567,11 @@ class SimSettingsDialog(QDialog):
         return clone_app_config(self._sync_config_from_widgets())
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if not self._camera_externally_owned:
+            try:
+                self.camera_adapter.disconnect()
+            except Exception:
+                pass
         if not self._slm_externally_owned:
             try:
                 self.slm_adapter.disconnect()

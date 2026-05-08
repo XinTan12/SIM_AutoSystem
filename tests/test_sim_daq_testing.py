@@ -36,7 +36,7 @@ class DaqTestTargetTests(unittest.TestCase):
         self.assertEqual(
             items,
             [
-                ("camera_trigger_line", "Camera Trigger -> Dev2/port0/line5"),
+                ("camera_trigger_line", "Camera Trigger + Capture -> Dev2/port0/line5"),
                 ("laser_405_line", "Laser 405 -> Dev2/port0/line8"),
                 ("laser_488_line", "Laser 488 -> Dev2/port0/line6"),
                 ("laser_561_line", "Laser 561 -> Dev2/port0/line7"),

@@ -1059,23 +1059,38 @@ class FusionBtCameraAdapter:
         )
         started_at = time.time()
         while captured < frame_count:
+            transfer = self._dcam_camera.cap_transferinfo()
+            if transfer is False:
+                raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
+            transferred = min(max(int(transfer.nFrameCount), 0), frame_count)
+            if transferred > captured:
+                while captured < transferred:
+                    captured += 1
+                    timestamp = time.time()
+                    timestamps.append(timestamp)
+                    if frame_callback is not None:
+                        frame_callback(captured, timestamp)
+                continue
+
             elapsed_ms = int((time.time() - started_at) * 1000.0)
             remaining_ms = overall_timeout_ms - elapsed_ms
             if remaining_ms <= 0:
                 raise HardwareError(
-                    f"Timed out waiting for {frame_count} externally triggered frames from Fusion BT."
+                    "Timed out waiting for "
+                    f"{frame_count} externally triggered frames from Fusion BT; captured {captured}/{frame_count}."
                 )
             if not self._dcam_camera.wait_capevent_frameready(remaining_ms):
-                raise HardwareError(f"DCAM frame wait failed: {self._dcam_camera.lasterr().name}")
-            transfer = self._dcam_camera.cap_transferinfo()
-            if transfer is False:
-                raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
-            while captured < min(int(transfer.nFrameCount), frame_count):
-                captured += 1
-                timestamp = time.time()
-                timestamps.append(timestamp)
-                if frame_callback is not None:
-                    frame_callback(captured, timestamp)
+                transfer = self._dcam_camera.cap_transferinfo()
+                if transfer is False:
+                    raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
+                transferred = min(max(int(transfer.nFrameCount), 0), frame_count)
+                if transferred > captured:
+                    continue
+                raise HardwareError(
+                    f"DCAM frame wait failed: {self._dcam_camera.lasterr().name}; "
+                    f"captured {captured}/{frame_count} frames. Confirm camera trigger TTL, trigger mode, "
+                    "and DAQ camera_trigger_line wiring."
+                )
 
         frames = np.empty((frame_count, self._camera_config.roi_height, self._camera_config.roi_width), dtype=np.uint16)
         for index in range(frame_count):

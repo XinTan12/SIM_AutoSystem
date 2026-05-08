@@ -22,8 +22,8 @@
   <property name="mouseTracking">
    <bool>true</bool>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
+   <property name="windowTitle">
+    <string>Intelligent Super-Resolution Imaging</string>
   </property>
   <property name="inputMethodHints">
    <set>Qt::ImhNone</set>
@@ -10275,8 +10275,8 @@
      <bold>false</bold>
     </font>
    </property>
-   <property name="text">
-    <string>Single Cell Capture-Release-Sort System For Cell Elasticity Mesurement  </string>
+    <property name="text">
+     <string>Intelligent Super-Resolution Imaging</string>
    </property>
   </widget>
   <widget class="QGroupBox" name="grp_realTimeLiveView_2">

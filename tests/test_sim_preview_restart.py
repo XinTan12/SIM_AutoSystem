@@ -629,10 +629,11 @@ class SimPreviewRestartTests(unittest.TestCase):
                 self.connected_callbacks.append(callback)
 
         class FakeDialog:
-            def __init__(self, config, parent, slm_adapter=None):
+            def __init__(self, config, parent, slm_adapter=None, camera_adapter=None):
                 self.config = config
                 self.parent = parent
                 self.slm_adapter = slm_adapter
+                self.camera_adapter = camera_adapter
                 self.exec_calls = 0
                 self.signal_settings_saved = FakeSignal()
                 dialog_instances.append(self)
@@ -648,7 +649,10 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_acquisition_in_progress=False,
             sim_app_config=SimpleNamespace(),
             ensure_sim_runtime=mock.Mock(),
-            sim_acquisition_controller=SimpleNamespace(slm_adapter="shared-slm"),
+            sim_acquisition_controller=SimpleNamespace(
+                slm_adapter="shared-slm",
+                camera_adapter="shared-camera",
+            ),
             prefer_real_sim_hardware=mock.Mock(),
             stop_sim_preview=mock.Mock(),
             start_sim_preview=mock.Mock(),
@@ -661,6 +665,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         window.prefer_real_sim_hardware.assert_not_called()
         self.assertEqual(len(dialog_instances), 1)
         self.assertEqual(dialog_instances[0].slm_adapter, "shared-slm")
+        self.assertEqual(dialog_instances[0].camera_adapter, "shared-camera")
         self.assertEqual(
             dialog_instances[0].signal_settings_saved.connected_callbacks,
             [window.apply_sim_settings],
@@ -681,10 +686,11 @@ class SimPreviewRestartTests(unittest.TestCase):
                 self.connected_callbacks.append(callback)
 
         class FakeDialog:
-            def __init__(self, config, parent, slm_adapter=None):
+            def __init__(self, config, parent, slm_adapter=None, camera_adapter=None):
                 self.config = config
                 self.parent = parent
                 self.slm_adapter = slm_adapter
+                self.camera_adapter = camera_adapter
                 self.signal_settings_saved = FakeSignal()
                 dialog_instances.append(self)
 
@@ -701,7 +707,10 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_acquisition_in_progress=False,
             sim_app_config=SimpleNamespace(),
             ensure_sim_runtime=mock.Mock(),
-            sim_acquisition_controller=SimpleNamespace(slm_adapter="shared-slm"),
+            sim_acquisition_controller=SimpleNamespace(
+                slm_adapter="shared-slm",
+                camera_adapter="shared-camera",
+            ),
             prefer_real_sim_hardware=mock.Mock(),
             stop_sim_preview=lambda wait=True: stop_calls.append(wait),
             start_sim_preview=lambda: start_calls.append("start"),
@@ -715,6 +724,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(start_calls, ["start"])
         self.assertEqual(len(dialog_instances), 1)
         self.assertEqual(dialog_instances[0].slm_adapter, "shared-slm")
+        self.assertEqual(dialog_instances[0].camera_adapter, "shared-camera")
         window.prefer_real_sim_hardware.assert_not_called()
 
     def test_apply_sim_settings_avoids_camera_reprobe_when_connected(self):
@@ -1770,34 +1780,219 @@ class SimSettingsDialogTests(unittest.TestCase):
         dialog.close()
         slm_adapter.disconnect.assert_not_called()
 
+    def test_dialog_accepts_external_camera_adapter_without_taking_lifecycle_ownership(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        camera_adapter = mock.Mock()
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), camera_adapter=camera_adapter)
+
+        self.assertIs(dialog.camera_adapter, camera_adapter)
+        self.assertTrue(dialog._camera_externally_owned)
+        dialog.close()
+        camera_adapter.disconnect.assert_not_called()
+
+    def test_camera_trigger_test_uses_external_camera_adapter_without_reopening_dcam(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), camera_adapter=camera_adapter)
+        dialog.daq_adapter = mock.Mock()
+
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
+            dialog,
+            "_write_uint16_tiff",
+        ) as write_tiff, mock.patch(
+            "sim_control.gui.create_camera_adapter_for_backend",
+            side_effect=AssertionError("Should reuse injected camera adapter"),
+        ):
+            output_path = dialog._run_camera_trigger_test(dialog.config.daq)
+
+        self.assertEqual(output_path, Path("dummy.tiff"))
+        camera_adapter.apply_config.assert_called_once_with(dialog.config.camera)
+        camera_adapter.arm.assert_called_once_with(frame_count=1)
+        dialog.daq_adapter.pulse_line.assert_called_once_with("Dev1", 5, duration_s=0.1)
+        write_tiff.assert_called_once()
+        camera_adapter.disarm.assert_called_once_with()
+        camera_adapter.disconnect.assert_not_called()
+        dialog.close()
+
+    def test_camera_trigger_test_cleans_up_external_camera_that_was_disconnected_before_test(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = False
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), camera_adapter=camera_adapter)
+        dialog.daq_adapter = mock.Mock()
+
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
+            dialog,
+            "_write_uint16_tiff",
+        ):
+            output_path = dialog._run_camera_trigger_test(dialog.config.daq)
+
+        self.assertEqual(output_path, Path("dummy.tiff"))
+        camera_adapter.disarm.assert_called_once_with()
+        camera_adapter.disconnect.assert_called_once_with()
+        dialog.close()
+
     def test_sim_acquisition_test_selects_running_order_on_shared_slm(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig
 
         slm_adapter = mock.Mock()
         slm_adapter.is_connected.return_value = True
-        slm_adapter.list_running_orders.return_value = [(0, "488_3.5_2d_10ms")]
+        slm_adapter.list_running_orders.return_value = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "488_3.5_2d_50ms"),
+        ]
         slm_adapter.select_running_order.return_value = {
-            "running_order_name": "488_3.5_2d_10ms",
-            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_10ms"] * 9, handles=[-1]),
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
         }
         with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
             return_value=[],
         ):
-            dialog = SimSettingsDialog(config=AppConfig(), slm_adapter=slm_adapter)
+            camera = mock.Mock()
+            camera.is_connected.return_value = True
+            camera.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+            dialog = SimSettingsDialog(
+                config=AppConfig(),
+                slm_adapter=slm_adapter,
+                camera_adapter=camera,
+            )
         dialog.daq_adapter = mock.Mock()
         with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
             dialog,
             "_write_uint16_tiff",
-        ), mock.patch("sim_control.gui.create_camera_adapter_for_backend") as camera_factory:
-            camera = mock.Mock()
-            camera.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
-            camera_factory.return_value = camera
+        ):
             output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
 
         self.assertEqual(output_path, Path("dummy.tiff"))
-        slm_adapter.select_running_order.assert_called_once_with(0)
+        slm_adapter.select_running_order.assert_called_once_with(1)
+        dialog.close()
+
+    def test_sim_acquisition_test_uses_external_camera_adapter(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "488_3.5_2d_50ms"),
+        ]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
+        }
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(),
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
+            dialog,
+            "_write_uint16_tiff",
+        ), mock.patch(
+            "sim_control.gui.create_camera_adapter_for_backend",
+            side_effect=AssertionError("Should reuse injected camera adapter"),
+        ):
+            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
+
+        self.assertEqual(output_path, Path("dummy.tiff"))
+        camera_adapter.apply_config.assert_called_once()
+        camera_adapter.arm.assert_called_once_with(frame_count=9)
+        camera_adapter.disarm.assert_called_once_with()
+        camera_adapter.disconnect.assert_not_called()
+        dialog.close()
+
+    def test_sim_acquisition_test_forces_500ms_exposure_without_mutating_config(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, CameraConfig, TimingConfig
+
+        config = AppConfig(
+            camera=CameraConfig(exposure_us=20_000),
+            timing=TimingConfig(inter_frame_gap_us=10_000),
+        )
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "488_3.5_2d_50ms"),
+        ]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
+        }
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+        waveform_builder = mock.Mock()
+        waveform_plan = object()
+        waveform_builder.build.return_value = waveform_plan
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=config,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+
+        with mock.patch.object(
+            dialog,
+            "_test_capture_path",
+            return_value=Path("dummy.tiff"),
+        ) as capture_path, mock.patch.object(
+            dialog,
+            "_write_uint16_tiff",
+        ), mock.patch(
+            "sim_control.gui.NIDaqWaveformBuilder",
+            return_value=waveform_builder,
+        ):
+            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
+
+        self.assertEqual(output_path, Path("dummy.tiff"))
+        self.assertEqual(dialog.config.camera.exposure_us, 20_000)
+        self.assertEqual(dialog.config.timing.inter_frame_gap_us, 10_000)
+        slm_adapter.select_running_order.assert_called_once_with(1)
+        capture_path.assert_called_once_with("sim_acquisition", "sim_acquisition_488nm_500ms")
+        camera_config = camera_adapter.apply_config.call_args.args[0]
+        self.assertEqual(camera_config.exposure_us, 500_000)
+        self.assertEqual(waveform_builder.build.call_args.kwargs["exposure_us"], 500_000)
+        timing_config = waveform_builder.build.call_args.kwargs["timing"]
+        self.assertEqual(timing_config.inter_frame_gap_us, 50_000)
+        dialog.daq_adapter.play_waveform.assert_called_once_with("Dev1", waveform_plan)
         dialog.close()
 
 

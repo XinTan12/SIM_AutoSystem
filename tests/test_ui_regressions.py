@@ -103,6 +103,22 @@ class UiRegressionTests(unittest.TestCase):
         self.assertIn("Exp(ms)", all_text)
         self.assertNotIn("Exp(us)", all_text)
 
+    def test_cellsorting_main_title_matches_super_resolution_product_name(self):
+        from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
+
+        widget = QtWidgets.QWidget()
+        ui = Ui_Single_Cell_Sorting()
+        ui.setupUi(widget)
+
+        self.assertEqual(widget.windowTitle(), "Intelligent Super-Resolution Imaging")
+        self.assertEqual(ui.label.text(), "Intelligent Super-Resolution Imaging")
+
+        ui_source = PROJECT_ROOT / "control_wangbo" / "CellSorting_ui.ui"
+        self.assertIn(
+            "<string>Intelligent Super-Resolution Imaging</string>",
+            ui_source.read_text(encoding="utf-8"),
+        )
+
     def test_cellsorting_left_column_uses_uniform_lines_between_groups(self):
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
 

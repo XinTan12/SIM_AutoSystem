@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -208,6 +210,70 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
             adapter.apply_config(CameraConfig())
 
         adapter._close_camera.assert_called_once()
+
+    def test_read_frame_sequence_returns_frames_already_buffered_before_waiting(self):
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.wait_calls = 0
+                self.frames = [np.full((2, 2), index, dtype=np.uint16) for index in range(3)]
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=3)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                self.wait_calls += 1
+                return False
+
+            def buf_getframedata(self, index):
+                return self.frames[index]
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        adapter = FusionBtCameraAdapter()
+        adapter._armed = True
+        adapter._camera_config = CameraConfig(roi_width=2, roi_height=2, exposure_us=500_000)
+        adapter._dcam_camera = FakeCamera()
+
+        stack, timestamps = adapter.read_frame_sequence(
+            frame_count=3,
+            pattern_files=[""] * 3,
+            laser_wavelength_nm=488,
+        )
+
+        self.assertEqual(adapter._dcam_camera.wait_calls, 0)
+        self.assertEqual(stack.shape, (3, 2, 2))
+        self.assertEqual([int(frame[0, 0]) for frame in stack], [0, 1, 2])
+        self.assertEqual(len(timestamps), 3)
+
+    def test_read_frame_sequence_timeout_reports_partial_capture_count(self):
+        from sim_control.adapters import FusionBtCameraAdapter, HardwareError
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=3)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                return False
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        adapter = FusionBtCameraAdapter()
+        adapter._armed = True
+        adapter._camera_config = CameraConfig(roi_width=2, roi_height=2, exposure_us=500_000)
+        adapter._dcam_camera = FakeCamera()
+
+        with self.assertRaisesRegex(HardwareError, r"TIMEOUT.*captured 3/9"):
+            adapter.read_frame_sequence(
+                frame_count=9,
+                pattern_files=[""] * 9,
+                laser_wavelength_nm=488,
+            )
 
     def test_apply_config_returns_timing_and_bit_depth_details(self):
         from sim_control.adapters import FusionBtCameraAdapter

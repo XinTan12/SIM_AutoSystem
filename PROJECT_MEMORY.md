@@ -87,6 +87,9 @@
 - 在后续每次状态变化后持续维护本文件和决策日志，保证跨对话记忆有效。
 
 ## 最近更新
+- 2026-05-08：修正 DAQ 页 `SIM采集测试` 的 SIM9 标准测试波形：测试仍使用 500ms 专用相机曝光，同时将测试专用 `inter_frame_gap_us` 固定为 50ms，使上一帧 `SLM finish` 起点到下一帧 `SLM trigger` 起点间隔为 50ms。该 50ms 只作用于 `SIM采集测试` 的克隆 timing，不写回 DAQ 页控件、默认配置或正式采集配置；新增测试覆盖 500ms/50ms 测试波形与 waveform 帧间 TTL 结构。
+- 2026-05-08：修复 DAQ 页 `SIM采集测试` 使用真实 Hamamatsu DCAM 时可能误报 `DCAM frame wait failed: TIMEOUT` 的问题；`FusionBtCameraAdapter.read_frame_sequence()` 现在会先读取 DCAM transfer count 并消费已进入 buffer 的帧，只在没有新帧时等待 `FRAMEREADY` 事件，timeout 报错会包含 `captured X/9` 以区分软件等待与真实触发链路故障。同时将 `SIM采集测试` 的测试专用相机曝光固定为 500ms，用于 Running Order 选择、DAQ 波形、相机配置和测试 TIFF 文件名，但不写回主界面或正式采集的全局曝光配置。
+- 2026-05-08：修复 `SimSettingsDialog` DAQ 页 `Camera Trigger` / `SIM采集` 测试重复打开 Hamamatsu DCAM camera 0 导致 `FAILOPENCAMERA` 的问题；设置弹窗现在可接收并复用主窗口共享的 `camera_adapter`，测试结束只在不破坏既有连接的前提下清理相机。同步将集成主界面标题更新为 `Intelligent Super-Resolution Imaging`，并从 `control_wangbo/CellSorting_ui.ui` 重新生成 `control_wangbo/CellSorting_ui.py`。
 - 2026-05-07：统一 AI 工具项目说明入口：`AGENTS.md` 已重写为唯一主指令文件，合并原 `CLAUDE.md` 与旧 `AGENTS.md` 的有效信息，并明确后续任何 AI 工具修改项目说明时只改 `AGENTS.md`；`CLAUDE.md` 已改为仅说明该规则并通过 `@AGENTS.md` 引用主文件的薄壳。
 - 2026-05-07：按项目计划变更回退到 USB-6423-only 代码状态。tracked 文件恢复到 `7241893`（2026-04-28，`Merge pull request #2 from XinTan12/codex/orca-flash-roi`），并删除未跟踪的 PXIe-7857R / NI-RIO / LabVIEW rebuild 相关模块、文档和测试面；当前只保留 USB-6423 波形驱动的 SIM 9 帧采集流程。回退前的工作区 diff、状态、未跟踪清单和被删未跟踪文件副本保存在 `.tmp/rollback-backup/`。
 - 2026-05-07：合并 `PROJECT_MEMORY.md` 中英文最近更新记录，删除英文最近更新章节；后续项目记忆更新统一写入中文“最近更新”。

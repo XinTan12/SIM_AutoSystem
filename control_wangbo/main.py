@@ -677,6 +677,7 @@ class MainWindow(qw.QWidget):
             config=self.sim_app_config,
             parent=self,
             slm_adapter=self.sim_acquisition_controller.slm_adapter,
+            camera_adapter=self.sim_acquisition_controller.camera_adapter,
         )
         dialog.signal_settings_saved.connect(self.apply_sim_settings)
         dialog.exec_()

@@ -5210,7 +5210,7 @@ class Ui_Single_Cell_Sorting(object):
 
     def retranslateUi(self, Single_Cell_Sorting):
         _translate = QtCore.QCoreApplication.translate
-        Single_Cell_Sorting.setWindowTitle(_translate("Single_Cell_Sorting", "Form"))
+        Single_Cell_Sorting.setWindowTitle(_translate("Single_Cell_Sorting", "Intelligent Super-Resolution Imaging"))
         self.grp_triggerControl.setTitle(_translate("Single_Cell_Sorting", "Trigger Control"))
         self.label_10.setText(_translate("Single_Cell_Sorting", "Time(ms)"))
         self.label_12.setText(_translate("Single_Cell_Sorting", "Trigger Way"))
@@ -5440,7 +5440,7 @@ class Ui_Single_Cell_Sorting(object):
         self.label_32.setText(_translate("Single_Cell_Sorting", "Width"))
         self.label_33.setText(_translate("Single_Cell_Sorting", "Height"))
         self.btn_cellFlowThroughROI_view.setText(_translate("Single_Cell_Sorting", "View"))
-        self.label.setText(_translate("Single_Cell_Sorting", "Single Cell Capture-Release-Sort System For Cell Elasticity Mesurement  "))
+        self.label.setText(_translate("Single_Cell_Sorting", "Intelligent Super-Resolution Imaging"))
         self.grp_realTimeLiveView_2.setTitle(_translate("Single_Cell_Sorting", "Real-time Live View —— SIM Camera"))
         self.lb_sCMOS_FPSshow.setText(_translate("Single_Cell_Sorting", "None"))
         self.lb_FPSshow_7.setText(_translate("Single_Cell_Sorting", "FPS"))
