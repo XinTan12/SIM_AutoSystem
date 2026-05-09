@@ -7,6 +7,11 @@ from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from .models import AcquisitionBatch, DecisionResult, FeatureResult, ReconstructionResult
 
+try:
+    import cv2
+except Exception:  # pragma: no cover - exercised when OpenCV is absent in a deployment.
+    cv2 = None
+
 
 class ReconstructionWorker(QObject):
     signal_reconstruction_ready = pyqtSignal(object)
@@ -55,21 +60,41 @@ class FeatureWorker(QObject):
         try:
             if recon_result.preview_image is None:
                 raise ValueError("preview_image is None")
-            image = np.asarray(recon_result.preview_image, dtype=np.float32)
+            image = np.asarray(recon_result.preview_image)
+            features = _extract_intensity_features(image)
             result = FeatureResult(
                 task_id=recon_result.task_id,
-                features={
-                    "mean_intensity": float(np.mean(image)),
-                    "std_intensity": float(np.std(image)),
-                    "max_intensity": float(np.max(image)),
-                    "min_intensity": float(np.min(image)),
-                },
+                features=features,
                 metadata={"placeholder": True},
                 succeeded=True,
             )
             self.signal_features_ready.emit(result)
         except Exception as exc:
             self.signal_features_failed.emit(recon_result.task_id, f"{exc}\n{traceback.format_exc()}")
+
+
+def _extract_intensity_features(image: np.ndarray) -> dict[str, float]:
+    if cv2 is not None and image.ndim == 2 and image.size > 0:
+        try:
+            cv_image = np.ascontiguousarray(image)
+            mean, stddev = cv2.meanStdDev(cv_image)
+            min_value, max_value, _min_loc, _max_loc = cv2.minMaxLoc(cv_image)
+            return {
+                "mean_intensity": float(mean[0][0]),
+                "std_intensity": float(stddev[0][0]),
+                "max_intensity": float(max_value),
+                "min_intensity": float(min_value),
+            }
+        except Exception:
+            pass
+
+    fallback = np.asarray(image, dtype=np.float32)
+    return {
+        "mean_intensity": float(np.mean(fallback)),
+        "std_intensity": float(np.std(fallback)),
+        "max_intensity": float(np.max(fallback)),
+        "min_intensity": float(np.min(fallback)),
+    }
 
 
 class DecisionEngine:

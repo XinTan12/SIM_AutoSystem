@@ -135,6 +135,32 @@ class EfficiencyOptimizationTests(unittest.TestCase):
         self.assertTrue(np.all(stack[0] == 1))
         self.assertTrue(np.all(stack[1] == 2))
 
+    def test_real_camera_preview_reuses_dcam_numpy_frame_without_extra_array_copy(self):
+        from sim_control import adapters
+
+        class FakeDcamCamera:
+            def wait_capevent_frameready(self, timeout_ms):
+                return True
+
+            def buf_getlastframedata(self):
+                return np.full((2, 3), 7, dtype=np.uint16)
+
+            def lasterr(self):
+                return SimpleNamespace(name="OK")
+
+        camera = adapters.FusionBtCameraAdapter.__new__(adapters.FusionBtCameraAdapter)
+        camera._preview_active = True
+        camera._preview_frame_counter = 0
+        camera._dcam_camera = FakeDcamCamera()
+
+        with mock.patch.object(adapters.np, "array", side_effect=AssertionError("extra np.array copy")):
+            frame = camera.read_preview_frame(timeout_ms=10)
+
+        self.assertEqual(frame.shape, (2, 3))
+        self.assertEqual(frame.dtype, np.uint16)
+        self.assertEqual(camera._preview_frame_counter, 1)
+        self.assertTrue(np.all(frame == 7))
+
     def test_simulated_camera_sequence_does_not_stack_frame_list(self):
         from sim_control.models import CameraConfig
         from sim_control.sim_adapters import SimulatedCameraAdapter
@@ -186,6 +212,35 @@ class EfficiencyOptimizationTests(unittest.TestCase):
         self.assertEqual(failed, [])
         self.assertEqual(len(ready), 1)
         self.assertTrue(np.array_equal(ready[0].preview_image, expected))
+
+    def test_feature_worker_uses_opencv_statistics_when_available(self):
+        from sim_control.models import ReconstructionResult
+        from sim_control.pipeline import FeatureWorker
+        import sim_control.pipeline as pipeline
+
+        image = np.array([[0, 1000, 2000], [3000, 4000, 5000]], dtype=np.uint16)
+        expected = np.asarray(image, dtype=np.float32)
+        expected_mean = float(expected.mean())
+        expected_std = float(expected.std())
+        ready = []
+        failed = []
+        worker = FeatureWorker()
+        worker.signal_features_ready.connect(lambda result: ready.append(result))
+        worker.signal_features_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        with (
+            mock.patch.object(pipeline.np, "mean", side_effect=AssertionError("numpy mean fallback")),
+            mock.patch.object(pipeline.np, "std", side_effect=AssertionError("numpy std fallback")),
+        ):
+            worker.slot_extract(ReconstructionResult(task_id="features-opencv", preview_image=image))
+
+        self.assertEqual(failed, [])
+        self.assertEqual(len(ready), 1)
+        features = ready[0].features
+        self.assertAlmostEqual(features["mean_intensity"], expected_mean, places=5)
+        self.assertAlmostEqual(features["std_intensity"], expected_std, delta=1e-3)
+        self.assertEqual(features["max_intensity"], 5000.0)
+        self.assertEqual(features["min_intensity"], 0.0)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ from sim_control.gui import (
 from sim_control.led_indicator import LedIndicator
 from sim_control.models import SimTaskConfig
 from sim_control.preview import SimPreviewController
-from sim_control.preview_contrast import AutoContrastState, auto_uint16_to_uint8, manual_uint16_to_uint8
+from sim_control.preview_contrast import AutoContrastState, fast_preview_uint16_to_uint8
 from sim_control.summary import build_sim_settings_summary
 from sim_control.sim_camera_presets import (
     DEFAULT_SIM_CAMERA_SIZE,
@@ -3438,12 +3438,7 @@ class MainWindow(qw.QWidget):
     def _render_sim_preview_frame(self, frame, cache_frame=True):
         if frame is None:
             return
-        if self.ui.chb_sCMOS_autoContrast.isChecked():
-            frame_8bit = auto_uint16_to_uint8(frame, self.sim_auto_contrast_state)
-        else:
-            frame_8bit = manual_uint16_to_uint8(frame, self.ui.spb_sCMOS_displayGray_max.value())
-        display_frame = frame_8bit
-        original_height, original_width = display_frame.shape[:2]
+        original_height, original_width = frame.shape[:2]
         bounds = self.ui.lb_sCMOS_cameraView.contentsRect()
         display_width, display_height = fit_image_size_to_bounds(
             original_width,
@@ -3451,10 +3446,13 @@ class MainWindow(qw.QWidget):
             bounds.width(),
             bounds.height(),
         )
-        interpolation = cv2.INTER_AREA if display_width < original_width or display_height < original_height else cv2.INTER_LINEAR
-        if (display_width, display_height) != (original_width, original_height):
-            display_frame = cv2.resize(display_frame, (display_width, display_height), interpolation=interpolation)
-        display_frame = np.ascontiguousarray(display_frame)
+        display_frame = fast_preview_uint16_to_uint8(
+            frame,
+            (display_width, display_height),
+            gray_max=self.ui.spb_sCMOS_displayGray_max.value(),
+            auto_contrast=self.ui.chb_sCMOS_autoContrast.isChecked(),
+            auto_state=self.sim_auto_contrast_state,
+        )
         h, w = display_frame.shape[:2]
         bytes_per_line = int(display_frame.strides[0])
         q_img = QImage(display_frame.data, w, h, bytes_per_line, QImage.Format_Grayscale8)

@@ -1571,14 +1571,18 @@ class SimPreviewPollingTests(unittest.TestCase):
 
         with mock.patch.object(
             legacy_main,
-            "manual_uint16_to_uint8",
-            side_effect=lambda input_frame, gray_max: calls.append(("manual", input_frame.copy(), gray_max)) or manual_result,
-        ) as manual, mock.patch.object(legacy_main, "auto_uint16_to_uint8") as auto:
+            "fast_preview_uint16_to_uint8",
+            side_effect=lambda input_frame, output_size, **kwargs: calls.append(
+                ("fast", input_frame.copy(), output_size, kwargs)
+            )
+            or manual_result,
+        ) as fast:
             legacy_main.MainWindow._render_sim_preview_frame(window, frame)
 
-        manual.assert_called_once()
-        auto.assert_not_called()
-        self.assertEqual(calls[0][2], 3000)
+        fast.assert_called_once()
+        self.assertEqual(calls[0][2], (16, 16))
+        self.assertEqual(calls[0][3]["gray_max"], 3000)
+        self.assertFalse(calls[0][3]["auto_contrast"])
         np.testing.assert_array_equal(window.sim_last_preview_frame, frame)
 
     def test_render_sim_preview_frame_uses_auto_contrast_when_checked(self):
@@ -1598,16 +1602,17 @@ class SimPreviewPollingTests(unittest.TestCase):
             sim_last_preview_frame=None,
         )
 
-        with mock.patch.object(legacy_main, "manual_uint16_to_uint8") as manual, mock.patch.object(
+        with mock.patch.object(
             legacy_main,
-            "auto_uint16_to_uint8",
-            side_effect=lambda input_frame, input_state: auto_result,
-        ) as auto:
+            "fast_preview_uint16_to_uint8",
+            side_effect=lambda input_frame, output_size, **kwargs: auto_result,
+        ) as fast:
             legacy_main.MainWindow._render_sim_preview_frame(window, frame)
 
-        manual.assert_not_called()
-        auto.assert_called_once()
-        self.assertIs(auto.call_args.args[1], state)
+        fast.assert_called_once()
+        self.assertEqual(fast.call_args.args[1], (16, 16))
+        self.assertIs(fast.call_args.kwargs["auto_state"], state)
+        self.assertTrue(fast.call_args.kwargs["auto_contrast"])
         np.testing.assert_array_equal(window.sim_last_preview_frame, frame)
 
 

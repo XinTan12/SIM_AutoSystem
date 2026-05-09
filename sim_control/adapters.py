@@ -993,7 +993,7 @@ class FusionBtCameraAdapter:
         if frame is False:
             raise HardwareError(f"Failed to fetch DCAM preview frame: {self._dcam_camera.lasterr().name}")
         self._preview_frame_counter += 1
-        return np.array(frame, copy=True, dtype=np.uint16)
+        return np.asarray(frame, dtype=np.uint16)
 
     def stop_preview(self) -> None:
         if not self._preview_active:
