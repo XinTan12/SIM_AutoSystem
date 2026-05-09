@@ -1,0 +1,192 @@
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import numpy as np
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+class EfficiencyOptimizationTests(unittest.TestCase):
+    def test_ni_daq_play_waveform_reuses_uint32_packed_array(self):
+        from sim_control import adapters
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        plan = NIDaqWaveformBuilder().build(
+            daq_config=DaqLineConfig(),
+            timing=TimingConfig(sample_rate_hz=100_000, inter_frame_gap_us=1_000),
+            laser_wavelength_nm=488,
+            exposure_us=1_000,
+            frame_count=2,
+        )
+        captured = {}
+
+        class FakeTask:
+            out_stream = object()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            do_channels = SimpleNamespace(add_do_chan=lambda *args, **kwargs: None)
+            timing = SimpleNamespace(cfg_samp_clk_timing=lambda *args, **kwargs: None)
+
+            def start(self):
+                return None
+
+            def wait_until_done(self, timeout):
+                captured["timeout"] = timeout
+
+        class FakeWriter:
+            def __init__(self, out_stream, auto_start=False):
+                captured["out_stream"] = out_stream
+                captured["auto_start"] = auto_start
+
+            def write_many_sample_port_uint32(self, values):
+                captured["values"] = values
+
+        with (
+            mock.patch.object(adapters, "nidaqmx", SimpleNamespace(Task=FakeTask)),
+            mock.patch.object(adapters, "LineGrouping", SimpleNamespace(CHAN_FOR_ALL_LINES=1)),
+            mock.patch.object(adapters, "AcquisitionType", SimpleNamespace(FINITE=1)),
+            mock.patch.object(adapters, "DigitalSingleChannelWriter", FakeWriter),
+        ):
+            daq = adapters.NIDaqAdapter()
+            daq.play_waveform("Dev1", plan)
+
+        self.assertIs(captured["values"], plan.packed_port_values)
+        self.assertEqual(plan.packed_port_values.dtype, np.uint32)
+
+    def test_waveform_pack_uses_boolean_masks_without_uint32_role_copies(self):
+        from sim_control.models import DAQ_ROLE_ORDER, DaqLineConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        class RoleArray:
+            def __init__(self, values):
+                self.values = np.asarray(values, dtype=np.uint8)
+
+            def __ne__(self, other):
+                return self.values != other
+
+            def astype(self, *_args, **_kwargs):
+                raise AssertionError("extra uint32 role copy")
+
+        sample_count = 5
+        matrix = {
+            role: RoleArray(np.zeros(sample_count, dtype=np.uint8))
+            for role in DAQ_ROLE_ORDER
+        }
+        matrix["slm_enable_line"] = RoleArray([1, 1, 1, 1, 1])
+        matrix["slm_trigger_line"] = RoleArray([0, 1, 0, 0, 0])
+        matrix["camera_trigger_line"] = RoleArray([0, 1, 1, 0, 0])
+        matrix["laser_488_line"] = RoleArray([0, 0, 1, 1, 0])
+
+        packed = NIDaqWaveformBuilder._pack_port_values(DaqLineConfig(), matrix, sample_count)
+
+        expected = np.array(
+            [
+                1 << 0,
+                (1 << 0) | (1 << 1) | (1 << 5),
+                (1 << 0) | (1 << 5) | (1 << 6),
+                (1 << 0) | (1 << 6),
+                1 << 0,
+            ],
+            dtype=np.uint32,
+        )
+        np.testing.assert_array_equal(packed, expected)
+
+    def test_real_camera_sequence_assigns_frame_views_without_intermediate_array_copy(self):
+        from sim_control import adapters
+        from sim_control.models import CameraConfig
+
+        class FakeDcamCamera:
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=2)
+
+            def buf_getframedata(self, index):
+                return np.full((2, 3), index + 1, dtype=np.uint16)
+
+            def lasterr(self):
+                return SimpleNamespace(name="OK")
+
+        camera = adapters.FusionBtCameraAdapter.__new__(adapters.FusionBtCameraAdapter)
+        camera._armed = True
+        camera._camera_config = CameraConfig(roi_width=3, roi_height=2, exposure_us=1000, timeout_ms=100)
+        camera._dcam_camera = FakeDcamCamera()
+
+        with mock.patch.object(adapters.np, "array", side_effect=AssertionError("extra np.array copy")):
+            stack, timestamps = camera.read_frame_sequence(
+                frame_count=2,
+                pattern_files=[""] * 2,
+                laser_wavelength_nm=488,
+            )
+
+        self.assertEqual(stack.shape, (2, 2, 3))
+        self.assertEqual(stack.dtype, np.uint16)
+        self.assertEqual(len(timestamps), 2)
+        self.assertTrue(np.all(stack[0] == 1))
+        self.assertTrue(np.all(stack[1] == 2))
+
+    def test_simulated_camera_sequence_does_not_stack_frame_list(self):
+        from sim_control.models import CameraConfig
+        from sim_control.sim_adapters import SimulatedCameraAdapter
+        import sim_control.sim_adapters as sim_adapters
+
+        camera = SimulatedCameraAdapter()
+        camera.apply_config(CameraConfig(roi_width=4, roi_height=3, bit_depth=8))
+        camera.arm(frame_count=3)
+        captured_frames = []
+
+        with mock.patch.object(sim_adapters.np, "stack", side_effect=AssertionError("extra np.stack")):
+            stack, timestamps = camera.read_frame_sequence(
+                frame_count=3,
+                pattern_files=[""] * 3,
+                laser_wavelength_nm=488,
+                frame_callback=lambda frame_index, _timestamp: captured_frames.append(frame_index),
+            )
+
+        self.assertEqual(stack.shape, (3, 3, 4))
+        self.assertEqual(stack.dtype, np.uint16)
+        self.assertEqual(len(timestamps), 3)
+        self.assertEqual(captured_frames, [1, 2, 3])
+
+    def test_placeholder_reconstruction_uses_integer_reduce_not_float_mean(self):
+        from sim_control.models import AcquisitionBatch
+        from sim_control.pipeline import ReconstructionWorker
+        import sim_control.pipeline as pipeline
+
+        stack = np.arange(9 * 2 * 3, dtype=np.uint16).reshape(9, 2, 3)
+        ready = []
+        failed = []
+        worker = ReconstructionWorker()
+        worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+        worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        with mock.patch.object(pipeline.np, "mean", side_effect=AssertionError("float mean path")):
+            worker.slot_reconstruct(
+                AcquisitionBatch(
+                    task_id="reduce-test",
+                    stack=stack,
+                    timestamps=[],
+                    laser_wavelength_nm=488,
+                    exposure_us=1000,
+                    pattern_files=[""] * 9,
+                )
+            )
+
+        expected = (np.add.reduce(stack, axis=0, dtype=np.uint32) // np.uint32(9)).astype(np.uint16)
+        self.assertEqual(failed, [])
+        self.assertEqual(len(ready), 1)
+        self.assertTrue(np.array_equal(ready[0].preview_image, expected))
+
+
+if __name__ == "__main__":
+    unittest.main()

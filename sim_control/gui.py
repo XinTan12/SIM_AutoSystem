@@ -498,6 +498,7 @@ class SimSettingsDialog(QDialog):
             laser_wavelength_nm=self.config.selected_laser_nm,
             exposure_us=camera_config.exposure_us,
             frame_count=9,
+            include_role_matrix=False,
         )
         was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
@@ -826,6 +827,7 @@ class SimControlWindow(QMainWindow):
         layout = QVBoxLayout(group)
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
+        self.log_output.document().setMaximumBlockCount(1000)
         layout.addWidget(self.log_output)
         return group
 
@@ -985,6 +987,7 @@ class SimControlWindow(QMainWindow):
             laser_wavelength_nm=self.config.selected_laser_nm,
             exposure_us=self.config.camera.exposure_us,
             frame_count=9,
+            include_role_matrix=False,
         )
         for warning in plan.warnings:
             self._log(f"WARNING: {warning}")

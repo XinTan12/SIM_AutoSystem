@@ -62,6 +62,7 @@ class NIDaqWaveformBuilder:
         laser_wavelength_nm: int,
         exposure_us: int,
         frame_count: int = 9,
+        include_role_matrix: bool = True,
     ) -> WaveformPlan:
         validate_daq_line_config(daq_config)
         if laser_wavelength_nm not in LASER_ROLE_MAP:
@@ -92,13 +93,22 @@ class NIDaqWaveformBuilder:
 
         per_frame_span = exposure_samples + gap_samples
         sample_count = (guard_samples * 2) + (frame_count * per_frame_span)
-        matrix = {
-            role: np.zeros(sample_count, dtype=np.uint8)
+        matrix = (
+            {role: np.zeros(sample_count, dtype=np.uint8) for role in DAQ_ROLE_ORDER}
+            if include_role_matrix
+            else {}
+        )
+        packed = np.zeros(sample_count, dtype=np.uint32)
+        line_bits = {
+            role: np.uint32(1 << parse_line_name(getattr(daq_config, role))[2])
             for role in DAQ_ROLE_ORDER
         }
 
         active_laser_role = LASER_ROLE_MAP[laser_wavelength_nm]
-        matrix["slm_enable_line"][:] = 1
+        if include_role_matrix:
+            matrix["slm_enable_line"][:] = 1
+        else:
+            packed[:] |= line_bits["slm_enable_line"]
 
         frame_starts = []
         frame_ends = []
@@ -109,8 +119,13 @@ class NIDaqWaveformBuilder:
             frame_starts.append(frame_start)
             frame_ends.append(frame_end)
 
-            matrix["camera_trigger_line"][frame_start:frame_end] = 1
-            matrix[active_laser_role][frame_start:frame_end] = 1
+            if include_role_matrix:
+                matrix["camera_trigger_line"][frame_start:frame_end] = 1
+                matrix[active_laser_role][frame_start:frame_end] = 1
+            else:
+                packed[frame_start:frame_end] |= (
+                    line_bits["camera_trigger_line"] | line_bits[active_laser_role]
+                )
 
             trigger_end = min(frame_start + edge_pulse_samples, sample_count)
             finish_end = min(frame_end + edge_pulse_samples, sample_count)
@@ -120,10 +135,15 @@ class NIDaqWaveformBuilder:
                 )
             if frame_end + edge_pulse_samples > sample_count:
                 warnings.append("slm_finish pulse is clipped at the end of the waveform.")
-            matrix["slm_trigger_line"][frame_start:trigger_end] = 1
-            matrix["slm_finish_line"][frame_end:finish_end] = 1
+            if include_role_matrix:
+                matrix["slm_trigger_line"][frame_start:trigger_end] = 1
+                matrix["slm_finish_line"][frame_end:finish_end] = 1
+            else:
+                packed[frame_start:trigger_end] |= line_bits["slm_trigger_line"]
+                packed[frame_end:finish_end] |= line_bits["slm_finish_line"]
 
-        packed = self._pack_port_values(daq_config, matrix, sample_count)
+        if include_role_matrix:
+            packed = self._pack_port_values(daq_config, matrix, sample_count)
         duration_s = sample_count / float(timing.sample_rate_hz)
         metadata = {
             "frame_count": frame_count,
@@ -160,5 +180,5 @@ class NIDaqWaveformBuilder:
         packed = np.zeros(sample_count, dtype=np.uint32)
         for role in DAQ_ROLE_ORDER:
             _, _, line_index = parse_line_name(getattr(daq_config, role))
-            packed |= (matrix[role].astype(np.uint32) << np.uint32(line_index))
+            packed[matrix[role] != 0] |= np.uint32(1 << line_index)
         return packed

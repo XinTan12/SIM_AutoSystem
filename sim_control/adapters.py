@@ -436,7 +436,7 @@ class NIDaqAdapter:
                     samps_per_chan=plan.sample_count,
                 )
                 writer = DigitalSingleChannelWriter(task.out_stream, auto_start=False)
-                writer.write_many_sample_port_uint32(plan.packed_port_values.astype(np.uint32))
+                writer.write_many_sample_port_uint32(plan.packed_port_values.astype(np.uint32, copy=False))
                 task.start()
                 task.wait_until_done(timeout=max(5.0, plan.duration_s + 2.0))
         except Exception as exc:
@@ -1097,7 +1097,7 @@ class FusionBtCameraAdapter:
             frame = self._dcam_camera.buf_getframedata(index)
             if frame is False:
                 raise HardwareError(f"Failed to read DCAM frame {index}: {self._dcam_camera.lasterr().name}")
-            frames[index] = np.array(frame, copy=True, dtype=np.uint16)
+            frames[index] = np.asarray(frame, dtype=np.uint16)
         return frames, timestamps
 
 

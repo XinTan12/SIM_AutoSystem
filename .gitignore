@@ -11,6 +11,7 @@ htmlcov/
 .superpowers/
 .codex_tmp_pyc/
 .playwright-mcp/
+.history/
 
 .vs/
 .vscode/
@@ -21,6 +22,13 @@ htmlcov/
 Thumbs.db
 
 dxdiag_codex.txt
+test_captures/
+*_ROI_recordData/
+**/*_ROI_recordData/
+*_image/
+**/*_image/
+crash_frames/
+**/crash_frames/
 
 SDK/*
 !SDK/README.md

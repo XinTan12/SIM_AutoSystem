@@ -301,6 +301,22 @@ class UiRegressionTests(unittest.TestCase):
                     f"{left_combo.objectName()} overlaps {right_combo.objectName()}",
                 )
 
+    def test_sim_control_window_limits_runtime_log_blocks(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            try:
+                self.assertEqual(window.log_output.document().maximumBlockCount(), 1000)
+            finally:
+                window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

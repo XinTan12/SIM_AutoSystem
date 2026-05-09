@@ -125,16 +125,18 @@ class SimulatedCameraAdapter:
     ) -> tuple[np.ndarray, list[float]]:
         if not self._armed:
             raise RuntimeError("Simulated camera must be armed before reading frames.")
-        frames = []
+        height = int(self._camera_config.roi_height)
+        width = int(self._camera_config.roi_width)
+        frames = np.empty((int(frame_count), height, width), dtype=np.uint16)
         timestamps: list[float] = []
         for index in range(1, int(frame_count) + 1):
             frame = self._generate_frame()
-            frames.append(frame)
+            frames[index - 1] = frame
             timestamp = time.time()
             timestamps.append(timestamp)
             if frame_callback is not None:
                 frame_callback(index, timestamp)
-        return np.stack(frames).astype(np.uint16, copy=False), timestamps
+        return frames, timestamps
 
     def _generate_frame(self) -> np.ndarray:
         height = int(self._camera_config.roi_height)

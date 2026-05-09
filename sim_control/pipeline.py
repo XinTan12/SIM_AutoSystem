@@ -25,8 +25,7 @@ class ReconstructionWorker(QObject):
             stack = np.asarray(batch.stack)
             if stack.ndim != 3 or stack.shape[0] != 9:
                 raise ValueError(f"Expected stack shape (9, H, W), got {stack.shape}")
-            preview = np.mean(stack.astype(np.float32), axis=0)
-            preview = np.clip(preview, 0, 65535).astype(np.uint16)
+            preview = (np.add.reduce(stack, axis=0, dtype=np.uint32) // np.uint32(stack.shape[0])).astype(np.uint16)
             result = ReconstructionResult(
                 task_id=batch.task_id,
                 preview_image=preview,

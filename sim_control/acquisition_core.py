@@ -51,6 +51,7 @@ def run_single_acquisition(
         laser_wavelength_nm=task.laser_wavelength_nm,
         exposure_us=task.camera.exposure_us,
         frame_count=9,
+        include_role_matrix=False,
     )
     on_status("waveform_ready", {"task_id": task_id, "sample_count": plan.sample_count, "duration_s": plan.duration_s})
     for warning in getattr(plan, "warnings", []):

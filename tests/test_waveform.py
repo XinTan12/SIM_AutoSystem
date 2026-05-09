@@ -78,6 +78,42 @@ class WaveformValidationTests(unittest.TestCase):
         self.assertEqual(int(slm_trigger[frame_ends[0]]), 0)
         self.assertEqual(int(slm_finish[frame_starts[1]]), 0)
 
+    def test_packed_only_waveform_matches_full_matrix_plan_without_role_matrix(self):
+        import numpy as np
+
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        builder = NIDaqWaveformBuilder()
+        daq_config = DaqLineConfig()
+        timing = TimingConfig(
+            sample_rate_hz=1_000_000,
+            edge_pulse_us=50,
+            inter_frame_gap_us=50_000,
+            slm_enable_guard_us=50,
+        )
+
+        full_plan = builder.build(
+            daq_config=daq_config,
+            timing=timing,
+            laser_wavelength_nm=488,
+            exposure_us=500_000,
+            frame_count=9,
+        )
+        packed_only_plan = builder.build(
+            daq_config=daq_config,
+            timing=timing,
+            laser_wavelength_nm=488,
+            exposure_us=500_000,
+            frame_count=9,
+            include_role_matrix=False,
+        )
+
+        np.testing.assert_array_equal(packed_only_plan.packed_port_values, full_plan.packed_port_values)
+        self.assertEqual(packed_only_plan.role_matrix, {})
+        self.assertEqual(packed_only_plan.metadata, full_plan.metadata)
+        self.assertEqual(packed_only_plan.warnings, full_plan.warnings)
+
 
 if __name__ == "__main__":
     unittest.main()
