@@ -66,7 +66,12 @@ class SimSettingsSummaryTests(unittest.TestCase):
                 exposure_us=20_000,
                 bit_depth=12,
             ),
-            timing=TimingConfig(inter_frame_gap_us=10_000),
+            timing=TimingConfig(
+                sample_rate_hz=1_000_000,
+                edge_pulse_us=50,
+                inter_frame_gap_us=50_000,
+                slm_enable_guard_us=50,
+            ),
         )
 
         summary = build_sim_settings_summary(
@@ -80,9 +85,21 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("Bit Depth: 12-bit", summary)
         self.assertIn("Pattern RO: (SLM 未连接)", summary)
         self.assertIn("TIMING_READOUTTIME: 31.649 ms", summary)
-        self.assertIn("Actual Inter Frame Gap: 32649 us", summary)
+        self.assertTrue(
+            summary.endswith(
+                "\n".join(
+                    [
+                        "Timing:",
+                        "  sample_rate_hz: 1000000",
+                        "  edge_pulse_us: 50",
+                        "  inter_frame_gap_us: 32649",
+                        "  slm_enable_guard_us: 50",
+                    ]
+                )
+            )
+        )
 
-    def test_build_sim_settings_summary_falls_back_to_config_gap_without_runtime_timing(self):
+    def test_build_sim_settings_summary_uses_default_gap_without_runtime_timing(self):
         from sim_control.models import AppConfig, CameraConfig, TimingConfig
         from sim_control.summary import build_sim_settings_summary
 
@@ -95,7 +112,22 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
         self.assertIn("Bit Depth: 16-bit", summary)
         self.assertIn("TIMING_READOUTTIME: -", summary)
-        self.assertIn("Actual Inter Frame Gap: 15000 us", summary)
+        self.assertIn("  inter_frame_gap_us: 50000", summary)
+
+    def test_build_sim_settings_summary_ignores_calculated_gap_at_or_above_default(self):
+        from sim_control.models import AppConfig, TimingConfig
+        from sim_control.summary import build_sim_settings_summary
+
+        config = AppConfig(timing=TimingConfig(inter_frame_gap_us=15_000))
+
+        for recommended_gap_us in (50_000, 65_000):
+            with self.subTest(recommended_gap_us=recommended_gap_us):
+                summary = build_sim_settings_summary(
+                    config,
+                    runtime_timing={"recommended_inter_frame_gap_us": recommended_gap_us},
+                )
+
+                self.assertIn("  inter_frame_gap_us: 50000", summary)
 
     def test_build_sim_settings_summary_shows_selected_running_order(self):
         from sim_control.models import AppConfig

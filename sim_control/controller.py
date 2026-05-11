@@ -9,7 +9,16 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .acquisition_core import AcquisitionCancelled, run_single_acquisition
 from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter, find_best_running_order
 from .config_store import validate_app_config
-from .models import AppConfig, BackendConfig, CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, new_task_id
+from .models import (
+    AppConfig,
+    BackendConfig,
+    CameraConfig,
+    DaqLineConfig,
+    PatternPreparationResult,
+    SimTaskConfig,
+    effective_inter_frame_gap_us,
+    new_task_id,
+)
 from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
 
@@ -49,9 +58,9 @@ class SimAcquisitionWorker(QObject):
                     raise HardwareError("Only external_level trigger mode is supported.")
                 result = camera.apply_config(task.camera) or {}
                 _apply_camera_result_to_config(task.camera, result)
-                recommended_gap_us = result.get("recommended_inter_frame_gap_us")
-                if recommended_gap_us is not None:
-                    task.timing.inter_frame_gap_us = int(recommended_gap_us)
+                task.timing.inter_frame_gap_us = effective_inter_frame_gap_us(
+                    result.get("recommended_inter_frame_gap_us")
+                )
                 payload_data = {"camera_config": dict(task.camera.__dict__), **dict(result)}
                 self.signal_status_changed.emit("camera_config_applied", payload_data)
             if payload.get("prepare_running_order"):
@@ -366,9 +375,9 @@ class SimAcquisitionController(QObject):
     ) -> str:
         if not prepare_running_order and not self.pattern_result.handles:
             raise HardwareError("Patterns must be prepared before acquisition.")
-        recommended_gap_us = self._latest_camera_timing.get("recommended_inter_frame_gap_us")
-        if recommended_gap_us is not None:
-            task.timing.inter_frame_gap_us = int(recommended_gap_us)
+        task.timing.inter_frame_gap_us = effective_inter_frame_gap_us(
+            self._latest_camera_timing.get("recommended_inter_frame_gap_us")
+        )
         pattern_result = self.pattern_result if not prepare_running_order else PatternPreparationResult()
         pattern_files = list(task.pattern_files)
         selected_running_order = task.running_order_name

@@ -22,9 +22,10 @@
 ## 目录职责
 - `sim_control/`：当前 SIM 侧主开发区，包含 GUI、采集控制、波形生成、预览、适配器、配置读写、数据模型和占位 pipeline。
 - `control_wangbo/`：队友历史微流控控制代码，默认只读；仅在用户明确要求或 SIM 集成入口必须调整时修改。
-- `sim_control_app.py`：SIM GUI 顶层启动入口。
+- `app.py`：项目集成 GUI 顶层启动入口，启动 `control_wangbo/main.py` 的主界面。
+- `sim_control/sim_acquisition_app.py`：独立 SIM 采集 GUI 启动入口，用于单独调试 SIM 采集链路。
 - `config/sim_control_config.json`：默认 SIM 配置文件，承载设备、时序、后端、SDK 路径和 DAQ 线位配置。
-- `start_sim_control.cmd`：Windows 下优先使用的启动脚本。
+- `start.cmd`：Windows 下优先使用的项目集成 GUI 启动脚本。
 - `SDK/`：本地厂商 SDK、驱动和资料目录；仓库只跟踪 `SDK/README.md` 的目录约定。
 - `tests/`：回归测试、适配器测试和 UI 行为测试。
 
@@ -43,8 +44,9 @@
 - SIM 侧统一使用根目录 `.venv` 作为项目环境。
 - 不依赖 `control_wangbo/.venv`，该旧环境不属于当前主流程。
 - 默认配置路径为 `config/sim_control_config.json`。
-- 启动 GUI：`.\.venv\Scripts\python.exe sim_control_app.py --config config\sim_control_config.json`。
-- Windows 启动脚本：`.\start_sim_control.cmd`。
+- 启动项目集成 GUI：`.\.venv\Scripts\python.exe app.py`。
+- Windows 启动脚本：`.\start.cmd`。
+- 启动独立 SIM 采集 GUI：`.\.venv\Scripts\python.exe -m sim_control.sim_acquisition_app --config config\sim_control_config.json`。
 - 基准测试命令：`.\.venv\Scripts\python.exe -m unittest discover -s tests -q`。
 - pytest 可用时运行：`.\.venv\Scripts\python.exe -m pytest tests\ -q`。
 
@@ -57,6 +59,7 @@
 - 硬件适配逻辑尽量集中在 `sim_control/adapters.py`。
 - 不再新增或恢复 `daq_backend`、`pxie7857r`、`rio_lines`、`nifpga`、`NIRioDaqAdapter`、NI-RIO bitfile preflight 或 PXIe-7857R LabVIEW rebuild 相关入口。
 - 正式 SIM 采集要求 SLM 已连接并已能选择匹配 RO；未连接时应阻止采集，不回退到空 `pattern_files`。
+- SIM 正式采集的 `inter_frame_gap_us` 默认按 `50_000 us` 执行；只有相机根据当前 ROI/传输接口返回的 `recommended_inter_frame_gap_us` 存在且小于 `50_000 us` 时，才使用该计算值。
 - `SimSettingsDialog` 不拥有 SLM 生命周期；集成主界面与 SIM controller 必须共享同一个 `slm_adapter`，避免 R11 WinUSB 设备被重复打开。
 - SIM live 预览采用 `latest-frame-wins`：采集线程持续更新最新帧快照，GUI 端轮询显示最新帧，允许丢弃中间帧以避免旧帧积压。
 - `ui_sim_settings_dialog.py` 由 `pyuic5` 从 `.ui` 生成；修改 UI 时编辑 `.ui` 后重新生成，不直接手改生成文件。
@@ -84,6 +87,11 @@
 - 明确重建模块接收 `(9, H, W)` `numpy.uint16` 栈后的接口形式、返回结果和回调链路。
 
 ## 最近更新
+- 2026-05-11：继续优化 SIM 采集设置弹窗 DAQ 页布局：在 `DAQ Wiring` 组内为设备行、线路矩阵、测试行和底部之间增加均衡的垂直弹性间隔，并将线路矩阵行距加大，避免空白集中在组底部；同步重新生成 `ui_sim_settings_dialog.py`，新增 UI 回归断言验证三段垂直空白分布和底部剩余空间。
+- 2026-05-11：美化 SIM 采集设置弹窗布局：保留 `Laser` / `DAQ` 双页签和原生 PyQt5 外观，将标题区固定为紧凑高度，页签区域改为主体扩展，DAQ 页移除左右居中 spacer 并让 `DAQ Wiring` 区域铺开；放宽 DAQ 线路与测试目标下拉框宽度，并用底部弹性 spacer 避免内容被垂直分散。已从 `.ui` 重新生成 `ui_sim_settings_dialog.py`，并新增 UI 几何回归断言覆盖标题高度、页签起点、DAQ 组宽度和下拉框宽度。
+- 2026-05-11：根据 review 发现的问题补齐 SIM Timing 默认配置修正：`config/sim_control_config.json` 中 `timing.inter_frame_gap_us` 已从 `10_000 us` 改为 `50_000 us`，与 `TimingConfig` 默认值、controller/worker 正式采集生效规则和主界面摘要显示保持一致。
+- 2026-05-11：简化 SIM 设置弹窗 DAQ 页面：移除 `Timing` 模块中 `sample_rate_hz`、`edge_pulse_us`、`inter_frame_gap_us`、`slm_enable_guard_us` 四个可编辑控件，保留这些字段作为内部采集时序参数；主界面 SIM 参数摘要最底部新增只读 `Timing` 区块显示四项时序；`inter_frame_gap_us` 默认改为 `50_000 us`，并统一 controller/worker 正式采集路径为“仅当相机推荐 gap 小于 50ms 时才覆盖默认值”。新增/更新 UI、摘要和 controller 回归测试；验证中新增目标用例通过，相关非临时目录用例通过；全量 pytest 在当前 sandbox 中剩余 6 项 `tempfile.TemporaryDirectory()` 写入权限失败，非本次业务断言失败。
+- 2026-05-11：整理 GUI 启动入口：根目录默认入口由 `sim_control_app.py` 改为 `app.py`，职责调整为启动 `control_wangbo/main.py` 的项目集成主界面；Windows 快速启动脚本由 `start_sim_control.cmd` 改为 `start.cmd`；原独立 SIM 采集窗口入口迁移到 `sim_control/sim_acquisition_app.py`，通过 `python -m sim_control.sim_acquisition_app --config config\sim_control_config.json` 单独启动；新增入口回归测试覆盖默认入口、启动脚本和独立 SIM 入口命名。
 - 2026-05-11：建立当前仓库 Git 工作流：当前大改动开发线迁移到 `dev`，远程开发分支为 `origin/dev`；稳定主线保留为 `main` / `origin/main`；新增 `E:\Intelligent_SR\SIM_AutoSystem-stable` detached `origin/main` worktree 作为远程稳定版运行和真机对照目录；项目说明新增 `dev -> PR -> main -> stable worktree 更新` 的代码更新流程；旧 `codex/*` 和 `backup/*` 分支按用户确认清理。
 - 2026-05-11：针对 SIM 主链路防卡死方案的 review 结论继续收敛实现：Hamamatsu DCAM 分片等待现在只对 `TIMEOUT` 继续短轮询，遇到非 timeout SDK 错误会立即抛 `HardwareError`，避免真实硬件错误被拖到总超时才暴露；`run_single_acquisition()` 改为先校验 9 帧 `uint16` stack 与 timestamps，再补发缺失 `frame_captured` 进度，避免无效采集结果造成 9 帧进度噪声；standalone SIM GUI 的 Prepare/Run 正式路径不再在 GUI 线程执行 `initialize_hardware()`、`apply_camera_config()` 或 Running Order 选择，而是通过 controller worker 的 `prepare_only`/正式采集 payload 后台完成；standalone GUI 会从 worker 的 `running_order_selected` 状态同步 `selected_running_order`；集成主界面在 preview 停止失败并阻止正式采集时会恢复原 live preview 请求状态。新增对应 DCAM 非 TIMEOUT、采集校验前帧事件、standalone worker preflight、worker RO 状态同步、controller prepare-only payload 与 preview-stop 状态恢复回归测试。验证：`.venv\Scripts\python.exe -m pytest tests\ -q` 通过（161 项测试，16 个子测试），`.venv\Scripts\python.exe -m unittest discover -s tests -q` 通过（161 项测试），`.venv\Scripts\python.exe -m compileall -q sim_control control_wangbo tests` 通过；真机 Hamamatsu + R11 + NI USB-6423 停止响应和示波器全低仍需硬件验收。
 - 2026-05-11：执行 SIM 主链路采集闭环与防卡死修复：`run_single_acquisition()` 增加 `AcquisitionCancelled`、`stop_event` 传播和 9 帧 `uint16` 栈/timestamps 强校验，避免异常相机返回误报成功；`SimAcquisitionController.stop()` 改为只设置取消事件，不再从 GUI/调用线程直接操作 DAQ 或相机，硬件 `disarm` 与 `set_all_low` 统一由采集 worker 的 `finally` 路径执行；NI USB-6423 波形等待改为 `is_task_done()` 短轮询并在取消时 `task.stop()`；Hamamatsu DCAM frame wait 改为 50ms 分片等待并保留总 timeout 与 `captured X/9` 诊断；standalone SIM GUI 默认正式采集路径改为 Running Order；集成主界面正式采集 preflight 移入 worker，并在 preview 未确认停止时阻止采集。验证通过软件测试；真机 Hamamatsu + R11 + NI USB-6423 停止响应和示波器全低仍需硬件验收。

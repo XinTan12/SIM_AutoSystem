@@ -19,17 +19,21 @@
 - SIM 侧统一使用根目录 `.venv` 作为 Python 环境。
 - 不依赖 `control_wangbo/.venv`；该旧环境不属于当前主流程。
 - 主要 Python 依赖集中在根目录 `.venv`：`numpy`, `PyQt5`, `nidaqmx`, `tifffile`, `opencv-python`, `pandas`, `matplotlib`，以及后续真实厂商 SDK Python 绑定。
-- Windows 启动脚本：`start_sim_control.cmd`，它会通过 `.venv\Scripts\python.exe` 启动 `sim_control_app.py`。
-- 手动启动：`.\.venv\Scripts\python.exe sim_control_app.py --config config\sim_control_config.json`。
+- Windows 启动脚本：`start.cmd`，它会通过 `.venv\Scripts\python.exe` 启动 `app.py`。
+- 手动启动项目集成 GUI：`.\.venv\Scripts\python.exe app.py`。
+- 手动启动独立 SIM 采集 GUI：`.\.venv\Scripts\python.exe -m sim_control.sim_acquisition_app --config config\sim_control_config.json`。
 
 ## 常用命令
 
 ```powershell
 # 启动 GUI
-.\.venv\Scripts\python.exe sim_control_app.py --config config\sim_control_config.json
+.\.venv\Scripts\python.exe app.py
 
 # Windows 启动脚本
-.\start_sim_control.cmd
+.\start.cmd
+
+# 启动独立 SIM 采集 GUI
+.\.venv\Scripts\python.exe -m sim_control.sim_acquisition_app --config config\sim_control_config.json
 
 # 基准测试命令
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
@@ -53,9 +57,10 @@
 
 - `sim_control/`：SIM 侧主开发区，包含 GUI、采集控制、波形生成、预览、适配器、配置读写、数据模型和占位 pipeline。
 - `control_wangbo/`：队友历史微流控控制代码，默认只读；除非用户明确要求，否则不要修改。
-- `sim_control_app.py`：SIM GUI 顶层启动入口。
+- `app.py`：项目集成 GUI 顶层启动入口，启动 `control_wangbo/main.py` 的主界面。
+- `sim_control/sim_acquisition_app.py`：独立 SIM 采集 GUI 启动入口，用于单独调试 SIM 采集链路。
 - `config/sim_control_config.json`：默认 SIM 配置文件，承载设备、时序、后端、SDK 路径和 DAQ 线位配置。
-- `start_sim_control.cmd`：Windows 下优先使用的启动脚本。
+- `start.cmd`：Windows 下优先使用的项目集成 GUI 启动脚本。
 - `SDK/`：本地厂商 SDK、驱动和资料目录；厂商 SDK 文件不入版本管理，仓库只保留 `SDK/README.md` 的目录约定。
 - `tests/`：回归测试、适配器测试和 UI 行为测试。
 

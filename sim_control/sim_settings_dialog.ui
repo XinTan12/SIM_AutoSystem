@@ -42,10 +42,22 @@
    </property>
    <item>
     <widget class="QLabel" name="dialogHeader">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
      <property name="minimumSize">
       <size>
        <width>0</width>
-       <height>40</height>
+       <height>52</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>52</height>
       </size>
      </property>
      <property name="font">
@@ -67,9 +79,9 @@
    <item>
     <widget class="QTabWidget" name="tabs">
      <property name="sizePolicy">
-      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+      <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
        <horstretch>0</horstretch>
-       <verstretch>0</verstretch>
+       <verstretch>1</verstretch>
       </sizepolicy>
      </property>
      <property name="minimumSize">
@@ -320,39 +332,24 @@
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayout_daq_page">
        <property name="leftMargin">
-        <number>24</number>
+        <number>12</number>
        </property>
        <property name="topMargin">
-        <number>14</number>
+        <number>8</number>
        </property>
        <property name="rightMargin">
-        <number>24</number>
+        <number>12</number>
        </property>
        <property name="bottomMargin">
-        <number>14</number>
+        <number>10</number>
        </property>
        <item>
-        <layout class="QHBoxLayout" name="horizontalLayout_daq_center">
-         <item>
-          <spacer name="horizontalSpacer_daq_left">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="group_daq">
-           <property name="maximumSize">
-            <size>
-             <width>860</width>
-             <height>720</height>
-            </size>
+        <widget class="QGroupBox" name="group_daq">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+             <horstretch>0</horstretch>
+             <verstretch>1</verstretch>
+            </sizepolicy>
            </property>
            <property name="font">
             <font>
@@ -367,19 +364,19 @@
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_daq_group">
             <property name="spacing">
-             <number>8</number>
+             <number>6</number>
             </property>
             <property name="leftMargin">
-             <number>24</number>
+             <number>16</number>
             </property>
             <property name="topMargin">
-             <number>12</number>
+             <number>16</number>
             </property>
             <property name="rightMargin">
-             <number>24</number>
+             <number>16</number>
             </property>
             <property name="bottomMargin">
-             <number>6</number>
+             <number>12</number>
             </property>
             <item>
              <layout class="QHBoxLayout" name="horizontalLayout_daq_device">
@@ -420,13 +417,13 @@
                <widget class="QComboBox" name="combo_daq_device">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -479,12 +476,28 @@
              </layout>
             </item>
             <item>
+             <spacer name="verticalSpacer_daq_after_device">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+              <property name="sizeType">
+               <enum>QSizePolicy::Expanding</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
              <layout class="QGridLayout" name="formLayout_daq">
               <property name="horizontalSpacing">
                <number>16</number>
               </property>
               <property name="verticalSpacing">
-               <number>8</number>
+               <number>16</number>
               </property>
               <item row="0" column="0">
                <widget class="QLabel" name="label_slm_enable_line">
@@ -523,13 +536,13 @@
                <widget class="QComboBox" name="combo_slm_enable_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -553,13 +566,13 @@
                <widget class="QComboBox" name="combo_slm_trigger_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -613,13 +626,13 @@
                <widget class="QComboBox" name="combo_slm_finish_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -673,13 +686,13 @@
                <widget class="QComboBox" name="combo_camera_trigger_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -733,13 +746,13 @@
                <widget class="QComboBox" name="combo_laser_405_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -793,13 +806,13 @@
                <widget class="QComboBox" name="combo_laser_488_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -853,13 +866,13 @@
                <widget class="QComboBox" name="combo_laser_561_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -913,13 +926,13 @@
                <widget class="QComboBox" name="combo_laser_647_line">
                 <property name="minimumSize">
                  <size>
-                  <width>200</width>
+                  <width>240</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -972,309 +985,40 @@
              </layout>
             </item>
             <item>
-             <widget class="QGroupBox" name="group_daq_timing">
-              <property name="font">
-               <font>
-                <family>Segoe UI</family>
-                <pointsize>10</pointsize>
-                <weight>75</weight>
-                <bold>true</bold>
-               </font>
+             <spacer name="verticalSpacer_daq_after_lines">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
               </property>
-              <property name="title">
-               <string>Timing</string>
+              <property name="sizeType">
+               <enum>QSizePolicy::Expanding</enum>
               </property>
-              <layout class="QGridLayout" name="formLayout_daq_timing">
-               <property name="leftMargin">
-                <number>15</number>
-               </property>
-               <property name="topMargin">
-                <number>12</number>
-               </property>
-               <property name="rightMargin">
-                <number>15</number>
-               </property>
-               <property name="bottomMargin">
-                <number>12</number>
-               </property>
-               <property name="horizontalSpacing">
-                <number>16</number>
-               </property>
-               <property name="verticalSpacing">
-                <number>8</number>
-               </property>
-               <item row="0" column="0">
-                <widget class="QLabel" name="label_sample_rate">
-                 <property name="minimumSize">
-                  <size>
-                   <width>155</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>155</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Sample Rate (Hz)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="1">
-                <widget class="QSpinBox" name="spin_sample_rate">
-                 <property name="minimumSize">
-                  <size>
-                   <width>150</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>180</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1000</number>
-                 </property>
-                 <property name="maximum">
-                  <number>20000000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="2">
-                <widget class="QLabel" name="label_edge_pulse">
-                 <property name="minimumSize">
-                  <size>
-                   <width>155</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>155</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Edge Pulse (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="3">
-                <widget class="QSpinBox" name="spin_edge_pulse_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>150</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>180</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="0">
-                <widget class="QLabel" name="label_inter_frame_gap">
-                 <property name="minimumSize">
-                  <size>
-                   <width>155</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>155</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Inter Frame Gap (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QSpinBox" name="spin_inter_frame_gap_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>150</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>180</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="maximum">
-                  <number>2000000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="2">
-                <widget class="QLabel" name="label_slm_enable_guard">
-                 <property name="minimumSize">
-                  <size>
-                   <width>155</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>155</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>SLM Enable Guard (us)</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="3">
-                <widget class="QSpinBox" name="spin_slm_enable_guard_us">
-                 <property name="minimumSize">
-                  <size>
-                   <width>150</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>180</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                  <font>
-                   <family>Segoe UI</family>
-                   <pointsize>10</pointsize>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignCenter</set>
-                 </property>
-                 <property name="minimum">
-                  <number>1</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100000</number>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </widget>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
             </item>
             <item>
              <layout class="QHBoxLayout" name="horizontalLayout_daq_buttons">
               <property name="spacing">
-               <number>0</number>
+               <number>10</number>
               </property>
               <item>
-               <spacer name="horizontalSpacer_daq_button_left">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
+               <widget class="QLabel" name="label_test_target">
+                <property name="minimumSize">
                  <size>
-                  <width>40</width>
-                  <height>20</height>
+                  <width>120</width>
+                  <height>0</height>
                  </size>
                 </property>
-               </spacer>
-              </item>
-              <item>
-               <widget class="QLabel" name="label_test_target">
+                <property name="maximumSize">
+                 <size>
+                  <width>120</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
                 <property name="font">
                  <font>
                   <family>Segoe UI</family>
@@ -1286,29 +1030,28 @@
                 <property name="text">
                  <string>Test target</string>
                 </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
                </widget>
               </item>
               <item>
-               <spacer name="horizontalSpacer_2">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeType">
-                 <enum>QSizePolicy::Preferred</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>20</width>
-                  <height>20</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-              <item>
                <widget class="QComboBox" name="combo_test_target">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
                 <property name="minimumSize">
                  <size>
-                  <width>260</width>
+                  <width>320</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>16777215</width>
                   <height>36</height>
                  </size>
                 </property>
@@ -1323,22 +1066,6 @@
                </widget>
               </item>
               <item>
-               <spacer name="horizontalSpacer_3">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeType">
-                 <enum>QSizePolicy::Preferred</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>20</width>
-                  <height>20</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-              <item>
                <widget class="QPushButton" name="btn_pulse_test">
                 <property name="sizePolicy">
                  <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -1348,13 +1075,13 @@
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>80</width>
+                  <width>100</width>
                   <height>36</height>
                  </size>
                 </property>
                 <property name="maximumSize">
                  <size>
-                  <width>100</width>
+                  <width>120</width>
                   <height>36</height>
                  </size>
                 </property>
@@ -1371,38 +1098,26 @@
                 </property>
                </widget>
               </item>
-              <item>
-               <spacer name="horizontalSpacer_daq_button_right">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>40</width>
-                  <height>20</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
              </layout>
+            </item>
+            <item>
+             <spacer name="verticalSpacer_daq_bottom">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+              <property name="sizeType">
+               <enum>QSizePolicy::Expanding</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
             </item>
            </layout>
           </widget>
-         </item>
-         <item>
-          <spacer name="horizontalSpacer_daq_right">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
        </item>
       </layout>
      </widget>

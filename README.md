@@ -18,7 +18,7 @@
 
 本仓库当前主要包含以下内容：
 
-- SIM 控制 GUI 启动入口与配置读写
+- 项目集成 GUI 与独立 SIM 采集 GUI 启动入口
 - 相机、SLM、DAQ 的适配器封装
 - 结构光采集流程控制与波形计划
 - 预览、占位重建与特征分析流程接口
@@ -30,12 +30,14 @@
 
 - `sim_control/`
   SIM 控制主模块，包含 GUI、控制器、波形生成、预览、适配器和数据模型。
-- `sim_control_app.py`
-  顶层 GUI 启动脚本。
+- `app.py`
+  项目集成 GUI 启动脚本，启动 `control_wangbo/main.py` 的主界面。
+- `sim_control/sim_acquisition_app.py`
+  独立 SIM 采集 GUI 启动脚本，用于单独调试 SIM 采集链路。
 - `config/sim_control_config.json`
   默认配置文件，包含 DAQ 线位、相机 ROI、时序、后端仿真开关和 SDK 路径配置。
-- `start_sim_control.cmd`
-  Windows 下的快速启动脚本。
+- `start.cmd`
+  Windows 下的项目集成 GUI 快速启动脚本。
 - `tests/`
   基础回归测试与适配器测试。
 - `SDK/`
@@ -121,20 +123,26 @@ dev 本地测试通过 -> push origin/dev -> GitHub PR -> merge 到 origin/main 
 ### 方式一：使用批处理脚本
 
 ```powershell
-start_sim_control.cmd
+start.cmd
 ```
 
-该脚本会直接使用根目录 `.venv\Scripts\python.exe` 启动 GUI。
+该脚本会直接使用根目录 `.venv\Scripts\python.exe` 启动项目集成 GUI。
 
 ### 方式二：手动启动
 
 ```powershell
-.\.venv\Scripts\python.exe sim_control_app.py --config config/sim_control_config.json
+.\.venv\Scripts\python.exe app.py
 ```
 
 默认配置文件位于：
 
 `config/sim_control_config.json`
+
+### 独立 SIM 采集 GUI
+
+```powershell
+.\.venv\Scripts\python.exe -m sim_control.sim_acquisition_app --config config\sim_control_config.json
+```
 
 ## 配置说明
 

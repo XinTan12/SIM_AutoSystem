@@ -906,24 +906,60 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         self.assertEqual(result["applied_roi"]["width"], 2048)
         self.assertEqual(statuses[-1][1]["camera_config"]["roi_width"], 2048)
 
-    def test_start_single_acquisition_overrides_gap_from_last_camera_timing(self):
+    def test_start_single_acquisition_uses_calculated_gap_only_below_default(self):
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import SimTaskConfig
 
-        controller = SimAcquisitionController()
-        controller.pattern_result.handles = [0]
-        controller._latest_camera_timing = {"recommended_inter_frame_gap_us": 6500}
+        cases = (
+            (6_500, 6_500),
+            (50_000, 50_000),
+            (65_000, 50_000),
+            (None, 50_000),
+        )
+        for recommended_gap_us, expected_gap_us in cases:
+            with self.subTest(recommended_gap_us=recommended_gap_us):
+                controller = SimAcquisitionController()
+                controller.pattern_result.handles = [0]
+                if recommended_gap_us is not None:
+                    controller._latest_camera_timing = {"recommended_inter_frame_gap_us": recommended_gap_us}
 
-        try:
-            task = SimTaskConfig()
-            task.timing.inter_frame_gap_us = 15000
-            _, emitted_payloads = _start_single_acquisition_for_payload_test(controller, task)
-        finally:
-            controller._thread.quit()
-            controller._thread.wait(2000)
+                try:
+                    task = SimTaskConfig()
+                    task.timing.inter_frame_gap_us = 15_000
+                    _, emitted_payloads = _start_single_acquisition_for_payload_test(controller, task)
+                finally:
+                    controller._thread.quit()
+                    controller._thread.wait(2000)
 
-        self.assertEqual(task.timing.inter_frame_gap_us, 6500)
-        self.assertEqual(emitted_payloads[-1]["task"].timing.inter_frame_gap_us, 6500)
+                self.assertEqual(task.timing.inter_frame_gap_us, expected_gap_us)
+                self.assertEqual(emitted_payloads[-1]["task"].timing.inter_frame_gap_us, expected_gap_us)
+
+    def test_worker_camera_apply_uses_default_gap_when_recommendation_is_not_below_default(self):
+        from sim_control.controller import SimAcquisitionWorker
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        worker = SimAcquisitionWorker()
+        task = SimTaskConfig()
+        task.timing.inter_frame_gap_us = 15_000
+        camera = mock.Mock()
+        camera.apply_config.return_value = {"recommended_inter_frame_gap_us": 65_000}
+
+        worker.slot_start(
+            {
+                "task": task,
+                "task_id": "task-1",
+                "daq_config": DaqLineConfig(),
+                "pattern_result": PatternPreparationResult(handles=[0]),
+                "waveform_builder": mock.Mock(),
+                "daq_adapter": mock.Mock(),
+                "camera_adapter": camera,
+                "slm_adapter": mock.Mock(),
+                "apply_camera_config": True,
+                "prepare_only": True,
+            }
+        )
+
+        self.assertEqual(task.timing.inter_frame_gap_us, 50_000)
 
     def test_start_single_acquisition_accepts_running_order_mode(self):
         from sim_control.controller import SimAcquisitionController

@@ -169,7 +169,7 @@ class UiRegressionTests(unittest.TestCase):
             "The entire left column should fit inside the main window height.",
         )
 
-    def test_sim_settings_ui_removes_camera_tab_and_keeps_timing_controls_in_daq(self):
+    def test_sim_settings_ui_removes_camera_tab_and_timing_controls(self):
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
@@ -199,15 +199,19 @@ class UiRegressionTests(unittest.TestCase):
         self.assertIn("Test target", texts)
         self.assertNotIn("Validate Wiring", texts)
 
+        self.assertFalse(hasattr(ui, "group_daq_timing"))
         for widget_name in (
             "spin_sample_rate",
             "spin_edge_pulse_us",
             "spin_inter_frame_gap_us",
             "spin_slm_enable_guard_us",
         ):
-            self.assertTrue(hasattr(ui, widget_name))
-            widget = getattr(ui, widget_name)
-            self.assertIsNotNone(widget.parent())
+            self.assertFalse(hasattr(ui, widget_name))
+        self.assertNotIn("Timing", texts)
+        self.assertNotIn("Sample Rate (Hz)", texts)
+        self.assertNotIn("Edge Pulse (us)", texts)
+        self.assertNotIn("Inter Frame Gap (us)", texts)
+        self.assertNotIn("SLM Enable Guard (us)", texts)
 
     def test_sim_settings_dialog_uses_native_style_without_pattern_specific_rules(self):
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
@@ -246,11 +250,16 @@ class UiRegressionTests(unittest.TestCase):
         dialog = QtWidgets.QDialog()
         ui = Ui_SimSettingsDialog()
         ui.setupUi(dialog)
+        dialog.resize(980, 640)
+        dialog.show()
+        self.app.processEvents()
 
         self.assertEqual(dialog.minimumSize().width(), 920)
         self.assertEqual(dialog.minimumSize().height(), 600)
         self.assertEqual(dialog.height(), 640)
         self.assertEqual(dialog.font().family(), "Segoe UI")
+        self.assertLessEqual(ui.dialogHeader.geometry().height(), 64)
+        self.assertLessEqual(ui.tabs.geometry().y(), 80)
         self.assertEqual(ui.lbl_error.font().pointSize(), 11)
         self.assertGreaterEqual(ui.lbl_error.maximumHeight(), 28)
         self.assertEqual(ui.radio_laser_405.font().pointSize(), 13)
@@ -268,6 +277,11 @@ class UiRegressionTests(unittest.TestCase):
 
         ui.tabs.setCurrentWidget(ui.tab_daq)
         self.app.processEvents()
+
+        self.assertGreaterEqual(ui.group_daq.geometry().width(), 820)
+        self.assertGreaterEqual(ui.combo_slm_enable_line.geometry().width(), 240)
+        self.assertGreaterEqual(ui.combo_laser_647_line.geometry().width(), 240)
+        self.assertGreaterEqual(ui.combo_test_target.geometry().width(), 300)
 
         labels = [
             ui.label_slm_enable_line,
@@ -302,6 +316,43 @@ class UiRegressionTests(unittest.TestCase):
                     left_rect.intersects(right_combo.geometry()),
                     f"{left_combo.objectName()} overlaps {right_combo.objectName()}",
                 )
+
+    def test_sim_settings_daq_wiring_uses_vertical_space_evenly(self):
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+        dialog.resize(980, 640)
+        dialog.show()
+        self.app.processEvents()
+
+        ui.tabs.setCurrentWidget(ui.tab_daq)
+        self.app.processEvents()
+
+        line_combos = [
+            ui.combo_slm_enable_line,
+            ui.combo_slm_trigger_line,
+            ui.combo_slm_finish_line,
+            ui.combo_camera_trigger_line,
+            ui.combo_laser_405_line,
+            ui.combo_laser_488_line,
+            ui.combo_laser_561_line,
+            ui.combo_laser_647_line,
+        ]
+        device_bottom = ui.combo_daq_device.geometry().bottom()
+        lines_top = min(combo.geometry().top() for combo in line_combos)
+        lines_bottom = max(combo.geometry().bottom() for combo in line_combos)
+        test_top = ui.combo_test_target.geometry().top()
+        test_bottom = max(
+            ui.combo_test_target.geometry().bottom(),
+            ui.btn_pulse_test.geometry().bottom(),
+        )
+        group_bottom = ui.group_daq.contentsRect().bottom()
+
+        self.assertGreaterEqual(lines_top - device_bottom, 35)
+        self.assertGreaterEqual(test_top - lines_bottom, 35)
+        self.assertLessEqual(group_bottom - test_bottom, 100)
 
     def test_sim_control_window_limits_runtime_log_blocks(self):
         import tempfile

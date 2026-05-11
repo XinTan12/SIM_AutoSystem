@@ -281,11 +281,6 @@ class SimSettingsDialog(QDialog):
             "laser_647_line": self.ui.combo_laser_647_line,
         }
 
-        self.spin_sample_rate = self.ui.spin_sample_rate
-        self.spin_edge_pulse_us = self.ui.spin_edge_pulse_us
-        self.spin_inter_frame_gap_us = self.ui.spin_inter_frame_gap_us
-        self.spin_slm_enable_guard_us = self.ui.spin_slm_enable_guard_us
-
         self.laser_group = QButtonGroup(self)
         self.laser_buttons = {
             405: self.ui.radio_laser_405,
@@ -310,11 +305,6 @@ class SimSettingsDialog(QDialog):
 
     def _populate_widgets_from_config(self, config: AppConfig) -> None:
         self._preferred_daq_device = config.daq.device_name
-        write_timing_config_to_widgets(
-            config.timing,
-            self.spin_sample_rate, self.spin_edge_pulse_us,
-            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
-        )
         write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
 
     def _current_daq_config(self) -> DaqLineConfig:
@@ -323,18 +313,11 @@ class SimSettingsDialog(QDialog):
             device_name=self.combo_daq_device.currentText(),
         )
 
-    def _current_timing_config(self) -> TimingConfig:
-        return read_timing_config_from_widgets(
-            self.spin_sample_rate, self.spin_edge_pulse_us,
-            self.spin_inter_frame_gap_us, self.spin_slm_enable_guard_us,
-        )
-
     def _selected_laser_nm(self) -> int:
         return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> AppConfig:
         self.config.daq = self._current_daq_config()
-        self.config.timing = self._current_timing_config()
         self.config.selected_laser_nm = self._selected_laser_nm()
         return self.config
 
@@ -468,7 +451,6 @@ class SimSettingsDialog(QDialog):
     def _run_sim_acquisition_test(self, daq_config: DaqLineConfig) -> Path:
         if not self.slm_adapter.is_connected():
             raise HardwareError("SIM采集测试前需要先连接 SLM。")
-        self.config.timing = self._current_timing_config()
         self.config.selected_laser_nm = self._selected_laser_nm()
         camera_config = clone_app_config(self.config).camera
         camera_config.exposure_us = SIM_ACQUISITION_TEST_EXPOSURE_US

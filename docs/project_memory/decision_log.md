@@ -7,6 +7,12 @@
 
 ## 2026-05-11
 
+### 决策：SIM 正式采集的 inter frame gap 默认 50ms，仅允许更短的相机计算值覆盖
+- 原因：
+  Hamamatsu 相机按 ROI 和传输接口返回的推荐读出间隔可用于缩短采集周期，但大于等于 50ms 的推荐值不应放慢默认 SIM9 时序；同时 DAQ 设置弹窗不再向用户暴露该参数，避免人工设置与真实相机运行时能力冲突。
+- 影响：
+  `TimingConfig.inter_frame_gap_us` 默认值为 `50_000 us`；正式采集和 worker 相机配置路径统一通过有效 gap 规则处理：`recommended_inter_frame_gap_us < 50_000` 时使用推荐值，否则使用 `50_000`。主界面 SIM 参数摘要只读显示最终使用的 Timing 参数；后续修改采集时序时应保留该 50ms 默认策略，除非重新做硬件时序决策。
+
 ### 决策：使用 `dev` 作为大改动开发分支，并用 detached stable worktree 运行远程稳定版
 - 原因：
   当前远程 `origin/main` 是确认可运行的稳定版本，而本地存在较大的未提交开发改动。将开发线固定到 `dev`，并额外保留 detached `origin/main` 的 stable worktree，可以避免在同一目录里反复切换稳定版和开发版，降低误操作风险。

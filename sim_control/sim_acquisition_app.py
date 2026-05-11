@@ -1,20 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
-from sim_control.gui import SimControlWindow
+from .config_store import DEFAULT_CONFIG_PATH
+from .gui import SimControlWindow
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch the SIM control window.")
+    parser = argparse.ArgumentParser(description="Launch the standalone SIM acquisition window.")
     parser.add_argument(
         "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "sim_control_config.json"),
+        default=str(DEFAULT_CONFIG_PATH),
         help="Path to the SIM control JSON config file.",
     )
     return parser.parse_args()

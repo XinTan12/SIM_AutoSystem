@@ -46,6 +46,7 @@ LASER_ROLE_MAP = {
 }
 
 SUPPORTED_LASERS = tuple(LASER_ROLE_MAP.keys())
+DEFAULT_INTER_FRAME_GAP_US = 50_000
 
 
 def _default_pattern_files() -> list[str]:
@@ -55,6 +56,15 @@ def _default_pattern_files() -> list[str]:
 def new_task_id(prefix: str = "sim") -> str:
     ts = time.strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
+
+
+def effective_inter_frame_gap_us(recommended_gap_us: int | float | None = None) -> int:
+    if recommended_gap_us is None:
+        return DEFAULT_INTER_FRAME_GAP_US
+    gap_us = int(recommended_gap_us)
+    if 0 <= gap_us < DEFAULT_INTER_FRAME_GAP_US:
+        return gap_us
+    return DEFAULT_INTER_FRAME_GAP_US
 
 
 @dataclass
@@ -91,7 +101,7 @@ class CameraConfig:
 class TimingConfig:
     sample_rate_hz: int = 1_000_000
     edge_pulse_us: int = 50
-    inter_frame_gap_us: int = 10_000
+    inter_frame_gap_us: int = DEFAULT_INTER_FRAME_GAP_US
     slm_enable_guard_us: int = 50
 
 
