@@ -67,8 +67,7 @@ def _run_migrations(payload: dict) -> dict:
 
 def app_config_to_dict(config: AppConfig) -> dict:
     payload = asdict(config)
-    if not payload.get("config_path"):
-        payload["config_path"] = str(DEFAULT_CONFIG_PATH)
+    payload.pop("config_path", None)
     payload["pattern_files"] = _merge_list(payload.get("pattern_files", []))
     return payload
 

@@ -7,6 +7,7 @@ from sim_control.preview_contrast import (
     auto_uint16_to_uint8,
     fast_auto_preview_uint16_to_uint8,
     fast_manual_preview_uint16_to_uint8,
+    _manual_lut,
     manual_uint16_to_uint8,
 )
 
@@ -89,6 +90,17 @@ class PreviewContrastTests(unittest.TestCase):
         self.assertLessEqual(int(diff.max()), 1)
         self.assertEqual(fast.shape, (16, 16))
         self.assertEqual(fast.dtype, np.uint8)
+
+    def test_manual_lut_reuses_cached_table_for_same_gray_max(self):
+        _manual_lut.cache_clear()
+
+        first = _manual_lut(10_000.0)
+        second = _manual_lut(10_000.0)
+        different = _manual_lut(12_000.0)
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, different)
+        self.assertFalse(first.flags.writeable)
 
     def test_fast_auto_preview_clips_outliers_before_resize_to_limit_display_difference(self):
         import cv2

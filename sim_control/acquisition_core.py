@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .adapters import HardwareError
 from .models import (
     AcquisitionBatch,
     CameraConfig,
@@ -19,8 +20,37 @@ StatusCallback = Callable[[str, dict[str, Any]], None]
 FrameCallback = Callable[[int, float], None]
 
 
+class AcquisitionCancelled(RuntimeError):
+    pass
+
+
 def _noop_status(status: str, payload: dict[str, Any]) -> None:
     pass
+
+
+def _stop_requested(stop_event: Any | None) -> bool:
+    return bool(stop_event is not None and stop_event.is_set())
+
+
+def _raise_if_cancelled(stop_event: Any | None) -> None:
+    if _stop_requested(stop_event):
+        raise AcquisitionCancelled("Acquisition cancelled.")
+
+
+def _validate_acquisition_result(stack: Any, timestamps: list[float], expected_frames: int) -> np.ndarray:
+    if not isinstance(stack, np.ndarray):
+        raise HardwareError("Camera returned a non-NumPy acquisition stack.")
+    if stack.ndim != 3:
+        raise HardwareError(f"Camera returned stack with ndim={stack.ndim}; expected 3.")
+    if stack.shape[0] != expected_frames:
+        raise HardwareError(f"Camera returned {stack.shape[0]} frames; expected {expected_frames}.")
+    if stack.shape[1] <= 0 or stack.shape[2] <= 0:
+        raise HardwareError(f"Camera returned invalid frame shape {stack.shape[1:]}.")
+    if stack.dtype != np.uint16:
+        raise HardwareError(f"Camera returned stack dtype {stack.dtype}; expected uint16.")
+    if len(timestamps) != expected_frames:
+        raise HardwareError(f"Camera returned {len(timestamps)} timestamps; expected {expected_frames}.")
+    return stack
 
 
 def run_single_acquisition(
@@ -33,6 +63,7 @@ def run_single_acquisition(
     waveform_builder: NIDaqWaveformBuilder | None = None,
     task_id: str | None = None,
     on_status: StatusCallback = _noop_status,
+    stop_event: Any | None = None,
 ) -> AcquisitionBatch:
     """Run a synchronous 9-frame SIM acquisition. No Qt dependency.
 
@@ -64,16 +95,33 @@ def run_single_acquisition(
         on_status("frame_captured", {"task_id": task_id, "frame_index": int(frame_index), "timestamp": float(timestamp)})
 
     try:
+        _raise_if_cancelled(stop_event)
         camera.apply_config(task.camera)
+        _raise_if_cancelled(stop_event)
         camera.arm(frame_count=9)
+        _raise_if_cancelled(stop_event)
         slm.activate_prepared_patterns()
-        daq.play_waveform(daq_config.device_name, plan)
-        stack, timestamps = camera.read_frame_sequence(
-            frame_count=9,
-            pattern_files=pattern_result.pattern_files,
-            laser_wavelength_nm=task.laser_wavelength_nm,
-            frame_callback=emit_frame_captured,
-        )
+        _raise_if_cancelled(stop_event)
+        try:
+            daq.play_waveform(daq_config.device_name, plan, stop_event=stop_event)
+        except Exception as exc:
+            if _stop_requested(stop_event):
+                raise AcquisitionCancelled("Acquisition cancelled.") from exc
+            raise
+        _raise_if_cancelled(stop_event)
+        try:
+            stack, timestamps = camera.read_frame_sequence(
+                frame_count=9,
+                pattern_files=pattern_result.pattern_files,
+                laser_wavelength_nm=task.laser_wavelength_nm,
+                frame_callback=emit_frame_captured,
+                stop_event=stop_event,
+            )
+        except Exception as exc:
+            if _stop_requested(stop_event):
+                raise AcquisitionCancelled("Acquisition cancelled.") from exc
+            raise
+        _raise_if_cancelled(stop_event)
     finally:
         try:
             camera.disarm()
@@ -83,6 +131,8 @@ def run_single_acquisition(
             daq.set_all_low(daq_config.device_name)
         except Exception:
             pass
+
+    stack = _validate_acquisition_result(stack, timestamps, expected_frames=9)
 
     for index, timestamp in enumerate(timestamps, start=1):
         if index not in emitted_frames:

@@ -51,7 +51,7 @@
 - Python 3.12 左右的独立虚拟环境
 - 根目录 `.venv` 作为当前项目统一环境
 
-主要 Python 依赖见 [requirements.txt](/E:/SIM-Microfluidics/NanKai/SIM_AutoSystem/requirements.txt)：
+主要 Python 依赖见 [requirements.txt](requirements.txt)：
 
 - `numpy`
 - `PyQt5`
@@ -73,6 +73,47 @@ pip install -r requirements.txt
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+## 推荐 Git 工作流
+
+本项目当前使用两条长期分支：
+
+- `main` / `origin/main`：稳定主线，用于保存已验证可运行版本。
+- `dev` / `origin/dev`：当前大改动开发分支。
+
+推荐本地目录分工：
+
+```text
+E:\Intelligent_SR\SIM_AutoSystem
+  开发工作区，checkout 到 dev
+
+E:\Intelligent_SR\SIM_AutoSystem-stable
+  稳定版 worktree，detached 到 origin/main
+  只用于运行远程稳定版、真机对照和回退参考
+```
+
+常用命令：
+
+```powershell
+# 创建/更新开发分支
+git switch dev
+git push -u origin dev
+
+# 创建稳定版 worktree
+git fetch origin
+git worktree add --detach E:\Intelligent_SR\SIM_AutoSystem-stable origin/main
+
+# GitHub PR 合并 dev 到 main 后，更新稳定版 worktree
+git fetch origin
+cd E:\Intelligent_SR\SIM_AutoSystem-stable
+git switch --detach origin/main
+```
+
+大改动合入流程：
+
+```text
+dev 本地测试通过 -> push origin/dev -> GitHub PR -> merge 到 origin/main -> stable worktree 更新到 origin/main
 ```
 
 ## 快速启动
@@ -118,7 +159,7 @@ start_sim_control.cmd
 
 本仓库默认**不提交厂商 SDK、驱动和安装包**。请在每台本地 Windows 电脑上自行安装或放置所需 SDK，并保持 `SDK/` 目录结构与本文档一致，或者在配置文件中显式指定 SDK 路径。
 
-更详细的本地目录约定见 [SDK/README.md](/E:/SIM-Microfluidics/NanKai/SIM_AutoSystem/SDK/README.md)。
+更详细的本地目录约定见 [SDK/README.md](SDK/README.md)。
 
 ### 1. Hamamatsu ORCA-Fusion BT 相机
 

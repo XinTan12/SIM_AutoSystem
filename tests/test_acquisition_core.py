@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -28,7 +29,14 @@ class AcquisitionCoreTests(unittest.TestCase):
             def disarm(self):
                 self.disarmed = True
 
-            def read_frame_sequence(self, frame_count, pattern_files, laser_wavelength_nm, frame_callback):
+            def read_frame_sequence(
+                self,
+                frame_count,
+                pattern_files,
+                laser_wavelength_nm,
+                frame_callback,
+                stop_event=None,
+            ):
                 timestamps = []
                 for index in range(1, frame_count + 1):
                     timestamp = float(index)
@@ -44,7 +52,7 @@ class AcquisitionCoreTests(unittest.TestCase):
             def __init__(self):
                 self.reset_devices = []
 
-            def play_waveform(self, device_name, plan):
+            def play_waveform(self, device_name, plan, stop_event=None):
                 return None
 
             def set_all_low(self, device_name):
@@ -95,7 +103,7 @@ class AcquisitionCoreTests(unittest.TestCase):
             def __init__(self):
                 self.reset_calls = 0
 
-            def play_waveform(self, device_name, plan):
+            def play_waveform(self, device_name, plan, stop_event=None):
                 raise RuntimeError("daq failed")
 
             def set_all_low(self, device_name):
@@ -114,6 +122,231 @@ class AcquisitionCoreTests(unittest.TestCase):
                 daq=daq,
             )
 
+        self.assertEqual(camera.disarm_calls, 1)
+        self.assertEqual(daq.reset_calls, 1)
+
+    def test_run_single_acquisition_rejects_invalid_stack_or_timestamps_before_completion(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.adapters import HardwareError
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        class FakeCamera:
+            def __init__(self, stack, timestamps):
+                self.stack = stack
+                self.timestamps = timestamps
+
+            def apply_config(self, config):
+                return {}
+
+            def arm(self, frame_count):
+                return None
+
+            def disarm(self):
+                return None
+
+            def read_frame_sequence(
+                self,
+                frame_count,
+                pattern_files,
+                laser_wavelength_nm,
+                frame_callback,
+                stop_event=None,
+            ):
+                return self.stack, self.timestamps
+
+        class FakeSlm:
+            def activate_prepared_patterns(self):
+                return None
+
+        class FakeDaq:
+            def play_waveform(self, device_name, plan, stop_event=None):
+                return None
+
+            def set_all_low(self, device_name):
+                return None
+
+        cases = [
+            ("wrong first dimension", np.zeros((1, 2, 2), dtype=np.uint16), [float(i) for i in range(9)]),
+            ("wrong dtype", np.zeros((9, 2, 2), dtype=np.uint8), [float(i) for i in range(9)]),
+            ("missing timestamps", np.zeros((9, 2, 2), dtype=np.uint16), []),
+            ("empty height", np.zeros((9, 0, 2), dtype=np.uint16), [float(i) for i in range(9)]),
+        ]
+
+        for _label, stack, timestamps in cases:
+            statuses = []
+            with self.subTest(_label):
+                with self.assertRaises(HardwareError):
+                    run_single_acquisition(
+                        task=SimTaskConfig(),
+                        daq_config=DaqLineConfig(),
+                        pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                        camera=FakeCamera(stack, timestamps),
+                        slm=FakeSlm(),
+                        daq=FakeDaq(),
+                        on_status=lambda state, payload: statuses.append(state),
+                    )
+                self.assertNotIn("acquisition_complete", statuses)
+
+    def test_run_single_acquisition_does_not_emit_fallback_frames_before_result_validation(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.adapters import HardwareError
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        class FakeCamera:
+            def apply_config(self, config):
+                return {}
+
+            def arm(self, frame_count):
+                return None
+
+            def disarm(self):
+                return None
+
+            def read_frame_sequence(
+                self,
+                frame_count,
+                pattern_files,
+                laser_wavelength_nm,
+                frame_callback,
+                stop_event=None,
+            ):
+                return np.zeros((1, 2, 2), dtype=np.uint16), [float(i) for i in range(9)]
+
+        class FakeSlm:
+            def activate_prepared_patterns(self):
+                return None
+
+        class FakeDaq:
+            def play_waveform(self, device_name, plan, stop_event=None):
+                return None
+
+            def set_all_low(self, device_name):
+                return None
+
+        statuses = []
+        with self.assertRaises(HardwareError):
+            run_single_acquisition(
+                task=SimTaskConfig(),
+                daq_config=DaqLineConfig(),
+                pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                camera=FakeCamera(),
+                slm=FakeSlm(),
+                daq=FakeDaq(),
+                on_status=lambda state, payload: statuses.append((state, payload)),
+            )
+
+        self.assertFalse([payload for state, payload in statuses if state == "frame_captured"])
+        self.assertNotIn("acquisition_complete", [state for state, _payload in statuses])
+
+    def test_run_single_acquisition_cancelled_before_hardware_ops_cleans_up_without_starting_daq(self):
+        from sim_control.acquisition_core import AcquisitionCancelled, run_single_acquisition
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.apply_calls = 0
+                self.disarm_calls = 0
+
+            def apply_config(self, config):
+                self.apply_calls += 1
+
+            def arm(self, frame_count):
+                raise AssertionError("camera should not arm after cancellation")
+
+            def disarm(self):
+                self.disarm_calls += 1
+
+        class FakeSlm:
+            def activate_prepared_patterns(self):
+                raise AssertionError("SLM should not activate after cancellation")
+
+        class FakeDaq:
+            def __init__(self):
+                self.play_calls = 0
+                self.reset_calls = 0
+
+            def play_waveform(self, device_name, plan, stop_event=None):
+                self.play_calls += 1
+
+            def set_all_low(self, device_name):
+                self.reset_calls += 1
+
+        stop_event = threading.Event()
+        stop_event.set()
+        camera = FakeCamera()
+        daq = FakeDaq()
+
+        with self.assertRaises(AcquisitionCancelled):
+            run_single_acquisition(
+                task=SimTaskConfig(),
+                daq_config=DaqLineConfig(),
+                pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                camera=camera,
+                slm=FakeSlm(),
+                daq=daq,
+                stop_event=stop_event,
+            )
+
+        self.assertEqual(camera.apply_calls, 0)
+        self.assertEqual(camera.disarm_calls, 1)
+        self.assertEqual(daq.play_calls, 0)
+        self.assertEqual(daq.reset_calls, 1)
+
+    def test_run_single_acquisition_cancelled_during_daq_does_not_read_camera(self):
+        from sim_control.acquisition_core import AcquisitionCancelled, run_single_acquisition
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.disarm_calls = 0
+                self.read_calls = 0
+
+            def apply_config(self, config):
+                return {}
+
+            def arm(self, frame_count):
+                return None
+
+            def disarm(self):
+                self.disarm_calls += 1
+
+            def read_frame_sequence(self, *args, **kwargs):
+                self.read_calls += 1
+                raise AssertionError("camera read should not start after DAQ cancellation")
+
+        class FakeSlm:
+            def activate_prepared_patterns(self):
+                return None
+
+        class FakeDaq:
+            def __init__(self):
+                self.stop_event_seen = None
+                self.reset_calls = 0
+
+            def play_waveform(self, device_name, plan, stop_event=None):
+                self.stop_event_seen = stop_event
+                stop_event.set()
+
+            def set_all_low(self, device_name):
+                self.reset_calls += 1
+
+        stop_event = threading.Event()
+        camera = FakeCamera()
+        daq = FakeDaq()
+
+        with self.assertRaises(AcquisitionCancelled):
+            run_single_acquisition(
+                task=SimTaskConfig(),
+                daq_config=DaqLineConfig(),
+                pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                camera=camera,
+                slm=FakeSlm(),
+                daq=daq,
+                stop_event=stop_event,
+            )
+
+        self.assertIs(daq.stop_event_seen, stop_event)
+        self.assertEqual(camera.read_calls, 0)
         self.assertEqual(camera.disarm_calls, 1)
         self.assertEqual(daq.reset_calls, 1)
 

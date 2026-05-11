@@ -1180,6 +1180,7 @@ class MainWindow(qw.QWidget):
         self.sim_acquisition_controller.signal_status_changed.connect(self.slot_handle_sim_acquisition_status)
         self.sim_acquisition_controller.signal_acquisition_ready.connect(self.slot_handle_sim_acquisition_ready)
         self.sim_acquisition_controller.signal_acquisition_failed.connect(self.slot_handle_sim_acquisition_failed)
+        self.sim_acquisition_controller.signal_acquisition_cancelled.connect(self.slot_handle_sim_acquisition_cancelled)
         self.sim_camera_adapter = self.sim_acquisition_controller.camera_adapter
         self.sim_preview_controller = SimPreviewController(self.sim_camera_adapter, self)
         self.sim_preview_controller.signal_error.connect(self.slot_handle_sim_preview_error)
@@ -1383,11 +1384,17 @@ class MainWindow(qw.QWidget):
             self._clear_sim_preview_display()
         self.update_sim_camera_action_buttons()
         if self.sim_preview_controller is None or not controller_busy:
-            return
+            return True
         self.sim_preview_controller.stop(wait=wait)
         if wait:
-            self.sim_preview_stop_in_progress = False
+            still_busy = bool(
+                getattr(self.sim_preview_controller, "active", False)
+                or getattr(self.sim_preview_controller, "stopping", False)
+            )
+            self.sim_preview_stop_in_progress = still_busy
             self.update_sim_camera_action_buttons()
+            return not still_busy
+        return False
 
     def btn_sCMOS_live_function(self):
         if not self.sim_camera_connected:
@@ -1477,6 +1484,8 @@ class MainWindow(qw.QWidget):
             )
             return
         self.sim_preview_restart_timer.stop()
+        original_preview_requested = bool(getattr(self, "sim_preview_requested", False))
+        original_restart_requested = bool(getattr(self, "sim_preview_restart_requested", False))
         preview_should_resume = bool(
             getattr(self, "sim_preview_requested", self.sim_preview_active or self.sim_preview_restart_requested)
         )
@@ -1486,36 +1495,37 @@ class MainWindow(qw.QWidget):
         self.sim_preview_requested = False
         self.sim_preview_restart_requested = False
         if self.sim_preview_active or self.sim_preview_stop_in_progress:
-            self.stop_sim_preview(wait=True)
+            if not self.stop_sim_preview(wait=True):
+                self.sim_resume_preview_after_acquisition = False
+                self.sim_preview_requested = original_preview_requested
+                self.sim_preview_restart_requested = original_restart_requested
+                qw.QMessageBox.warning(
+                    self,
+                    "SIM Preview",
+                    "SIM preview is still stopping. Please retry after it stops.",
+                )
+                return
         self.sim_acquisition_in_progress = True
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(False)
         self.sim_last_acquisition_batch = None
         self.sim_current_task_id = ""
         try:
-            self.sim_acquisition_controller.initialize_hardware()
-            self.sim_acquisition_controller.apply_daq_config(self.sim_app_config.daq)
-            self.sim_acquisition_controller.apply_camera_config(self.sim_app_config.camera)
-            ro_result = self.sim_acquisition_controller.select_running_order_for_task(
-                self.sim_app_config.selected_laser_nm,
-                self.sim_app_config.camera.exposure_us,
-            )
-            self.sim_app_config.selected_running_order = str(ro_result.get("running_order_name", ""))
-            refresh_summary = getattr(self, "refresh_sim_settings_summary", None)
-            if callable(refresh_summary):
-                refresh_summary()
-            pattern_result = getattr(self.sim_acquisition_controller, "pattern_result", None)
-            selected_pattern_files = list(
-                getattr(pattern_result, "pattern_files", self.sim_app_config.pattern_files)
-            )
+            app_config_snapshot = app_config_from_dict(app_config_to_dict(self.sim_app_config))
             task = SimTaskConfig(
-                laser_wavelength_nm=self.sim_app_config.selected_laser_nm,
-                pattern_files=selected_pattern_files,
+                laser_wavelength_nm=app_config_snapshot.selected_laser_nm,
+                pattern_files=list(app_config_snapshot.pattern_files),
                 running_order_name=self.sim_app_config.selected_running_order,
-                camera=app_config_from_dict(app_config_to_dict(self.sim_app_config)).camera,
-                timing=app_config_from_dict(app_config_to_dict(self.sim_app_config)).timing,
+                camera=app_config_snapshot.camera,
+                timing=app_config_snapshot.timing,
             )
-            self.sim_current_task_id = self.sim_acquisition_controller.start_single_acquisition(task)
+            self.sim_current_task_id = self.sim_acquisition_controller.start_single_acquisition(
+                task,
+                prepare_running_order=True,
+                initialize_hardware=True,
+                apply_daq_config=True,
+                apply_camera_config=True,
+            )
             print(f"SIM acquisition started from {trigger_source}: {self.sim_current_task_id}")
         except Exception as e:
             self.sim_acquisition_in_progress = False
@@ -1649,7 +1659,15 @@ class MainWindow(qw.QWidget):
         elif status == "camera_config_applied":
             MainWindow.update_sim_runtime_timing_from_payload(self, payload)
             print(f"SIM acquisition status: {status} {payload}")
-        elif status in {"acquisition_complete", "patterns_prepared", "running_order_selected", "camera_connected", "frame_captured", "slm_connected", "slm_disconnected", "daq_config_applied"}:
+        elif status == "running_order_selected":
+            running_order_name = str(payload.get("running_order_name", ""))
+            if running_order_name:
+                self.sim_app_config.selected_running_order = running_order_name
+                refresh_summary = getattr(self, "refresh_sim_settings_summary", None)
+                if callable(refresh_summary):
+                    refresh_summary()
+            print(f"SIM acquisition status: {status} {payload}")
+        elif status in {"acquisition_complete", "acquisition_cancelled", "patterns_prepared", "camera_connected", "frame_captured", "slm_connected", "slm_disconnected", "daq_config_applied"}:
             print(f"SIM acquisition status: {status} {payload}")
 
     def slot_handle_sim_acquisition_ready(self, payload):
@@ -1683,6 +1701,19 @@ class MainWindow(qw.QWidget):
             self.sim_resume_preview_after_acquisition = False
             self.start_sim_preview()
         qw.QMessageBox.warning(self, "SIM Acquisition Error", message.splitlines()[0])
+
+    def slot_handle_sim_acquisition_cancelled(self, task_id, message):
+        self.sim_acquisition_in_progress = False
+        self.update_sim_camera_action_buttons()
+        self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+        self.sim_current_task_id = task_id
+        update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+        if callable(update_runtime):
+            update_runtime("acquisition_cancelled", {"task_id": task_id})
+        print(f"SIM acquisition cancelled: {task_id} {message}")
+        if self.sim_resume_preview_after_acquisition and self.sim_camera_connected:
+            self.sim_resume_preview_after_acquisition = False
+            self.start_sim_preview()
 
     def collect_current_settings(self):
         """收集当前所有控件的参数值，返回字典"""

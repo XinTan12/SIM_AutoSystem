@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import math
 from typing import Any
 
@@ -52,7 +53,10 @@ def fast_manual_preview_uint16_to_uint8(frame: Any, gray_max: int | float, outpu
 
     gray_max_value = max(1.0, float(gray_max))
     high_clip = int(math.ceil(min(65535.0, gray_max_value)))
-    clipped = np.clip(frame_array, 0, high_clip).astype(np.uint16, copy=False)
+    if high_clip >= 65535 and frame_array.dtype == np.uint16:
+        clipped = frame_array
+    else:
+        clipped = np.clip(frame_array, 0, high_clip).astype(np.uint16, copy=False)
     resized = _resize_uint16_for_preview(clipped, output_size)
     lut = _manual_lut(gray_max_value)
     return lut[resized]
@@ -153,9 +157,12 @@ def _resize_uint16_for_preview(frame: np.ndarray, output_size: tuple[int, int]) 
     return np.ascontiguousarray(resized.astype(np.uint16, copy=False))
 
 
+@lru_cache(maxsize=32)
 def _manual_lut(gray_max_value: float) -> np.ndarray:
     values = np.arange(65536, dtype=np.float32)
-    return np.clip(values * (255.0 / gray_max_value), 0, 255).astype(np.uint8)
+    lut = np.clip(values * (255.0 / gray_max_value), 0, 255).astype(np.uint8)
+    lut.setflags(write=False)
+    return lut
 
 
 def _window_lut(lo: float, hi: float) -> np.ndarray:

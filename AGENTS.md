@@ -14,7 +14,7 @@
 
 ## 环境与启动
 
-- 当前仓库根目录：`F:\SIM_AutoSystem`。
+- 当前仓库根目录以本地实际工作区为准；本机当前工作区为 `E:\Intelligent_SR\SIM_AutoSystem`。
 - 默认配置路径：`config/sim_control_config.json`。
 - SIM 侧统一使用根目录 `.venv` 作为 Python 环境。
 - 不依赖 `control_wangbo/.venv`；该旧环境不属于当前主流程。
@@ -40,6 +40,14 @@
 # 从 .ui 重新生成 Python UI 代码
 .\.venv\Scripts\pyuic5.exe sim_control\sim_settings_dialog.ui -o sim_control\ui_sim_settings_dialog.py
 ```
+
+## Git 工作流
+
+- `main` / `origin/main` 是稳定主线；只有通过测试、review 和必要真机验收的代码才合入。
+- `dev` / `origin/dev` 是当前大改动开发分支；本地默认开发工作区为 `E:\Intelligent_SR\SIM_AutoSystem`。
+- `E:\Intelligent_SR\SIM_AutoSystem-stable` 是稳定版 worktree，使用 detached `origin/main`，只用于运行远程稳定版、真机对照和回退参考，不在其中开发或提交。
+- 大改动合入流程：`dev` 本地测试通过 -> push `origin/dev` -> GitHub PR -> merge 到 `origin/main` -> stable worktree 更新到最新 `origin/main`。
+- 清理分支时保留 `main` 和 `dev`；旧 `codex/*`、`backup/*` 分支仅在确认无依赖后删除。
 
 ## 目录边界
 

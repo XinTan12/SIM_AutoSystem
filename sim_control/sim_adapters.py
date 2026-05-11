@@ -122,6 +122,7 @@ class SimulatedCameraAdapter:
         pattern_files: list[str],
         laser_wavelength_nm: int,
         frame_callback: Any | None = None,
+        stop_event: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]:
         if not self._armed:
             raise RuntimeError("Simulated camera must be armed before reading frames.")
@@ -130,6 +131,8 @@ class SimulatedCameraAdapter:
         frames = np.empty((int(frame_count), height, width), dtype=np.uint16)
         timestamps: list[float] = []
         for index in range(1, int(frame_count) + 1):
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("Acquisition cancelled.")
             frame = self._generate_frame()
             frames[index - 1] = frame
             timestamp = time.time()
@@ -251,8 +254,12 @@ class SimulatedDaqAdapter:
         selected_device = device_name or default_device or "Dev1"
         return [f"{selected_device}/port0/line{index}" for index in range(16)]
 
-    def play_waveform(self, device_name: str, plan: WaveformPlan) -> None:
-        time.sleep(min(max(plan.duration_s, 0.0), 0.1))
+    def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None:
+        deadline = time.monotonic() + min(max(plan.duration_s, 0.0), 0.1)
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
     def set_all_low(self, device_name: str) -> None:
         return None

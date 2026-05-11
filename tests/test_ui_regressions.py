@@ -1,6 +1,8 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from PyQt5 import QtCore, QtWidgets
 
@@ -314,6 +316,126 @@ class UiRegressionTests(unittest.TestCase):
             window = SimControlWindow(config_path=str(config_path))
             try:
                 self.assertEqual(window.log_output.document().maximumBlockCount(), 1000)
+            finally:
+                window.close()
+
+    def test_sim_control_window_prepare_experiment_uses_running_order_not_manual_patterns(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            original_controller = window.controller
+            controller = SimpleNamespace(
+                slm_adapter=SimpleNamespace(is_connected=mock.Mock(return_value=True)),
+                start_prepare_experiment=mock.Mock(return_value="prepare-1"),
+                apply_daq_config=mock.Mock(side_effect=AssertionError("DAQ preflight should run in worker")),
+                initialize_hardware=mock.Mock(side_effect=AssertionError("hardware init should run in worker")),
+                apply_camera_config=mock.Mock(side_effect=AssertionError("camera preflight should run in worker")),
+                select_running_order_for_task=mock.Mock(side_effect=AssertionError("RO selection should run in worker")),
+                prepare_patterns=mock.Mock(side_effect=AssertionError("manual pattern path should not be used")),
+            )
+            window.controller = controller
+
+            try:
+                window._prepare_experiment()
+            finally:
+                window.controller = original_controller
+                window.close()
+
+        controller.start_prepare_experiment.assert_called_once()
+        prepare_kwargs = controller.start_prepare_experiment.call_args.kwargs
+        self.assertTrue(prepare_kwargs["prepare_running_order"])
+        self.assertTrue(prepare_kwargs["initialize_hardware"])
+        self.assertTrue(prepare_kwargs["apply_daq_config"])
+        self.assertTrue(prepare_kwargs["apply_camera_config"])
+        controller.prepare_patterns.assert_not_called()
+
+    def test_sim_control_window_run_acquisition_defers_preflight_to_worker(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            original_controller = window.controller
+            controller = SimpleNamespace(
+                slm_adapter=SimpleNamespace(is_connected=mock.Mock(return_value=True)),
+                start_single_acquisition=mock.Mock(return_value="task-1"),
+                apply_daq_config=mock.Mock(side_effect=AssertionError("DAQ preflight should run in worker")),
+                initialize_hardware=mock.Mock(side_effect=AssertionError("hardware init should run in worker")),
+                apply_camera_config=mock.Mock(side_effect=AssertionError("camera preflight should run in worker")),
+                select_running_order_for_task=mock.Mock(side_effect=AssertionError("RO selection should run in worker")),
+                prepare_patterns=mock.Mock(side_effect=AssertionError("manual pattern path should not be used")),
+            )
+            window.controller = controller
+
+            try:
+                window._run_single_acquisition()
+            finally:
+                window.controller = original_controller
+                window.close()
+
+        controller.start_single_acquisition.assert_called_once()
+        run_kwargs = controller.start_single_acquisition.call_args.kwargs
+        self.assertTrue(run_kwargs["prepare_running_order"])
+        self.assertTrue(run_kwargs["initialize_hardware"])
+        self.assertTrue(run_kwargs["apply_daq_config"])
+        self.assertTrue(run_kwargs["apply_camera_config"])
+
+    def test_sim_control_window_run_acquisition_blocks_when_slm_is_disconnected(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            original_controller = window.controller
+            controller = SimpleNamespace(
+                slm_adapter=SimpleNamespace(is_connected=mock.Mock(return_value=False)),
+                start_single_acquisition=mock.Mock(return_value="task-1"),
+            )
+            window.controller = controller
+
+            try:
+                window._run_single_acquisition()
+            finally:
+                window.controller = original_controller
+                window.close()
+
+        controller.start_single_acquisition.assert_not_called()
+
+    def test_sim_control_window_syncs_running_order_selected_from_worker_status(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            try:
+                window.config.selected_running_order = ""
+                window._handle_status_changed(
+                    "running_order_selected",
+                    {"running_order_name": "488_3.5_2d_1ms"},
+                )
+                self.assertEqual(window.config.selected_running_order, "488_3.5_2d_1ms")
             finally:
                 window.close()
 

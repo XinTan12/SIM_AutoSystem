@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,9 @@ class EfficiencyOptimizationTests(unittest.TestCase):
             def start(self):
                 return None
 
+            def is_task_done(self):
+                return True
+
             def wait_until_done(self, timeout):
                 captured["timeout"] = timeout
 
@@ -64,6 +68,63 @@ class EfficiencyOptimizationTests(unittest.TestCase):
 
         self.assertIs(captured["values"], plan.packed_port_values)
         self.assertEqual(plan.packed_port_values.dtype, np.uint32)
+
+    def test_ni_daq_play_waveform_stops_task_when_stop_event_is_set(self):
+        from sim_control import adapters
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        plan = NIDaqWaveformBuilder().build(
+            daq_config=DaqLineConfig(),
+            timing=TimingConfig(sample_rate_hz=100_000, inter_frame_gap_us=1_000),
+            laser_wavelength_nm=488,
+            exposure_us=1_000,
+            frame_count=2,
+        )
+        captured = {"is_done_calls": 0, "stop_calls": 0}
+
+        class FakeTask:
+            out_stream = object()
+            do_channels = SimpleNamespace(add_do_chan=lambda *args, **kwargs: None)
+            timing = SimpleNamespace(cfg_samp_clk_timing=lambda *args, **kwargs: None)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def start(self):
+                captured["started"] = True
+
+            def is_task_done(self):
+                captured["is_done_calls"] += 1
+                return False
+
+            def stop(self):
+                captured["stop_calls"] += 1
+
+        class FakeWriter:
+            def __init__(self, out_stream, auto_start=False):
+                return None
+
+            def write_many_sample_port_uint32(self, values):
+                return None
+
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with (
+            mock.patch.object(adapters, "nidaqmx", SimpleNamespace(Task=FakeTask)),
+            mock.patch.object(adapters, "LineGrouping", SimpleNamespace(CHAN_FOR_ALL_LINES=1)),
+            mock.patch.object(adapters, "AcquisitionType", SimpleNamespace(FINITE=1)),
+            mock.patch.object(adapters, "DigitalSingleChannelWriter", FakeWriter),
+        ):
+            daq = adapters.NIDaqAdapter()
+            daq.play_waveform("Dev1", plan, stop_event=stop_event)
+
+        self.assertTrue(captured["started"])
+        self.assertEqual(captured["stop_calls"], 1)
 
     def test_waveform_pack_uses_boolean_masks_without_uint32_role_copies(self):
         from sim_control.models import DAQ_ROLE_ORDER, DaqLineConfig
@@ -134,6 +195,78 @@ class EfficiencyOptimizationTests(unittest.TestCase):
         self.assertEqual(len(timestamps), 2)
         self.assertTrue(np.all(stack[0] == 1))
         self.assertTrue(np.all(stack[1] == 2))
+
+    def test_real_camera_sequence_wait_loop_responds_to_stop_event(self):
+        from sim_control import adapters
+        from sim_control.models import CameraConfig
+
+        class FakeDcamCamera:
+            def __init__(self):
+                self.wait_timeouts = []
+                self.stop_event = None
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=0)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                self.wait_timeouts.append(timeout_ms)
+                self.stop_event.set()
+                return False
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        fake_dcam = FakeDcamCamera()
+        stop_event = threading.Event()
+        fake_dcam.stop_event = stop_event
+        camera = adapters.FusionBtCameraAdapter.__new__(adapters.FusionBtCameraAdapter)
+        camera._armed = True
+        camera._camera_config = CameraConfig(roi_width=3, roi_height=2, exposure_us=500_000, timeout_ms=5_000)
+        camera._dcam_camera = fake_dcam
+
+        with self.assertRaisesRegex(adapters.HardwareError, "cancelled"):
+            camera.read_frame_sequence(
+                frame_count=9,
+                pattern_files=[""] * 9,
+                laser_wavelength_nm=488,
+                stop_event=stop_event,
+            )
+
+        self.assertTrue(fake_dcam.wait_timeouts)
+        self.assertLessEqual(max(fake_dcam.wait_timeouts), 50)
+
+    def test_real_camera_sequence_raises_non_timeout_wait_error_immediately(self):
+        from sim_control import adapters
+        from sim_control.models import CameraConfig
+
+        class FakeDcamCamera:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=0)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                self.wait_calls += 1
+                return False
+
+            def lasterr(self):
+                return SimpleNamespace(name="FAILURE")
+
+        fake_dcam = FakeDcamCamera()
+        camera = adapters.FusionBtCameraAdapter.__new__(adapters.FusionBtCameraAdapter)
+        camera._armed = True
+        camera._camera_config = CameraConfig(roi_width=3, roi_height=2, exposure_us=500_000, timeout_ms=5_000)
+        camera._dcam_camera = fake_dcam
+
+        with self.assertRaisesRegex(adapters.HardwareError, "FAILURE"):
+            camera.read_frame_sequence(
+                frame_count=9,
+                pattern_files=[""] * 9,
+                laser_wavelength_nm=488,
+            )
+
+        self.assertEqual(fake_dcam.wait_calls, 1)
 
     def test_real_camera_preview_reuses_dcam_numpy_frame_without_extra_array_copy(self):
         from sim_control import adapters

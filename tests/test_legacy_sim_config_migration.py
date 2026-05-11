@@ -138,6 +138,34 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         self.assertEqual(loaded.selected_running_order, "488_3.5_2d_1ms")
 
+    def test_config_dict_omits_machine_specific_config_path(self):
+        from sim_control.config_store import app_config_to_dict
+        from sim_control.models import AppConfig
+
+        config = AppConfig(config_path=r"E:\Intelligent_SR\SIM_AutoSystem\config\sim_control_config.json")
+
+        payload = app_config_to_dict(config)
+
+        self.assertNotIn("config_path", payload)
+
+    def test_save_app_config_keeps_runtime_path_without_persisting_it(self):
+        import json
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.models import AppConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "portable_config.json"
+            config = AppConfig()
+
+            saved_path = save_app_config(config, config_path)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved_path, config_path)
+        self.assertEqual(config.config_path, str(config_path))
+        self.assertNotIn("config_path", payload)
+
     def test_app_config_loader_defaults_camera_bit_depth_to_16_for_legacy_payloads(self):
         from sim_control.config_store import app_config_from_dict
 

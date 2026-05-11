@@ -849,6 +849,7 @@ class SimControlWindow(QMainWindow):
 
         self.controller.signal_status_changed.connect(self._handle_status_changed)
         self.controller.signal_acquisition_failed.connect(self._handle_acquisition_failed)
+        self.controller.signal_acquisition_cancelled.connect(self._handle_acquisition_cancelled)
         self.controller.signal_acquisition_ready.connect(self._handle_acquisition_ready)
         self.controller.signal_acquisition_ready.connect(self.recon_worker.slot_reconstruct)
         self.recon_worker.signal_reconstruction_ready.connect(self._handle_reconstruction_ready)
@@ -975,35 +976,46 @@ class SimControlWindow(QMainWindow):
         self._sync_config_from_widgets()
         self.controller.prepare_patterns(self.config.pattern_files)
 
+    def _ensure_slm_connected_for_running_order(self) -> None:
+        if not self.controller.slm_adapter.is_connected():
+            raise HardwareError("Please connect the SLM before starting SIM acquisition.")
+
+    def _task_from_current_config(self) -> SimTaskConfig:
+        return SimTaskConfig(
+            laser_wavelength_nm=self.config.selected_laser_nm,
+            pattern_files=list(self.config.pattern_files),
+            running_order_name=self.config.selected_running_order,
+            camera=self.config.camera,
+            timing=self.config.timing,
+        )
+
     @_catch_to_error
     def _prepare_experiment(self) -> None:
         self._sync_config_from_widgets()
-        self.controller.apply_daq_config(self.config.daq)
-        self.controller.initialize_hardware()
-        self.controller.apply_camera_config(self.config.camera)
-        plan = self.controller.waveform_builder.build(
-            daq_config=self.config.daq,
-            timing=self.config.timing,
-            laser_wavelength_nm=self.config.selected_laser_nm,
-            exposure_us=self.config.camera.exposure_us,
-            frame_count=9,
-            include_role_matrix=False,
+        self._ensure_slm_connected_for_running_order()
+        task_id = self.controller.start_prepare_experiment(
+            self._task_from_current_config(),
+            prepare_running_order=True,
+            initialize_hardware=True,
+            apply_daq_config=True,
+            apply_camera_config=True,
         )
-        for warning in plan.warnings:
-            self._log(f"WARNING: {warning}")
-        self.controller.prepare_patterns(self.config.pattern_files)
-        self._log("Experiment prepared.")
+        self.current_task_id = task_id
+        self.lbl_current_task.setText(task_id)
+        self._log(f"Experiment preparation queued: {task_id}")
 
     @_catch_to_error
     def _run_single_acquisition(self) -> None:
         self._sync_config_from_widgets()
-        task = SimTaskConfig(
-            laser_wavelength_nm=self.config.selected_laser_nm,
-            pattern_files=list(self.config.pattern_files),
-            camera=self.config.camera,
-            timing=self.config.timing,
+        self._ensure_slm_connected_for_running_order()
+        task = self._task_from_current_config()
+        task_id = self.controller.start_single_acquisition(
+            task,
+            prepare_running_order=True,
+            initialize_hardware=True,
+            apply_daq_config=True,
+            apply_camera_config=True,
         )
-        task_id = self.controller.start_single_acquisition(task)
         self.current_task_id = task_id
         self.lbl_current_task.setText(task_id)
         self.lbl_current_laser.setText(f"{task.laser_wavelength_nm} nm")
@@ -1041,6 +1053,10 @@ class SimControlWindow(QMainWindow):
                 self.progress_acquisition.setValue(int(frame_index))
             except (TypeError, ValueError):
                 pass
+        if state == "running_order_selected":
+            running_order_name = str(payload.get("running_order_name", ""))
+            if running_order_name:
+                self.config.selected_running_order = running_order_name
         if state == "acquisition_complete":
             self.progress_acquisition.setValue(9)
             self.pipeline_labels["stack_shape"].setText(str(payload.get("stack_shape", "-")))
@@ -1054,7 +1070,7 @@ class SimControlWindow(QMainWindow):
             self.hardware_leds["camera"].set_state("green")
         elif state == "camera_disconnected":
             self.hardware_leds["camera"].set_state("red")
-        elif state in {"slm_connected", "patterns_prepared"}:
+        elif state in {"slm_connected", "patterns_prepared", "running_order_selected"}:
             self.hardware_leds["slm"].set_state("green")
         elif state == "slm_disconnected":
             self.hardware_leds["slm"].set_state("red")
@@ -1076,6 +1092,11 @@ class SimControlWindow(QMainWindow):
         for led in self.hardware_leds.values():
             led.set_state("red")
         self._set_error(f"Acquisition failed for {task_id}: {message}")
+
+    def _handle_acquisition_cancelled(self, task_id: str, message: str) -> None:
+        self.pipeline_labels["reconstruction"].setText("Acquisition cancelled")
+        self.progress_acquisition.setValue(0)
+        self._log(f"Acquisition cancelled for {task_id}: {message}")
 
     def _handle_reconstruction_ready(self, recon_result) -> None:
         self.pipeline_labels["reconstruction"].setText("Ready")

@@ -5,6 +5,14 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-05-11
+
+### 决策：使用 `dev` 作为大改动开发分支，并用 detached stable worktree 运行远程稳定版
+- 原因：
+  当前远程 `origin/main` 是确认可运行的稳定版本，而本地存在较大的未提交开发改动。将开发线固定到 `dev`，并额外保留 detached `origin/main` 的 stable worktree，可以避免在同一目录里反复切换稳定版和开发版，降低误操作风险。
+- 影响：
+  `main` / `origin/main` 只作为稳定主线；`dev` / `origin/dev` 用于当前和后续大改动开发；`E:\Intelligent_SR\SIM_AutoSystem-stable` 只用于运行远程稳定版、真机对照和回退参考，不在其中开发或提交。大改动合入流程为 `dev` 本地验证 -> push `origin/dev` -> GitHub PR -> merge `origin/main` -> stable worktree 更新到最新 `origin/main`。
+
 ## 2026-05-07
 
 ### 决策：AI 工具项目说明统一以 `AGENTS.md` 为唯一权威入口

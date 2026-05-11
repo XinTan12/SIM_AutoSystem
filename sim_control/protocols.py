@@ -46,6 +46,7 @@ class CameraAdapter(Protocol):
         pattern_files: list[str],
         laser_wavelength_nm: int,
         frame_callback: Any | None = None,
+        stop_event: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]: ...
 
 
@@ -82,7 +83,7 @@ class DaqAdapter(Protocol):
 
     def list_port0_lines(self, device_name: str | None = None, default_device: str | None = None) -> list[str]: ...
 
-    def play_waveform(self, device_name: str, plan: WaveformPlan) -> None: ...
+    def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None: ...
 
     def set_all_low(self, device_name: str) -> None: ...
 

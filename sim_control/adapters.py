@@ -421,7 +421,7 @@ class NIDaqAdapter:
         except Exception:
             return []
 
-    def play_waveform(self, device_name: str, plan: WaveformPlan) -> None:
+    def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None:
         if not self._available:
             raise HardwareError("nidaqmx is not available; cannot drive NI hardware.")
         try:
@@ -438,8 +438,23 @@ class NIDaqAdapter:
                 writer = DigitalSingleChannelWriter(task.out_stream, auto_start=False)
                 writer.write_many_sample_port_uint32(plan.packed_port_values.astype(np.uint32, copy=False))
                 task.start()
-                task.wait_until_done(timeout=max(5.0, plan.duration_s + 2.0))
+                deadline = time.monotonic() + max(5.0, plan.duration_s + 2.0)
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        try:
+                            task.stop()
+                        except Exception:
+                            pass
+                        return
+                    if task.is_task_done():
+                        return
+                    remaining_s = deadline - time.monotonic()
+                    if remaining_s <= 0:
+                        raise HardwareError(f"Timed out waiting for NI waveform after {max(5.0, plan.duration_s + 2.0):.3f}s.")
+                    time.sleep(min(0.02, remaining_s))
         except Exception as exc:
+            if isinstance(exc, HardwareError):
+                raise
             raise HardwareError(f"Failed to play NI waveform: {exc}") from exc
 
     def set_all_low(self, device_name: str) -> None:
@@ -1048,6 +1063,7 @@ class FusionBtCameraAdapter:
         pattern_files: list[str],
         laser_wavelength_nm: int,
         frame_callback: Any | None = None,
+        stop_event: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]:
         if not self._armed:
             raise HardwareError("Camera must be armed before reading frame sequence.")
@@ -1059,6 +1075,8 @@ class FusionBtCameraAdapter:
         )
         started_at = time.time()
         while captured < frame_count:
+            if stop_event is not None and stop_event.is_set():
+                raise HardwareError("Acquisition cancelled while waiting for Fusion BT frames.")
             transfer = self._dcam_camera.cap_transferinfo()
             if transfer is False:
                 raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
@@ -1076,15 +1094,29 @@ class FusionBtCameraAdapter:
             remaining_ms = overall_timeout_ms - elapsed_ms
             if remaining_ms <= 0:
                 raise HardwareError(
-                    "Timed out waiting for "
-                    f"{frame_count} externally triggered frames from Fusion BT; captured {captured}/{frame_count}."
+                    f"DCAM frame wait failed: {self._dcam_camera.lasterr().name}; "
+                    f"captured {captured}/{frame_count} frames. Confirm camera trigger TTL, trigger mode, "
+                    "and DAQ camera_trigger_line wiring."
                 )
-            if not self._dcam_camera.wait_capevent_frameready(remaining_ms):
+            wait_ms = max(1, min(remaining_ms, 50))
+            if not self._dcam_camera.wait_capevent_frameready(wait_ms):
+                if stop_event is not None and stop_event.is_set():
+                    raise HardwareError("Acquisition cancelled while waiting for Fusion BT frames.")
+                error_name = str(self._dcam_camera.lasterr().name)
+                if error_name.upper() != "TIMEOUT":
+                    raise HardwareError(
+                        f"DCAM frame wait failed: {error_name}; "
+                        f"captured {captured}/{frame_count} frames. Confirm camera trigger TTL, trigger mode, "
+                        "and DAQ camera_trigger_line wiring."
+                    )
                 transfer = self._dcam_camera.cap_transferinfo()
                 if transfer is False:
                     raise HardwareError(f"Failed to query DCAM transfer info: {self._dcam_camera.lasterr().name}")
                 transferred = min(max(int(transfer.nFrameCount), 0), frame_count)
                 if transferred > captured:
+                    continue
+                elapsed_ms = int((time.time() - started_at) * 1000.0)
+                if elapsed_ms < overall_timeout_ms:
                     continue
                 raise HardwareError(
                     f"DCAM frame wait failed: {self._dcam_camera.lasterr().name}; "

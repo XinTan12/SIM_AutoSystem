@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,28 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
+    emitted_payloads = []
+    try:
+        controller.signal_start_worker.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+    controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+    task_id = controller.start_single_acquisition(task, **kwargs)
+    return task_id, emitted_payloads
+
+
+def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
+    emitted_payloads = []
+    try:
+        controller.signal_start_worker.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+    controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+    task_id = controller.start_prepare_experiment(task, **kwargs)
+    return task_id, emitted_payloads
 
 
 class CameraConfigTests(unittest.TestCase):
@@ -804,6 +827,31 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
 
 
 class SimAcquisitionControllerTests(unittest.TestCase):
+    def test_payload_capture_helper_does_not_start_internal_worker(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import PatternPreparationResult, SimTaskConfig
+
+        controller = SimAcquisitionController()
+        controller.pattern_result = PatternPreparationResult(
+            pattern_files=["488_3.5_2d_1ms"] * 9,
+            handles=[-1],
+            metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_1ms"},
+        )
+        controller._worker.slot_start = mock.Mock(side_effect=AssertionError("internal worker should stay disconnected"))
+
+        try:
+            task_id, emitted_payloads = _start_single_acquisition_for_payload_test(
+                controller,
+                SimTaskConfig(running_order_name="488_3.5_2d_1ms"),
+            )
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        self.assertTrue(task_id.startswith("sim_"))
+        self.assertEqual(len(emitted_payloads), 1)
+        self.assertEqual(emitted_payloads[0]["pattern_result"].handles, [-1])
+
     def test_apply_camera_config_emits_runtime_timing_payload(self):
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import CameraConfig
@@ -863,15 +911,13 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         from sim_control.models import SimTaskConfig
 
         controller = SimAcquisitionController()
-        emitted_payloads = []
-        controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
         controller.pattern_result.handles = [0]
         controller._latest_camera_timing = {"recommended_inter_frame_gap_us": 6500}
 
         try:
             task = SimTaskConfig()
             task.timing.inter_frame_gap_us = 15000
-            controller.start_single_acquisition(task)
+            _, emitted_payloads = _start_single_acquisition_for_payload_test(controller, task)
         finally:
             controller._thread.quit()
             controller._thread.wait(2000)
@@ -884,8 +930,6 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         from sim_control.models import PatternPreparationResult, SimTaskConfig
 
         controller = SimAcquisitionController()
-        emitted_payloads = []
-        controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
         controller.pattern_result = PatternPreparationResult(
             pattern_files=["488_3.5_2d_1ms"] * 9,
             handles=[-1],
@@ -894,12 +938,128 @@ class SimAcquisitionControllerTests(unittest.TestCase):
 
         try:
             task = SimTaskConfig(running_order_name="488_3.5_2d_1ms")
-            controller.start_single_acquisition(task)
+            _, emitted_payloads = _start_single_acquisition_for_payload_test(controller, task)
         finally:
             controller._thread.quit()
             controller._thread.wait(2000)
 
         self.assertEqual(emitted_payloads[-1]["pattern_result"].handles, [-1])
+
+    def test_start_single_acquisition_payload_includes_stop_event_and_stop_only_sets_event(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import PatternPreparationResult, SimTaskConfig
+
+        controller = SimAcquisitionController()
+        controller.pattern_result = PatternPreparationResult(
+            pattern_files=["488_3.5_2d_1ms"] * 9,
+            handles=[-1],
+            metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_1ms"},
+        )
+        controller.daq_adapter = mock.Mock()
+        controller.camera_adapter = mock.Mock()
+
+        try:
+            _, emitted_payloads = _start_single_acquisition_for_payload_test(
+                controller,
+                SimTaskConfig(running_order_name="488_3.5_2d_1ms"),
+            )
+            stop_event = emitted_payloads[-1]["stop_event"]
+
+            controller.stop()
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        self.assertIsInstance(stop_event, threading.Event)
+        self.assertTrue(stop_event.is_set())
+        controller.daq_adapter.set_all_low.assert_not_called()
+        controller.camera_adapter.disarm.assert_not_called()
+
+    def test_worker_emits_cancelled_signal_without_failed_signal_for_acquisition_cancelled(self):
+        from sim_control.acquisition_core import AcquisitionCancelled
+        from sim_control.controller import SimAcquisitionWorker
+        import sim_control.controller as controller_module
+
+        worker = SimAcquisitionWorker()
+        statuses = []
+        cancelled = []
+        failed = []
+        worker.signal_status_changed.connect(lambda status, payload: statuses.append((status, payload)))
+        worker.signal_acquisition_cancelled.connect(lambda task_id, message: cancelled.append((task_id, message)))
+        worker.signal_acquisition_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        payload = {
+            "task_id": "cancel-test",
+            "task": mock.Mock(),
+            "daq_config": mock.Mock(),
+            "pattern_result": mock.Mock(),
+            "waveform_builder": mock.Mock(),
+            "daq_adapter": mock.Mock(),
+            "camera_adapter": mock.Mock(),
+            "slm_adapter": mock.Mock(),
+            "stop_event": threading.Event(),
+        }
+        with mock.patch.object(
+            controller_module,
+            "run_single_acquisition",
+            side_effect=AcquisitionCancelled("cancel requested"),
+        ):
+            worker.slot_start(payload)
+
+        self.assertEqual([status for status, _payload in statuses], ["acquisition_cancelled"])
+        self.assertEqual(cancelled, [("cancel-test", "cancel requested")])
+        self.assertEqual(failed, [])
+
+    def test_start_single_acquisition_can_defer_running_order_selection_to_worker_payload(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import SimTaskConfig
+
+        controller = SimAcquisitionController()
+
+        try:
+            _, emitted_payloads = _start_single_acquisition_for_payload_test(
+                controller,
+                SimTaskConfig(),
+                prepare_running_order=True,
+                initialize_hardware=True,
+                apply_daq_config=True,
+                apply_camera_config=True,
+            )
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        payload = emitted_payloads[-1]
+        self.assertTrue(payload["prepare_running_order"])
+        self.assertTrue(payload["initialize_hardware"])
+        self.assertTrue(payload["apply_daq_config"])
+        self.assertTrue(payload["apply_camera_config"])
+
+    def test_start_prepare_experiment_emits_prepare_only_worker_payload(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import SimTaskConfig
+
+        controller = SimAcquisitionController()
+
+        try:
+            _, emitted_payloads = _start_prepare_experiment_for_payload_test(
+                controller,
+                SimTaskConfig(),
+                prepare_running_order=True,
+                initialize_hardware=True,
+                apply_daq_config=True,
+                apply_camera_config=True,
+            )
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        payload = emitted_payloads[-1]
+        self.assertTrue(payload["prepare_only"])
+        self.assertTrue(payload["prepare_running_order"])
+        self.assertTrue(payload["initialize_hardware"])
+        self.assertTrue(payload["apply_daq_config"])
+        self.assertTrue(payload["apply_camera_config"])
 
 
 if __name__ == "__main__":

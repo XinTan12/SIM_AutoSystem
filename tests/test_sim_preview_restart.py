@@ -526,7 +526,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_app_config=AppConfig(),
             sync_sim_camera_config_from_ui=lambda save_to_disk=False: None,
             ensure_sim_runtime=lambda: None,
-            stop_sim_preview=lambda wait=True: stop_calls.append(wait),
+            stop_sim_preview=lambda wait=True: (stop_calls.append(wait) or True),
             update_sim_camera_action_buttons=lambda: None,
             set_sim_camera_controls_enabled=lambda enabled: None,
             sim_preview_restart_timer=timer,
@@ -541,8 +541,64 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(stop_calls, [True])
         self.assertTrue(window.sim_acquisition_in_progress)
         self.assertEqual(window.sim_current_task_id, "task-1")
+        controller.initialize_hardware.assert_not_called()
+        controller.apply_daq_config.assert_not_called()
+        controller.apply_camera_config.assert_not_called()
         controller.prepare_patterns.assert_not_called()
-        controller.select_running_order_for_task.assert_called_once_with(488, 10_000)
+        controller.select_running_order_for_task.assert_not_called()
+        start_kwargs = controller.start_single_acquisition.call_args.kwargs
+        self.assertTrue(start_kwargs["prepare_running_order"])
+        self.assertTrue(start_kwargs["initialize_hardware"])
+        self.assertTrue(start_kwargs["apply_daq_config"])
+        self.assertTrue(start_kwargs["apply_camera_config"])
+
+    def test_trigger_sim_formal_acquisition_blocks_when_preview_does_not_stop(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AppConfig
+
+        warnings = []
+        controller = SimpleNamespace(
+            start_single_acquisition=mock.Mock(return_value="task-1"),
+        )
+
+        def stop_preview(wait=True):
+            window.sim_preview_stop_in_progress = True
+            return False
+
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_slm_connected=True,
+            sim_preview_active=True,
+            sim_preview_requested=True,
+            sim_preview_restart_requested=False,
+            sim_preview_stop_in_progress=False,
+            sim_acquisition_in_progress=False,
+            sim_resume_preview_after_acquisition=False,
+            sim_last_acquisition_batch=None,
+            sim_current_task_id="",
+            sim_acquisition_controller=controller,
+            sim_app_config=AppConfig(),
+            sync_sim_camera_config_from_ui=lambda save_to_disk=False: None,
+            ensure_sim_runtime=lambda: None,
+            stop_sim_preview=stop_preview,
+            update_sim_camera_action_buttons=mock.Mock(),
+            set_sim_camera_controls_enabled=mock.Mock(),
+            sim_preview_restart_timer=TimerSpy(),
+        )
+
+        with mock.patch.object(
+            legacy_main.qw.QMessageBox,
+            "warning",
+            side_effect=lambda _parent, title, message: warnings.append((title, message)),
+        ):
+            legacy_main.MainWindow.trigger_sim_formal_acquisition(window, trigger_source="test")
+
+        self.assertFalse(window.sim_acquisition_in_progress)
+        self.assertTrue(window.sim_preview_requested)
+        self.assertFalse(window.sim_preview_restart_requested)
+        self.assertFalse(window.sim_resume_preview_after_acquisition)
+        controller.start_single_acquisition.assert_not_called()
+        self.assertEqual(warnings, [("SIM Preview", "SIM preview is still stopping. Please retry after it stops.")])
 
     def test_trigger_sim_formal_acquisition_blocks_when_slm_is_disconnected(self):
         legacy_main = load_legacy_main_module()
@@ -712,7 +768,7 @@ class SimPreviewRestartTests(unittest.TestCase):
                 camera_adapter="shared-camera",
             ),
             prefer_real_sim_hardware=mock.Mock(),
-            stop_sim_preview=lambda wait=True: stop_calls.append(wait),
+            stop_sim_preview=lambda wait=True: (stop_calls.append(wait) or True),
             start_sim_preview=lambda: start_calls.append("start"),
             apply_sim_settings=mock.Mock(),
         )
