@@ -1,3 +1,8 @@
+"""NI USB-6423 SIM9 同步 TTL 波形生成。
+
+本文件把配置中的 port0/lineN 映射解析成整数线号，校验角色不冲突，并按相机曝光、SLM enable/trigger/finish、激光线和帧间间隔生成 packed uint32 端口波形。NIDaqAdapter 直接播放这里生成的 WaveformPlan。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,6 +20,7 @@ LINE_PATTERN = re.compile(r"^(?P<device>[^/]+)/port(?P<port>\d+)/line(?P<line>\d
 
 @dataclass
 class WaveformPlan:
+    """DAQ 波形构建后的结果对象，包含 packed port 数据、采样率、时长和诊断信息。"""
     line_order: list[str]
     packed_port_values: np.ndarray
     role_matrix: dict[str, np.ndarray]
@@ -26,6 +32,7 @@ class WaveformPlan:
 
 
 def parse_line_name(line_name: str) -> tuple[str, int, int]:
+    """把用户或配置中的文本形式解析成后续流程可直接使用的结构化值。"""
     match = LINE_PATTERN.match(line_name)
     if not match:
         raise ValueError(f"Invalid NI line name: {line_name}")
@@ -33,6 +40,7 @@ def parse_line_name(line_name: str) -> tuple[str, int, int]:
 
 
 def validate_daq_line_config(config: DaqLineConfig) -> None:
+    """集中校验输入条件，把错误尽早转成可报告的问题。"""
     devices = set()
     ports = set()
     seen_lines = set()
@@ -54,7 +62,9 @@ def validate_daq_line_config(config: DaqLineConfig) -> None:
         raise ValueError("DAQ device_name does not match selected lines.")
 
 
+# 波形 builder 只负责生成数据计划，不直接操作 NI 任务；真实播放在 NIDaqAdapter。
 class NIDaqWaveformBuilder:
+    """根据 SIM9 时序和线位配置生成 USB-6423 可播放的数字端口波形。"""
     def build(
         self,
         daq_config: DaqLineConfig,
@@ -64,6 +74,7 @@ class NIDaqWaveformBuilder:
         frame_count: int = 9,
         include_role_matrix: bool = True,
     ) -> WaveformPlan:
+        """生成一轮 SIM9 采集的 packed port 波形和诊断元数据。"""
         validate_daq_line_config(daq_config)
         if laser_wavelength_nm not in LASER_ROLE_MAP:
             raise ValueError(f"Unsupported laser wavelength: {laser_wavelength_nm}")
@@ -169,6 +180,7 @@ class NIDaqWaveformBuilder:
 
     @staticmethod
     def _us_to_samples(microseconds: int, sample_rate_hz: int) -> int:
+        """把微秒时长换算成 DAQ 采样点数，并保证非零脉冲至少占一个点。"""
         return max(1, int(math.ceil((microseconds / 1_000_000.0) * sample_rate_hz)))
 
     @staticmethod
@@ -177,6 +189,7 @@ class NIDaqWaveformBuilder:
         matrix: dict[str, np.ndarray],
         sample_count: int,
     ) -> np.ndarray:
+        """把每个时间片的角色高低电平打包成 USB-6423 port0 的 uint32 值。"""
         packed = np.zeros(sample_count, dtype=np.uint32)
         for role in DAQ_ROLE_ORDER:
             _, _, line_index = parse_line_name(getattr(daq_config, role))

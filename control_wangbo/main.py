@@ -1,3 +1,8 @@
+"""历史微流控主界面与当前 SIM 控制链路的集成入口。
+
+这个文件承载旧版 CellSorting GUI 的大部分业务槽函数，同时把 sim_control 的配置、预览、SLM Running Order 和正式 SIM9 采集接入到同一个主窗口。它通过 PyQt5 信号槽连接相机线程、MCU 触发线程、ROI 显示和 SIM controller；本次只补结构注释，不改历史控制逻辑。
+"""
+
 import sys
 from PyQt5.QtCore import QEvent, QMetaObject, Qt, pyqtSlot,pyqtSignal,QTimer
 from PyQt5.QtGui import QImage, QPixmap
@@ -53,6 +58,7 @@ from sim_control.sim_camera_presets import (
     size_from_sim_camera_label,
 )
 
+# SIM 集成区使用毫秒级 UI 控件，进入 sim_control 前统一转换为微秒级配置。
 SIM_EXPOSURE_MIN_MS = 1
 SIM_EXPOSURE_MAX_MS = 10_000
 SIM_EXPOSURE_DEFAULT_MS = 10
@@ -60,7 +66,9 @@ SIM_BIT_DEPTH_DEFAULT = 16
 USER_FACING_BIT_DEPTHS = (8, 12, 16)
 
 
+# 旧 CellSorting UI 是固定尺寸生成界面，这里外包一层滚动区以适配较小显示器。
 def setup_scrollable_cellsorting_ui(window, ui):
+    """把固定尺寸的历史 UI 包进滚动区域，保留原布局同时支持小屏幕查看。"""
     content_widget = qw.QWidget()
     ui.setupUi(content_widget)
     content_size = content_widget.size()
@@ -93,10 +101,12 @@ def setup_scrollable_cellsorting_ui(window, ui):
 
 
 def clone_sim_app_config(config):
+    """通过配置序列化往返生成深拷贝，避免直接修改调用方持有的 AppConfig。"""
     return app_config_from_dict(app_config_to_dict(config))
 
 
 def merge_legacy_sim_control_payload(base_config, legacy_payload):
+    """把旧配置文件中的 SIM 片段合并到当前默认配置，同时保留当前配置路径。"""
     merged = clone_sim_app_config(base_config)
     if not legacy_payload:
         return merged
@@ -113,6 +123,7 @@ def merge_legacy_sim_control_payload(base_config, legacy_payload):
 
 
 def apply_real_hardware_preference(config, camera_devices, slm_devices, daq_devices):
+    """根据探测到的真实设备更新配置，让主界面优先选择已连接的相机、SLM 和 DAQ。"""
     updated = clone_sim_app_config(config)
     if camera_devices:
         current_label = (updated.camera.device_label or "").strip().lower()
@@ -130,17 +141,20 @@ def apply_real_hardware_preference(config, camera_devices, slm_devices, daq_devi
 
 
 def sim_exposure_us_to_ms(exposure_us):
+    """把 SIM 配置中的微秒曝光换算成旧主界面 spinbox 使用的毫秒整数。"""
     value_ms = int(round(float(exposure_us) / 1000.0))
     return max(SIM_EXPOSURE_MIN_MS, min(SIM_EXPOSURE_MAX_MS, value_ms))
 
 
 def sim_exposure_ms_to_us(exposure_ms):
+    """把主界面毫秒输入转换回 SIM 配置持久化使用的微秒值。"""
     value_ms = int(round(float(exposure_ms)))
     value_ms = max(SIM_EXPOSURE_MIN_MS, min(SIM_EXPOSURE_MAX_MS, value_ms))
     return value_ms * 1000
 
 
 def normalize_legacy_sim_exposure_setting(exposure_value):
+    """兼容旧配置里可能混用毫秒和微秒的曝光字段，并统一输出毫秒值。"""
     value = int(round(float(exposure_value)))
     if value > SIM_EXPOSURE_MAX_MS:
         return sim_exposure_us_to_ms(value)
@@ -148,17 +162,20 @@ def normalize_legacy_sim_exposure_setting(exposure_value):
 
 
 def sim_bit_depth_to_label(bit_depth):
+    """把相机位深整数格式化成主界面下拉框的显示文本。"""
     value = int(round(float(bit_depth)))
     return f"{value}-bit"
 
 
 def sim_bit_depth_from_label(label, default=SIM_BIT_DEPTH_DEFAULT):
+    """从下拉框文本中解析相机位深；无数字时回退到默认位深。"""
     digits = "".join(ch for ch in str(label) if ch.isdigit())
     if not digits:
         return int(default)
     return int(digits)
 
 
+# 曝光时间 spinbox 使用非线性步进，方便在 1/10/50ms 等常用桶之间快速切换。
 class SnappingExposureSpinBox(qw.QSpinBox):
     """SIM exposure control with bucketed stepping in milliseconds."""
 
@@ -200,9 +217,11 @@ class SnappingExposureSpinBox(qw.QSpinBox):
         return value
 
 
+# MainWindow 同时承载历史微流控界面和新增 SIM 控制状态，是两个子系统的集成边界。
 class MainWindow(qw.QWidget):
     
     # 创建发送mindvision相机设置参数的信号
+    """历史微流控主窗口，同时集成 SIM 配置、预览、硬件状态和正式采集入口。"""
     signal_sendImageProcessingPara = pyqtSignal(dict)  #以字典的形式发送图像处理相关参数
     # 创建发送sCMOS相机参数的信号
     signal_sendImageProcessingPara_sCMOS = pyqtSignal(dict)  #以字典的形式发送sCMOS图像处理相关参数
@@ -1470,6 +1489,7 @@ class MainWindow(qw.QWidget):
         print(f"SIM preview error: {message}")
         qw.QMessageBox.warning(self, "SIM Preview Error", message.splitlines()[0])
 
+    # 正式 SIM 采集会先停止 live preview，再把当前 UI/config 快照交给后台 controller。
     def trigger_sim_formal_acquisition(self, trigger_source="manual"):
         if self.sim_acquisition_in_progress:
             print("SIM acquisition skipped because another acquisition is still running.")
@@ -3507,6 +3527,7 @@ class MainWindow(qw.QWidget):
         if auto_contrast_state is not None:
             auto_contrast_state.reset()
 
+    # GUI 定时器只取最新预览帧，旧帧被覆盖丢弃以保持低延迟显示。
     def poll_latest_sim_preview_frame(self):
         if self.sim_preview_controller is None:
             return

@@ -1,4 +1,9 @@
-﻿from __future__ import annotations
+"""独立 SIM 采集 GUI 与设置弹窗的手写逻辑。
+
+本文件连接 ui_sim_settings_dialog.py 生成的控件、配置数据类、硬件 adapter、采集 controller 和占位 pipeline。它负责读取/写入控件状态、执行测试脉冲、启动准备/采集流程、显示状态日志，但不直接实现真实硬件 SDK 细节。
+"""
+
+from __future__ import annotations
 
 import functools
 from datetime import datetime
@@ -60,6 +65,7 @@ from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
 
 
+# GUI 槽函数统一捕获异常并显示到状态区，避免 PyQt 回调静默失败。
 def _catch_to_error(method):
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -194,18 +200,21 @@ TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "test_captures"
 
 
 def create_camera_adapter_for_backend(backend):
+    """按 backend 选择真实 Hamamatsu adapter 或离线仿真相机。"""
     if backend.simulation_mode:
         return SimulatedCameraAdapter()
     return FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path)
 
 
 def create_slm_adapter_for_backend(backend):
+    """按 backend 选择真实 Kopin/FDD R11 adapter 或离线仿真 SLM。"""
     if backend.simulation_mode:
         return SimulatedSlmAdapter()
     return KopinSlmAdapter(sdk_path=backend.slm_sdk_path)
 
 
 def create_daq_adapter_for_backend(backend):
+    """按 backend 选择真实 NI-DAQmx adapter 或离线仿真 DAQ。"""
     if backend.simulation_mode:
         return SimulatedDaqAdapter()
     return NIDaqAdapter()
@@ -216,6 +225,7 @@ def clone_app_config(config: AppConfig) -> AppConfig:
 
 
 def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, str]]:
+    """根据当前 DAQ 配置生成测试下拉框中的目标 ID 和显示文本。"""
     items = [
         (
             role,
@@ -228,7 +238,9 @@ def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, st
     return items
 
 
+# 设置弹窗只编辑 SIM 配置和执行短测试，不拥有集成主界面共享的 SLM/相机生命周期。
 class SimSettingsDialog(QDialog):
+    """SIM 设置弹窗，负责配置编辑、DAQ 线位刷新和短路径硬件测试。"""
     signal_settings_saved = pyqtSignal(object)
 
     def __init__(
@@ -317,6 +329,7 @@ class SimSettingsDialog(QDialog):
         return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> AppConfig:
+        """在 UI 控件和配置对象之间同步状态，避免两边出现不同来源的值。"""
         self.config.daq = self._current_daq_config()
         self.config.selected_laser_nm = self._selected_laser_nm()
         return self.config
@@ -329,6 +342,7 @@ class SimSettingsDialog(QDialog):
         self._refresh_test_targets()
 
     def _refresh_daq_devices(self) -> None:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         current_device = self.combo_daq_device.currentText().strip() or self._preferred_daq_device
         devices = self.daq_adapter.list_devices(default_device=current_device or "Dev1")
         self.combo_daq_device.blockSignals(True)
@@ -349,6 +363,7 @@ class SimSettingsDialog(QDialog):
         self._refresh_device_lines()
 
     def _refresh_device_lines(self) -> None:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         current_values = {role: combo.currentText() for role, combo in self.line_combos.items()}
         selected_device = self.combo_daq_device.currentText().strip() or self._preferred_daq_device
         lines = self.daq_adapter.list_port0_lines(device_name=selected_device, default_device=selected_device)
@@ -379,6 +394,7 @@ class SimSettingsDialog(QDialog):
         return DaqLineConfig(device_name=device_name, **selections)
 
     def _refresh_test_targets(self) -> None:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         selected_target = self.combo_test_target.currentData()
         daq_config = self._current_daq_config_for_test_targets()
         self.combo_test_target.blockSignals(True)
@@ -422,6 +438,7 @@ class SimSettingsDialog(QDialog):
             pass
 
     def _run_camera_trigger_test(self, daq_config: DaqLineConfig) -> Path:
+        """触发一次相机 TTL，读取单帧并保存 16 位 TIFF 作为接线测试。"""
         output_path = self._test_capture_path("camera_pulse", "camera_trigger")
         _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
         was_camera_connected = self._camera_connected_for_test_cleanup()
@@ -444,11 +461,13 @@ class SimSettingsDialog(QDialog):
                 pass
 
     def _run_laser_pulse_test(self, daq_config: DaqLineConfig, target_role: str) -> None:
+        """对选中的激光 TTL 线输出短脉冲，用于接线确认。"""
         line_name = getattr(daq_config, target_role)
         device_name, _, line_index = parse_line_name(line_name)
         self.daq_adapter.pulse_line(device_name, line_index, duration_s=1.0)
 
     def _run_sim_acquisition_test(self, daq_config: DaqLineConfig) -> Path:
+        """按当前波长选择 Running Order，执行一次 SIM9 测试采集并保存 stack。"""
         if not self.slm_adapter.is_connected():
             raise HardwareError("SIM采集测试前需要先连接 SLM。")
         self.config.selected_laser_nm = self._selected_laser_nm()
@@ -503,6 +522,7 @@ class SimSettingsDialog(QDialog):
                 pass
 
     def _run_pulse_test(self) -> None:
+        """根据测试下拉框分派相机触发、激光脉冲或完整 SIM9 采集测试。"""
         try:
             daq_config = self._current_daq_config()
             validate_daq_line_config(daq_config)
@@ -569,7 +589,9 @@ class SimSettingsDialog(QDialog):
             QTimer.singleShot(0, self._perform_initial_hardware_refresh)
 
 
+# 独立 SIM 窗口用于单独调试采集链路，集成主界面复用同一套 controller 和 adapter。
 class SimControlWindow(QMainWindow):
+    """独立 SIM 控制窗口，串联配置、硬件初始化、采集 controller 和占位 pipeline。"""
     def __init__(self, config_path: str | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.config = load_app_config(config_path or DEFAULT_CONFIG_PATH)
@@ -623,6 +645,7 @@ class SimControlWindow(QMainWindow):
         self.setCentralWidget(scroll)
 
     def _create_daq_group(self) -> QGroupBox:
+        """创建 DAQ 线位选择、配置读写和 wiring 校验区域。"""
         group = QGroupBox("DAQ Wiring")
         layout = QVBoxLayout(group)
         form = QFormLayout()
@@ -646,6 +669,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_camera_group(self) -> QGroupBox:
+        """创建相机 ROI、曝光、trigger 和 timing 设置区域。"""
         group = QGroupBox("Fusion BT Camera")
         layout = QVBoxLayout(group)
 
@@ -704,6 +728,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_pattern_group(self) -> QGroupBox:
+        """创建 9 个 pattern 文件槽位和手动编程按钮区域。"""
         group = QGroupBox("SLM Pattern Preparation")
         layout = QVBoxLayout(group)
         form = QFormLayout()
@@ -724,6 +749,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_laser_group(self) -> QGroupBox:
+        """创建 405/488/561/647 nm 激光选择按钮组。"""
         group = QGroupBox("Laser Selection")
         layout = QVBoxLayout(group)
         self.laser_group = QButtonGroup(self)
@@ -736,6 +762,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_control_group(self) -> QGroupBox:
+        """创建硬件初始化、准备、采集、停止和状态显示区域。"""
         group = QGroupBox("Acquisition Control")
         layout = QGridLayout(group)
         self.btn_initialize_hardware = QPushButton("Initialize Hardware")
@@ -788,6 +815,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_pipeline_group(self) -> QGroupBox:
+        """创建重建、特征和决策 pipeline 的状态显示区域。"""
         group = QGroupBox("Pipeline Status")
         form = QFormLayout(group)
         for key, label_text in (
@@ -805,6 +833,7 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_log_group(self) -> QGroupBox:
+        """创建滚动日志窗口，承接 controller 和 pipeline 的状态输出。"""
         group = QGroupBox("Log")
         layout = QVBoxLayout(group)
         self.log_output = QPlainTextEdit()
@@ -883,6 +912,7 @@ class SimControlWindow(QMainWindow):
         return read_selected_laser_nm(self.laser_group)
 
     def _sync_config_from_widgets(self) -> None:
+        """在 UI 控件和配置对象之间同步状态，避免两边出现不同来源的值。"""
         self.config.daq = self._current_daq_config()
         self.config.camera = self._current_camera_config()
         self.config.timing = self._current_timing_config()
@@ -890,6 +920,7 @@ class SimControlWindow(QMainWindow):
         self.config.selected_laser_nm = self._selected_laser_nm()
 
     def _refresh_device_lines(self) -> None:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         current_values = {role: combo.currentText() for role, combo in self.line_combos.items()}
         default_device = self.config.daq.device_name
         try:
@@ -909,6 +940,7 @@ class SimControlWindow(QMainWindow):
         self._log(f"Loaded {len(lines)} DAQ line options.")
 
     def _validate_wiring(self) -> None:
+        """集中校验输入条件，把错误尽早转成可报告的问题。"""
         try:
             validate_daq_line_config(self._current_daq_config())
             self._log("DAQ wiring validation passed.")
@@ -988,6 +1020,7 @@ class SimControlWindow(QMainWindow):
 
     @_catch_to_error
     def _run_single_acquisition(self) -> None:
+        """从当前控件读取配置，排队执行一次正式 SIM9 采集任务。"""
         self._sync_config_from_widgets()
         self._ensure_slm_connected_for_running_order()
         task = self._task_from_current_config()
@@ -1023,6 +1056,7 @@ class SimControlWindow(QMainWindow):
         self._log("Cleared last result.")
 
     def _handle_status_changed(self, state: str, payload: dict) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.lbl_current_status.setText(state)
         self._update_hardware_leds(state)
         if state == "acquisition_starting":
@@ -1063,12 +1097,14 @@ class SimControlWindow(QMainWindow):
                 led.set_state("red")
 
     def _handle_acquisition_ready(self, batch) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["task_id"].setText(batch.task_id)
         self.pipeline_labels["stack_shape"].setText(str(list(batch.stack.shape)))
         self.pipeline_labels["stack_dtype"].setText(str(batch.stack.dtype))
         self.pipeline_labels["reconstruction"].setText("Running")
 
     def _handle_acquisition_failed(self, task_id: str, message: str) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["reconstruction"].setText("Acquisition failed")
         self.progress_acquisition.setValue(0)
         for led in self.hardware_leds.values():
@@ -1076,26 +1112,31 @@ class SimControlWindow(QMainWindow):
         self._set_error(f"Acquisition failed for {task_id}: {message}")
 
     def _handle_acquisition_cancelled(self, task_id: str, message: str) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["reconstruction"].setText("Acquisition cancelled")
         self.progress_acquisition.setValue(0)
         self._log(f"Acquisition cancelled for {task_id}: {message}")
 
     def _handle_reconstruction_ready(self, recon_result) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["reconstruction"].setText("Ready")
         self.pipeline_labels["features"].setText("Running")
         self._log(f"Reconstruction ready for {recon_result.task_id}")
 
     def _handle_reconstruction_failed(self, task_id: str, message: str) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["reconstruction"].setText("Failed")
         self._set_error(f"Reconstruction failed for {task_id}: {message}")
 
     def _handle_feature_ready(self, feature_result) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["features"].setText("Ready")
         decision = self.decision_engine.decide(feature_result)
         self.pipeline_labels["decision"].setText(f"{decision.decision} | {decision.reason}")
         self._log(f"Decision for {feature_result.task_id}: {decision.decision}")
 
     def _handle_feature_failed(self, task_id: str, message: str) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.pipeline_labels["features"].setText("Failed")
         self._set_error(f"Feature extraction failed for {task_id}: {message}")
 
@@ -1124,4 +1165,3 @@ class SimControlWindow(QMainWindow):
         self.feature_thread.quit()
         self.feature_thread.wait(2000)
         super().closeEvent(event)
-

@@ -1,3 +1,8 @@
+"""acquisition_core 单次采集流程的回归测试。
+
+这些测试用轻量 FakeCamera/FakeSlm/FakeDaq 代替真实硬件，验证正式采集能发送帧进度、异常时释放硬件、拒绝无效 9 帧结果，并正确响应 stop_event 取消。
+"""
+
 import sys
 import threading
 import unittest
@@ -12,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class AcquisitionCoreTests(unittest.TestCase):
+    """验证单次采集核心在正常、异常和取消路径下都能保持硬件清理顺序。"""
     def test_run_single_acquisition_relays_frame_progress_from_camera_read(self):
         from sim_control.acquisition_core import run_single_acquisition
         from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig

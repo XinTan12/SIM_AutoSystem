@@ -1,3 +1,8 @@
+"""配置校验与 controller 阻断行为测试。
+
+这些用例确保 AppConfig 中非法相机、Timing 或 DAQ 线位会被报告，并验证 controller 在发起 worker 前先拦截无效配置。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class ConfigValidationTests(unittest.TestCase):
+    """验证配置校验错误和 controller 启动前阻断行为。"""
     def test_validate_app_config_reports_invalid_camera_and_timing_values(self):
         from sim_control.config_store import validate_app_config
         from sim_control.models import AppConfig

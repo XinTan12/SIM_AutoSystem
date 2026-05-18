@@ -1,3 +1,8 @@
+"""主界面 SIM 设置摘要文本生成器。
+
+这个模块把 AppConfig 和运行时相机 timing 信息格式化成用户可读的多行摘要，供 control_wangbo 主界面展示当前相机、激光、DAQ 线位、Running Order 和 Timing 状态。
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,10 +11,12 @@ from .models import AppConfig, effective_inter_frame_gap_us
 
 
 def _sim_exposure_us_to_ms(exposure_us: int) -> int:
+    """把配置中的曝光微秒值转换成摘要里更易读的毫秒文本。"""
     return max(1, int(round(float(exposure_us) / 1000.0)))
 
 
 def _format_readout_time_ms(runtime_timing: dict[str, Any] | None) -> str:
+    """格式化相机读出时间，缺失时保持未知语义。"""
     if not runtime_timing:
         return "-"
     value_s = runtime_timing.get("timing_readout_time_s")
@@ -19,6 +26,7 @@ def _format_readout_time_ms(runtime_timing: dict[str, Any] | None) -> str:
 
 
 def _summary_inter_frame_gap_us(runtime_timing: dict[str, Any] | None) -> int:
+    """生成帧间隔摘要，区分默认值和相机建议值。"""
     recommended_gap_us = None
     if runtime_timing:
         recommended_gap_us = runtime_timing.get("recommended_inter_frame_gap_us")
@@ -26,6 +34,7 @@ def _summary_inter_frame_gap_us(runtime_timing: dict[str, Any] | None) -> int:
 
 
 def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, Any] | None = None) -> str:
+    """把当前 SIM 配置和运行时相机 timing 信息格式化为主界面摘要。"""
     daq = sim_config.daq
     camera = sim_config.camera
     timing = sim_config.timing

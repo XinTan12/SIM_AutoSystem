@@ -1,3 +1,8 @@
+"""uint16 相机帧到 8 位预览图的灰度映射工具。
+
+这里集中处理手动灰度上限、自动百分位对比度、显示前 resize 和 LUT 缓存。采集原始数据仍保持 uint16，本模块只服务 GUI 预览显示，避免把显示压缩逻辑混入采集路径。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +15,7 @@ import numpy as np
 
 @dataclass
 class AutoContrastState:
+    """自动对比度的平滑状态，避免预览灰度窗口逐帧剧烈跳变。"""
     low_percentile: float = 0.5
     high_percentile: float = 99.5
     smoothing_alpha: float = 0.25
@@ -25,6 +31,7 @@ class AutoContrastState:
 
 
 def manual_uint16_to_uint8(frame: Any, gray_max: int | float) -> np.ndarray:
+    """按用户给定窗口把 uint16 预览图压缩成 8 位显示图。"""
     gray_max_value = max(1.0, float(gray_max))
     frame_array = np.asarray(frame, dtype=np.float32)
     scaled = frame_array * (255.0 / gray_max_value)
@@ -62,7 +69,9 @@ def fast_manual_preview_uint16_to_uint8(frame: Any, gray_max: int | float, outpu
     return lut[resized]
 
 
+# 快速路径先按显示尺寸缩小，再估计对比度窗口，减少大帧上的 CPU 压力。
 def fast_auto_preview_uint16_to_uint8(frame: Any, state: AutoContrastState, output_size: tuple[int, int]) -> np.ndarray:
+    """先缩放再估计百分位窗口，用平滑状态减少预览亮度跳变。"""
     frame_array = np.asarray(frame)
     if frame_array.size == 0:
         return np.zeros(_output_shape(output_size), dtype=np.uint8)
@@ -98,6 +107,7 @@ def fast_auto_preview_uint16_to_uint8(frame: Any, state: AutoContrastState, outp
 
 
 def auto_uint16_to_uint8(frame: Any, state: AutoContrastState) -> np.ndarray:
+    """按采样百分位估计显示窗口，避免整幅图逐像素统计拖慢预览。"""
     frame_array = np.asarray(frame)
     if frame_array.size == 0:
         return np.zeros(frame_array.shape, dtype=np.uint8)

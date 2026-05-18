@@ -53,6 +53,16 @@
 - 大改动合入流程：`dev` 本地测试通过 -> push `origin/dev` -> GitHub PR -> merge 到 `origin/main` -> stable worktree 更新到最新 `origin/main`。
 - 清理分支时保留 `main` 和 `dev`；旧 `codex/*`、`backup/*` 分支仅在确认无依赖后删除。
 
+## 修改后审查机制
+
+- 每次对项目进行了修改后，都必须使用独立 subagent 对本次改动进行 review 审查；审查对象应覆盖实际修改的代码、配置、文档、测试和工作流文件。
+- subagent review 必须明确回答三类问题：
+  1. 哪些项目标准或用户要求已满足，证据是什么；
+  2. 哪些项目标准或用户要求未满足，原因是什么；
+  3. 哪些地方需要用户人工确认、真机确认或额外业务判断。
+- 如果当前工具环境不支持或无法启动独立 subagent，主 agent 必须在继续前向用户说明原因并请求确认；不得用主 agent 自审静默替代 subagent review。
+- 主 agent 在最终回复前应结合 subagent review 结果处理可立即修复的问题；无法自动处理的事项必须在最终回复中列为人工确认项。
+
 ## 目录边界
 
 - `sim_control/`：SIM 侧主开发区，包含 GUI、采集控制、波形生成、预览、适配器、配置读写、数据模型和占位 pipeline。

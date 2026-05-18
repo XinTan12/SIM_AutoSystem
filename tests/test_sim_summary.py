@@ -1,3 +1,8 @@
+"""SIM 设置摘要文本测试。
+
+测试 build_sim_settings_summary 生成的相机、DAQ、激光、Running Order 和 Timing 文案，保证主界面只读摘要能反映当前配置与运行时 timing。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class SimSettingsSummaryTests(unittest.TestCase):
+    """验证主界面 SIM 设置摘要文本能正确反映配置和运行时 timing。"""
     def test_build_sim_settings_summary_omits_backend_block(self):
         from sim_control.config_store import app_config_from_dict
         from sim_control.summary import build_sim_settings_summary

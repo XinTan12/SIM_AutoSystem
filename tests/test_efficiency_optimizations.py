@@ -1,3 +1,8 @@
+"""采集、预览和 pipeline 性能优化的防回归测试。
+
+测试重点不是速度基准，而是锁住关键实现选择：DAQ 播放复用 packed uint32、取消时停止任务、相机帧读取避免多余拷贝、预览/重建/特征计算走低开销路径。
+"""
+
 import sys
 import threading
 import unittest
@@ -14,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class EfficiencyOptimizationTests(unittest.TestCase):
+    """验证关键性能优化路径不会退化为多余拷贝或阻塞等待。"""
     def test_ni_daq_play_waveform_reuses_uint32_packed_array(self):
         from sim_control import adapters
         from sim_control.models import DaqLineConfig, TimingConfig

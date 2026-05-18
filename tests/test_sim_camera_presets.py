@@ -1,3 +1,8 @@
+"""SIM 相机 ROI 预设和对齐工具测试。
+
+测试确保尺寸标签、full-frame 判断、ROI 原点边界和步进对齐规则一致，避免 GUI 控件和 adapter 应用结果不匹配。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class SimCameraPresetTests(unittest.TestCase):
+    """验证 SIM 相机尺寸预设、标签和 ROI 对齐规则。"""
     def test_supported_sizes_round_trip_without_fallback(self):
         from sim_control.sim_camera_presets import (
             DEFAULT_SIM_CAMERA_SIZE,

@@ -1,3 +1,8 @@
+"""SLM Running Order 名称解析和选择规则测试。
+
+用例验证 405/488/561/647 波长、曝光桶、3.5 pitch、2d 模式和非 _ang0 条件，防止正式采集选错预烧录 Running Order。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class RunningOrderSelectionTests(unittest.TestCase):
+    """验证 SLM Running Order 名称解析和最佳匹配选择。"""
     def test_parse_running_order_name_extracts_fields(self):
         from sim_control.adapters import parse_running_order_name
 

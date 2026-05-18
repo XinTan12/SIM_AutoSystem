@@ -1,3 +1,8 @@
+"""仿真模式 adapter 行为测试。
+
+这些用例确认无硬件时相机、SLM 和 DAQ 仿真对象仍能连接、生成帧、准备图案和记录波形，支持离线 GUI 与流程验证。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class SimulationModeTests(unittest.TestCase):
+    """验证仿真 adapter 能支撑无硬件运行和测试。"""
     def test_controller_uses_simulated_adapters_when_backend_requests_simulation(self):
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import BackendConfig

@@ -1,3 +1,8 @@
+"""SIM 设置弹窗 DAQ 测试动作的回归测试。
+
+用例覆盖测试目标列表生成、camera trigger/laser pulse/SIM acquisition 测试时的 DAQ 调用，保证设置弹窗的小测试不会误用真实采集路径。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class DaqTestTargetTests(unittest.TestCase):
+    """验证 DAQ 测试目标根据线位配置生成正确的用户可选项。"""
     def test_build_daq_test_target_items_uses_647_labels_and_appends_sim_entry(self):
         from sim_control.config_store import app_config_from_dict
         from sim_control.gui import SIM_ACQUISITION_TEST_ID, build_daq_test_target_items
@@ -101,6 +107,7 @@ class DaqTestTargetTests(unittest.TestCase):
 
 
 class NIDaqAdapterPulseTests(unittest.TestCase):
+    """验证真实 DAQ adapter 的短脉冲调用包装。"""
     def test_pulse_line_drives_selected_bit_then_returns_all_lines_low(self):
         from sim_control import adapters
 

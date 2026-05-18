@@ -1,3 +1,8 @@
+"""无真实硬件时使用的仿真 adapter。
+
+仿真相机生成可重复的 uint16 图像栈和预览帧，仿真 SLM 提供 Running Order 与 pattern 准备结果，仿真 DAQ 记录波形播放与脉冲调用。测试和离线 GUI 调试通过这些类验证完整流程。
+"""
+
 from __future__ import annotations
 
 import time
@@ -19,7 +24,9 @@ SIMULATED_RUNNING_ORDERS = [
 SIMULATED_CAMERA_BIT_DEPTHS = [8, 12, 16]
 
 
+# 仿真相机提供稳定可重复的帧数据，让测试不依赖 Hamamatsu 真机。
 class SimulatedCameraAdapter:
+    """离线相机仿真，生成预览帧和 9 帧 uint16 stack。"""
     def __init__(self):
         self._initialized = False
         self._connected = False
@@ -154,7 +161,9 @@ class SimulatedCameraAdapter:
         return signal
 
 
+# 仿真 SLM 模拟 Running Order 和 pattern 准备，保持正式流程可离线跑通。
 class SimulatedSlmAdapter:
+    """离线 SLM 仿真，模拟连接、Running Order 和 pattern 准备结果。"""
     def __init__(self):
         self._initialized = False
         self._connected = False
@@ -246,7 +255,9 @@ class SimulatedSlmAdapter:
         return asdict(self._prepared)
 
 
+# 仿真 DAQ 只记录调用和短暂停顿，不向真实 USB-6423 输出信号。
 class SimulatedDaqAdapter:
+    """离线 DAQ 仿真，记录波形播放和脉冲调用但不触发硬件。"""
     def list_devices(self, default_device: str = "Dev1") -> list[str]:
         return [default_device or "Dev1"]
 

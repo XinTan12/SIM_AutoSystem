@@ -1,3 +1,8 @@
+"""SIM live 预览的后台 worker 和 latest-frame-wins 缓存。
+
+预览线程持续从相机 adapter 读取最新帧，按 FPS 限制发布快照；GUI 端通过定时器取走最后一帧，中间旧帧可以被覆盖丢弃，从而保持低延迟显示而不是积压队列。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,13 +18,16 @@ from .models import CameraConfig
 
 @dataclass
 class PreviewFrameSnapshot:
+    """GUI 轮询时取走的预览帧快照，包含帧、FPS、序号和时间戳。"""
     frame: object
     fps: int
     sequence: int
     captured_at: float
 
 
+# 预览 worker 持续读相机帧，但只发布最新快照，避免 GUI 处理陈旧帧队列。
 class SimPreviewWorker(QObject):
+    """相机预览后台 worker，持续读帧并发布 latest-frame-wins 快照。"""
     signal_status_changed = pyqtSignal(str, dict)
     signal_error = pyqtSignal(str)
 
@@ -45,6 +53,7 @@ class SimPreviewWorker(QObject):
             self._latest_snapshot = None
 
     def publish_preview_frame(self, frame, fps: int) -> PreviewFrameSnapshot:
+        """采集线程只发布最新预览帧，旧帧可被覆盖以避免 GUI 积压。"""
         with self._snapshot_lock:
             self._frame_sequence += 1
             snapshot = PreviewFrameSnapshot(
@@ -57,6 +66,7 @@ class SimPreviewWorker(QObject):
         return snapshot
 
     def take_latest_frame(self) -> PreviewFrameSnapshot | None:
+        """GUI 定时器取走最新帧快照；取走后清空槽位实现 latest-frame-wins。"""
         with self._snapshot_lock:
             snapshot = self._latest_snapshot
             self._latest_snapshot = None
@@ -64,6 +74,7 @@ class SimPreviewWorker(QObject):
 
     @pyqtSlot(object)
     def slot_start(self, payload: dict) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self._camera = payload["camera"]
         self._config = payload["config"]
         self._timeout_ms = int(payload.get("timeout_ms", 100))
@@ -108,10 +119,13 @@ class SimPreviewWorker(QObject):
 
     @pyqtSlot()
     def slot_stop(self) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         self.request_stop()
 
 
+# 预览 controller 管理 worker 线程生命周期，并向主界面暴露 start/stop/take_latest_frame。
 class SimPreviewController(QObject):
+    """预览线程控制器，管理 worker 生命周期和 GUI 状态信号。"""
     signal_status_changed = pyqtSignal(str, dict)
     signal_error = pyqtSignal(str)
     signal_start_worker = pyqtSignal(object)
@@ -143,6 +157,7 @@ class SimPreviewController(QObject):
 
     @pyqtSlot(str, dict)
     def _handle_worker_status(self, status: str, payload: dict) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         if status == "preview_started":
             self._active = True
             self._stopping = False
@@ -151,6 +166,7 @@ class SimPreviewController(QObject):
             self._stopping = False
 
     def take_latest_frame(self) -> PreviewFrameSnapshot | None:
+        """转交 worker 的 latest-frame-wins 快照给 GUI 定时器。"""
         return self._worker.take_latest_frame()
 
     def start(self, config: CameraConfig, timeout_ms: int = 100) -> None:

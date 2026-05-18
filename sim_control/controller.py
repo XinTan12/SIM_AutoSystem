@@ -1,3 +1,8 @@
+"""SIM 采集控制器和后台 worker。
+
+controller.py 负责把 GUI 请求转换成后台 QThread 任务：初始化硬件、应用 DAQ/相机配置、选择 SLM Running Order、执行 prepare-only 或正式采集。它用 pyqtSignal 把状态、结果、失败和取消事件发回 GUI，避免阻塞主线程。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -23,7 +28,9 @@ from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, Simulated
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
 
 
+# Worker 运行在 QThread 中，所有可能阻塞的硬件初始化和采集动作都从 GUI 线程移出。
 class SimAcquisitionWorker(QObject):
+    """后台采集 worker，在 QThread 中执行硬件准备、RO 选择和正式采集。"""
     signal_status_changed = pyqtSignal(str, dict)
     signal_acquisition_ready = pyqtSignal(object)
     signal_acquisition_failed = pyqtSignal(str, str)
@@ -32,6 +39,7 @@ class SimAcquisitionWorker(QObject):
 
     @pyqtSlot(object)
     def slot_start(self, payload: dict[str, Any]) -> None:
+        """处理 Qt 信号或后台状态回调，并把结果更新到界面状态。"""
         task: SimTaskConfig = payload["task"]
         task_id: str = payload["task_id"]
         daq_config: DaqLineConfig = payload["daq_config"]
@@ -114,11 +122,13 @@ class SimAcquisitionWorker(QObject):
 
 
 def _raise_if_cancelled(stop_event: Any | None) -> None:
+    """把 stop_event 的取消请求转换成采集流程统一处理的异常。"""
     if stop_event is not None and stop_event.is_set():
         raise AcquisitionCancelled("Acquisition cancelled.")
 
 
 def _apply_camera_result_to_config(config: CameraConfig, result: dict[str, Any]) -> None:
+    """把相机实际接受的位深和 ROI 回写到任务配置，保证后续摘要与硬件一致。"""
     if result.get("applied_bit_depth") is not None:
         config.bit_depth = int(result["applied_bit_depth"])
     applied_roi = result.get("applied_roi")
@@ -134,6 +144,7 @@ def _coerce_running_order_pattern_result(
     ro_index: int,
     ro_name: str,
 ) -> PatternPreparationResult:
+    """把 SLM Running Order 选择结果规范化成采集核心统一消费的图案准备结果。"""
     pattern_result = result.get("pattern_result")
     if isinstance(pattern_result, PatternPreparationResult):
         return pattern_result
@@ -156,6 +167,7 @@ def _running_order_payload(
     ro_name: str,
     warnings: list[str],
 ) -> dict[str, Any]:
+    """把 Running Order 选择结果整理成 GUI 状态信号可直接显示的 payload。"""
     return {
         **dict(result),
         "running_order_index": ro_index,
@@ -166,7 +178,9 @@ def _running_order_payload(
     }
 
 
+# Controller 是 GUI 与 worker 的桥：负责组装 payload、管理 stop_event 和转发结果信号。
 class SimAcquisitionController(QObject):
+    """采集控制门面，向 GUI 提供 prepare、run、stop 等异步操作。"""
     signal_status_changed = pyqtSignal(str, dict)
     signal_acquisition_ready = pyqtSignal(object)
     signal_acquisition_failed = pyqtSignal(str, str)
@@ -202,6 +216,7 @@ class SimAcquisitionController(QObject):
 
     @staticmethod
     def _create_adapters(backend: BackendConfig):
+        """根据仿真模式创建相机、SLM 和 DAQ 的真实或模拟 adapter。"""
         if backend.simulation_mode:
             return SimulatedCameraAdapter(), SimulatedSlmAdapter(), SimulatedDaqAdapter()
         return (
@@ -211,6 +226,7 @@ class SimAcquisitionController(QObject):
         )
 
     def shutdown(self) -> None:
+        """停止后台 worker，并按 Qt 生命周期顺序断开相机、SLM 与 DAQ。"""
         self._shutdown_requested = True
         try:
             self.stop()
@@ -240,14 +256,17 @@ class SimAcquisitionController(QObject):
         self.signal_status_changed.emit("camera_initialized", {})
 
     def refresh_available_camera_devices(self) -> list[dict[str, Any]]:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         return self.camera_adapter.list_devices()
 
     def connect_camera(self, device_index: int | None = None, device_label: str = "") -> dict[str, Any]:
+        """连接相机并在成功后向 GUI 广播连接信息。"""
         info = self.camera_adapter.connect(device_index=device_index, device_label=device_label)
         self.signal_status_changed.emit("camera_connected", info)
         return info
 
     def disconnect_camera(self) -> None:
+        """断开相机并同步通知 GUI 刷新连接状态。"""
         self.camera_adapter.disconnect()
         self.signal_status_changed.emit("camera_disconnected", {})
 
@@ -263,9 +282,11 @@ class SimAcquisitionController(QObject):
         self.signal_status_changed.emit("camera_disarmed", {})
 
     def refresh_available_daq_devices(self) -> list[str]:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         return self.daq_adapter.list_devices(default_device=self.daq_config.device_name)
 
     def refresh_available_lines(self, device_name: str | None = None) -> list[str]:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         selected_device = device_name or self.daq_config.device_name
         return self.daq_adapter.list_port0_lines(device_name=selected_device, default_device=self.daq_config.device_name)
 
@@ -275,6 +296,7 @@ class SimAcquisitionController(QObject):
         self.signal_status_changed.emit("daq_config_applied", {"device_name": config.device_name})
 
     def apply_camera_config(self, config: CameraConfig) -> dict[str, Any]:
+        """把当前 UI 相机参数下发到适配器，并回传实际生效的配置。"""
         if config.trigger_mode != "external_level":
             raise HardwareError("Only external_level trigger mode is supported.")
         self.camera_config = config
@@ -286,6 +308,7 @@ class SimAcquisitionController(QObject):
         return dict(result)
 
     def refresh_available_slm_devices(self) -> list[dict[str, str]]:
+        """刷新界面或硬件列表中的派生状态，使显示内容与当前配置保持一致。"""
         return self.slm_adapter.list_devices()
 
     def connect_slm(self, device_path: str | None = None) -> dict[str, Any]:
@@ -301,6 +324,7 @@ class SimAcquisitionController(QObject):
         return self.slm_adapter.connection_info()
 
     def prepare_patterns(self, pattern_files: list[str], device_path: str | None = None) -> PatternPreparationResult:
+        """把文件模式图案交给 SLM 编程，正式采集优先使用 Running Order 路径。"""
         self.pattern_result = self.slm_adapter.program_patterns(pattern_files, device_path=device_path)
         self.signal_status_changed.emit(
             "patterns_prepared",
@@ -312,6 +336,7 @@ class SimAcquisitionController(QObject):
         return self.pattern_result
 
     def select_running_order_for_task(self, wavelength_nm: int, exposure_us: int) -> dict[str, Any]:
+        """按任务波长和曝光选择预烧录 Running Order，并记录给采集核心使用。"""
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, warnings = find_best_running_order(
             running_orders,
@@ -336,6 +361,7 @@ class SimAcquisitionController(QObject):
         apply_daq_config: bool = False,
         apply_camera_config: bool = False,
     ) -> str:
+        """启动单次 SIM9 采集 worker，避免 GUI 线程被硬件等待阻塞。"""
         return self._start_worker_task(
             task,
             prepare_running_order=prepare_running_order,
@@ -354,6 +380,7 @@ class SimAcquisitionController(QObject):
         apply_daq_config: bool = True,
         apply_camera_config: bool = True,
     ) -> str:
+        """启动实验准备 worker，完成相机、SLM 与 DAQ 的预备动作。"""
         return self._start_worker_task(
             task,
             prepare_running_order=prepare_running_order,
@@ -423,6 +450,7 @@ class SimAcquisitionController(QObject):
         return task_id
 
     def stop(self) -> None:
+        """请求当前 worker 取消，并通知采集核心尽快退出低延迟流程。"""
         if self._current_stop_event is not None:
             self._current_stop_event.set()
         for stop_event in list(self._active_stop_events.values()):

@@ -1,3 +1,8 @@
+"""真实相机 adapter 与采集 controller 的综合测试。
+
+这些测试用 mock DCAM 模块和 controller payload 捕获方式，验证 ROI/bit-depth 应用、frame wait、Running Order 状态同步、worker preflight 和采集任务发射，不依赖真实硬件。
+"""
+
 import sys
 import threading
 import unittest
@@ -14,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
+    """为测试准备 _start_single_acquisition_for_payload_test 所需的轻量对象、导入入口或断言辅助。"""
     emitted_payloads = []
     try:
         controller.signal_start_worker.disconnect()
@@ -25,6 +31,7 @@ def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
 
 
 def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
+    """为测试准备 _start_prepare_experiment_for_payload_test 所需的轻量对象、导入入口或断言辅助。"""
     emitted_payloads = []
     try:
         controller.signal_start_worker.disconnect()
@@ -36,6 +43,7 @@ def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
 
 
 class CameraConfigTests(unittest.TestCase):
+    """验证相机配置数据模型和能力应用规则。"""
     def test_app_config_round_trip_preserves_selected_camera_identity(self):
         from sim_control.config_store import app_config_from_dict, app_config_to_dict
         from sim_control.models import AppConfig, CameraConfig
@@ -79,6 +87,7 @@ class CameraConfigTests(unittest.TestCase):
 
 
 def _fake_dcamapi4_for_roi_tests():
+    """为测试准备 _fake_dcamapi4_for_roi_tests 所需的轻量对象、导入入口或断言辅助。"""
     return type(
         "FakeDcamapi4",
         (),
@@ -128,6 +137,7 @@ def _fake_dcamapi4_for_roi_tests():
 
 
 class FusionBtCameraAdapterTests(unittest.TestCase):
+    """验证 Hamamatsu DCAM adapter 的配置、等待和读帧逻辑。"""
     def test_adapters_reject_removed_legacy_kwargs(self):
         from sim_control.adapters import FusionBtCameraAdapter, KopinSlmAdapter, NIDaqAdapter
 
@@ -827,6 +837,7 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
 
 
 class SimAcquisitionControllerTests(unittest.TestCase):
+    """验证采集 controller 的 payload、状态同步和 worker 调度。"""
     def test_payload_capture_helper_does_not_start_internal_worker(self):
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import PatternPreparationResult, SimTaskConfig

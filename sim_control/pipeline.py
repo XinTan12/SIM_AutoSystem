@@ -1,4 +1,9 @@
-﻿from __future__ import annotations
+"""占位重建、特征提取和决策 pipeline。
+
+当前实现用于把采集得到的 9 帧 uint16 图像栈串到后续分析链路：ReconstructionWorker 生成简化重建图，FeatureWorker 提取强度统计，DecisionEngine 产出 release/sort 决策占位结果。它为后续真实重建算法保留线程和信号边界。
+"""
+
+from __future__ import annotations
 
 import traceback
 
@@ -14,6 +19,7 @@ except Exception:  # pragma: no cover - exercised when OpenCV is absent in a dep
 
 
 class ReconstructionWorker(QObject):
+    """占位重建 worker，把 9 帧 stack 压缩成一张重建预览图。"""
     signal_reconstruction_ready = pyqtSignal(object)
     signal_reconstruction_failed = pyqtSignal(str, str)
 
@@ -47,6 +53,7 @@ class ReconstructionWorker(QObject):
 
 
 class FeatureWorker(QObject):
+    """占位特征 worker，从重建图中提取均值、标准差和强度范围。"""
     signal_features_ready = pyqtSignal(object)
     signal_features_failed = pyqtSignal(str, str)
 
@@ -74,6 +81,7 @@ class FeatureWorker(QObject):
 
 
 def _extract_intensity_features(image: np.ndarray) -> dict[str, float]:
+    """从重建图像中提取平均、峰值等占位强度特征，供决策阶段演示。"""
     if cv2 is not None and image.ndim == 2 and image.size > 0:
         try:
             cv_image = np.ascontiguousarray(image)
@@ -98,6 +106,7 @@ def _extract_intensity_features(image: np.ndarray) -> dict[str, float]:
 
 
 class DecisionEngine:
+    """占位决策器，根据特征结果给出 release/sort 决策接口。"""
     def decide(self, feature_result: FeatureResult) -> DecisionResult:
         """Decide keep/sort/invalid based on extracted features.
 

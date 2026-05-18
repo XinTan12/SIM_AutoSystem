@@ -1,3 +1,8 @@
+"""真实硬件适配层和厂商 SDK 扩展点。
+
+这里把 NI USB-6423、Hamamatsu DCAM 和 Kopin/FDD R11 SLM 封装成统一 adapter，向 controller 暴露稳定方法，同时把厂商 DLL、Python sample 路径、Running Order 选择和波形播放细节隔离在本文件内。仿真实现位于 sim_adapters.py，GUI 不应直接调用厂商 SDK。
+"""
+
 from __future__ import annotations
 
 import ctypes
@@ -30,6 +35,7 @@ except Exception:  # pragma: no cover
 
 
 class HardwareError(RuntimeError):
+    """统一表示真实硬件、SDK 调用或设备状态导致的可报告错误。"""
     pass
 
 
@@ -44,6 +50,7 @@ R11_BITPLANE_BYTES = (R11_QXGA_WIDTH // 8) * R11_QXGA_HEIGHT
 R11_BITPLANE_PAGES = R11_BITPLANE_BYTES // R11_PAGE_SIZE
 _REVERSE_BITS_LUT = bytes(int(f"{index:08b}"[::-1], 2) for index in range(256))
 _SUPPORTED_CAMERA_BIT_DEPTHS = (8, 10, 12, 14, 16)
+# Running Order 名称是预烧录 SLM 序列的唯一可读索引，选择逻辑依赖这个命名约定。
 _RUNNING_ORDER_NAME_RE = re.compile(
     r"^(?P<wavelength>\d+)_(?P<pitch>\d+(?:\.\d+)?)_(?P<mode>[A-Za-z0-9]+)_"
     r"(?P<exposure>\d+)ms(?P<single_angle>_ang0)?$"
@@ -51,6 +58,7 @@ _RUNNING_ORDER_NAME_RE = re.compile(
 
 
 def parse_running_order_name(name: str) -> dict[str, Any] | None:
+    """把 R11 Running Order 名称解析成波长、pitch、模式、曝光桶和单角度标记。"""
     match = _RUNNING_ORDER_NAME_RE.match(str(name).strip())
     if match is None:
         return None
@@ -67,6 +75,7 @@ def parse_running_order_name(name: str) -> dict[str, Any] | None:
 
 
 def _target_running_order_exposure_ms(exposure_us: int) -> int:
+    """把任务曝光时间归入 SLM repertoire 支持的 1/10/50 ms Running Order 桶。"""
     exposure_us = int(exposure_us)
     if exposure_us < 10_000:
         return 1
@@ -80,6 +89,7 @@ def find_best_running_order(
     wavelength_nm: int,
     exposure_us: int,
 ) -> tuple[int | None, str, list[str]]:
+    """按当前波长和相机曝光选择最匹配的预烧录 Running Order。"""
     target_exposure_ms = _target_running_order_exposure_ms(exposure_us)
     warnings: list[str] = []
     candidates: list[tuple[int, str]] = []
@@ -110,6 +120,7 @@ def find_best_running_order(
 
 
 def _resolve_r11_dll_path(user_path: str = "") -> Path:
+    """按配置路径和 SDK 默认目录查找 R11CommLib 动态库。"""
     if user_path:
         candidate = Path(user_path)
         if candidate.is_dir():
@@ -140,6 +151,7 @@ def _resolve_r11_dll_path(user_path: str = "") -> Path:
 
 
 def _resolve_dcam_python_dir(user_path: str = "") -> Path:
+    """按配置路径和 SDK 默认目录查找 Hamamatsu DCAM Python 示例绑定目录。"""
     if user_path:
         candidate = Path(user_path)
         if candidate.is_file() and candidate.name.lower() == "dcam.py":
@@ -157,7 +169,9 @@ def _resolve_dcam_python_dir(user_path: str = "") -> Path:
     raise HardwareError(f"DCAM Python sample directory not found. Checked: {default_dir}")
 
 
+# R11 仍支持手动上传 bitplane；正式采集优先使用预烧录 Running Order。
 def _load_r11_bitplane_file(path: Path) -> bytes:
+    """读取 R11 位平面文件并按 flash page 大小补齐，供厂商库烧录。"""
     if path.suffix.lower() == ".bmp":
         with path.open("rb") as handle:
             file_header = handle.read(14)
@@ -206,6 +220,7 @@ def _load_r11_bitplane_file(path: Path) -> bytes:
 
 
 def _iter_r11_flash_pages(bitplane_data: bytes):
+    """把位平面数据切成 R11 flash page，并给出写入顺序。"""
     byte_width = R11_QXGA_WIDTH // 8
     page = bytearray()
     for row in range(R11_QXGA_HEIGHT):
@@ -222,7 +237,9 @@ def _iter_r11_flash_pages(bitplane_data: bytes):
         raise HardwareError("Unexpected partial R11 flash page produced from bitplane payload.")
 
 
+# 这一层只包装 R11CommLib 的 ctypes 调用，让上层 KopinSlmAdapter 不直接处理函数签名。
 class _R11CommLib:
+    """R11CommLib 的 ctypes 薄包装，集中处理 DLL 加载、函数签名和错误码。"""
     FDD_SUCCESS = 0
     FDD_SLAVE_EXCEPTION = 0x12
 
@@ -396,7 +413,9 @@ class _R11CommLib:
         self._check(self.dll.R11_FlashBurn(page_address), "R11_FlashBurn")
 
 
+# DAQ adapter 是 USB-6423 的真实输出边界，负责把 WaveformPlan 播放到 port0 数字线。
 class NIDaqAdapter:
+    """NI USB-6423 数字输出适配器，负责列举设备/线位、播放波形和输出测试脉冲。"""
     def __init__(self):
         self._available = nidaqmx is not None
 
@@ -422,6 +441,7 @@ class NIDaqAdapter:
             return []
 
     def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None:
+        """用 NI-DAQmx 输出已打包的 port0 uint32 波形，并在等待时轮询取消事件。"""
         if not self._available:
             raise HardwareError("nidaqmx is not available; cannot drive NI hardware.")
         try:
@@ -495,7 +515,9 @@ class NIDaqAdapter:
             raise HardwareError(f"Failed to pulse NI line {line_index} on {device_name}: {exc}") from exc
 
 
+# 相机 adapter 同时支持仿真占位和 DCAM SDK 扩展，GUI 只通过统一方法调用它。
 class FusionBtCameraAdapter:
+    """Hamamatsu ORCA-Fusion BT 相机适配器，封装 DCAM 初始化、配置、预览和帧序列读取。"""
     def __init__(self, sdk_path: str = ""):
         self.sdk_path = sdk_path
         self._sdk = None
@@ -1065,6 +1087,7 @@ class FusionBtCameraAdapter:
         frame_callback: Any | None = None,
         stop_event: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]:
+        """从 DCAM 环形缓冲读取 SIM9 图像序列，先消费已到帧，再只等待新增帧。"""
         if not self._armed:
             raise HardwareError("Camera must be armed before reading frame sequence.")
         timestamps: list[float] = []
@@ -1133,7 +1156,9 @@ class FusionBtCameraAdapter:
         return frames, timestamps
 
 
+# SLM adapter 负责连接 R11、枚举/选择 Running Order，并保留手动 pattern 上传扩展点。
 class KopinSlmAdapter:
+    """Kopin/FDD R11 SLM 适配器，负责连接设备、选择 Running Order 和激活图案。"""
     def __init__(self, sdk_path: str = ""):
         self.sdk_path = sdk_path
         self._sdk: _R11CommLib | None = None
@@ -1216,6 +1241,7 @@ class KopinSlmAdapter:
         ]
 
     def select_running_order(self, ro_index: int) -> dict[str, Any]:
+        """选择预烧录 Running Order，并返回采集核心识别的 metadata。"""
         if not self._initialized:
             self.initialize()
         if not self._device_open:
@@ -1325,4 +1351,3 @@ class KopinSlmAdapter:
 
     def prepared_summary(self) -> dict[str, Any]:
         return asdict(self._prepared)
-

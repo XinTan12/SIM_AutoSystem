@@ -1,3 +1,8 @@
+"""PyQt5 UI 布局和生成文件回归测试。
+
+测试重点锁住设置弹窗 DAQ 页、按钮尺寸、页签布局和生成 UI 代码声明，避免后续 UI 修改造成控件重叠、宽度退化或错误手改生成文件。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class UiRegressionTests(unittest.TestCase):
+    """锁定 PyQt5 设置界面和生成 UI 文件的布局回归行为。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()

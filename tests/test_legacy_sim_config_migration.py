@@ -1,3 +1,8 @@
+"""旧版 SIM 配置迁移兼容性测试。
+
+这些用例覆盖旧字段、旧 640nm 命名、旧 pattern_files 长度和本地路径字段的迁移，保证用户历史配置仍能加载成当前 AppConfig。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -12,6 +17,7 @@ if str(CONTROL_WANGBO_ROOT) not in sys.path:
 
 
 class LegacySimConfigMigrationTests(unittest.TestCase):
+    """验证旧配置字段能迁移为当前 SIM 配置 schema。"""
     def test_backend_config_only_keeps_real_hardware_settings(self):
         from sim_control.models import BackendConfig
 

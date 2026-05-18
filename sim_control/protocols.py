@@ -1,3 +1,8 @@
+"""相机、SLM 和 DAQ adapter 的协议边界。
+
+这些 Protocol 描述 controller 需要的最小硬件能力：相机连接/预览/采集，SLM 连接/Running Order/图案激活，DAQ 线位枚举/波形输出/脉冲测试。真实 adapter 和仿真 adapter 都按这些方法对齐。
+"""
+
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
@@ -11,6 +16,7 @@ from .waveform import WaveformPlan
 @runtime_checkable
 class CameraAdapter(Protocol):
 
+    """封装 CameraAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
     def initialize(self) -> None: ...
 
     def list_devices(self) -> list[dict[str, Any]]: ...
@@ -53,6 +59,7 @@ class CameraAdapter(Protocol):
 @runtime_checkable
 class SlmAdapter(Protocol):
 
+    """封装 SlmAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
     def initialize(self) -> None: ...
 
     def list_devices(self) -> list[dict[str, str]]: ...
@@ -79,6 +86,7 @@ class SlmAdapter(Protocol):
 @runtime_checkable
 class DaqAdapter(Protocol):
 
+    """封装 DaqAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
     def list_devices(self, default_device: str = "Dev1") -> list[str]: ...
 
     def list_port0_lines(self, device_name: str | None = None, default_device: str | None = None) -> list[str]: ...

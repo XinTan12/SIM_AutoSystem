@@ -63,6 +63,7 @@
 - `SimSettingsDialog` 不拥有 SLM 生命周期；集成主界面与 SIM controller 必须共享同一个 `slm_adapter`，避免 R11 WinUSB 设备被重复打开。
 - SIM live 预览采用 `latest-frame-wins`：采集线程持续更新最新帧快照，GUI 端轮询显示最新帧，允许丢弃中间帧以避免旧帧积压。
 - `ui_sim_settings_dialog.py` 由 `pyuic5` 从 `.ui` 生成；修改 UI 时编辑 `.ui` 后重新生成，不直接手改生成文件。
+- 每次对项目进行了修改后，必须使用独立 subagent 对本次改动进行 review 审查；审查需明确列出已满足的标准和证据、未满足的标准和原因，以及需要用户人工确认、真机确认或额外业务判断的事项。若当前工具环境无法启动独立 subagent，主 agent 必须先向用户说明原因并请求确认，不得静默自审替代。
 
 ## 当前工作重点
 - 保持 SIM GUI、采集控制与适配器在无真实硬件时仍可通过仿真模式运行。
@@ -87,6 +88,16 @@
 - 明确重建模块接收 `(9, H, W)` `numpy.uint16` 栈后的接口形式、返回结果和回调链路。
 
 ## 最近更新
+- 2026-05-13：在 `AGENTS.md` 中新增“修改后审查机制”：每次项目修改后必须使用独立 subagent review，并固定审查输出为“已满足标准及证据、未满足标准及原因、需要用户人工确认、真机确认或额外业务判断的事项”；若当前工具环境无法启动独立 subagent，主 agent 必须先向用户说明原因并请求确认，不得静默自审替代；同步将该长期规则写入 `PROJECT_MEMORY.md` 和决策日志。
+- 2026-05-12：按 `/review` 结果清理手写 Python 中文结构注释中的模板化低价值 docstring，将 `封装...小段规则`、`执行本模块...`、`创建本模块...` 等泛化说明替换为具体职责说明或删除；保留模块说明、主要类/函数说明和关键流程块注释，不改变运行逻辑、接口或生成 UI 文件。验证：`.venv\Scripts\python.exe -m compileall -q app.py sim_control control_wangbo\main.py tests` 通过，`.venv\Scripts\python.exe -m unittest discover -s tests -q` 通过（164 项测试）；当前 `.venv` 未安装 `pytest`。
+- 2026-05-12：为项目手写 Python 文件补充中文结构注释：覆盖 `app.py`、`sim_control/` 手写模块、`tests/` 和 `control_wangbo/main.py`，增加模块说明、主要类/函数说明和关键流程块注释；未修改生成 UI 文件、`mvsdk.py`、SDK 厂商样例或运行逻辑。验证：`.venv\Scripts\python.exe -m compileall -q app.py sim_control control_wangbo\main.py tests` 通过，`.venv\Scripts\python.exe -m unittest discover -s tests -q` 通过（164 项测试）；当前 `.venv` 未安装 `pytest`，因此 `pytest tests\ -q` 未运行。
+- 2026-05-12：增强 `docs/project_file_annotations.html` 的 Python 代码选区解释：新增离线 `PYTHON_CODE_EXPLANATIONS` 预置解释索引，覆盖 SIM 主模块、集成主界面和历史相机/MCU 线程的关键函数、类和常量；右键解释优先展示教学式分节说明，未命中时回退到本地规则解释；仍不调用外部 AI、网络 API 或后端。
+- 2026-05-12：审查并修正 `docs/project_file_annotations.html` 模块页渲染：模块“推荐阅读顺序”和“模块下所有文件”只展示本模块文件，跨模块依赖改列为“相关外部文件”，避免配置、脚本、硬件资源等模块误把外部分组文件显示为本组文件。
+- 2026-05-12：增强 `docs/project_file_annotations.html` 静态项目注释页：改为左右栏独立滚动的离线阅读工具，新增模块总览、模块内文件关系和阅读顺序、文件完整内容查看、`.repz11` 按 ZIP 资源包解读方式，以及 Python 代码选区右键解释功能；仍不改变运行代码、配置 schema 或硬件控制逻辑。
+- 2026-05-12：修正项目文件注释页中 `patterns/2d_3.5.repz11` 的阅读说明：该 R11 repertoire 资源应按 zip 容器处理，复制后改后缀为 `.zip` 并解压查看内部 `.rep`、`.seq11` 和 PNG 图案文件；不要把它作为普通二进制十六进制文件解释。
+- 2026-05-12：修正 `docs/project_file_annotations.html` 注释页自身的版本文件说明条目，并让搜索索引覆盖右侧实际展示的阅读建议、协作关系和修改注意事项，避免新增文档入库后覆盖声明失真或搜索漏项。
+- 2026-05-12：新增 `docs/project_file_annotations.html` 静态中文项目文件注释页，覆盖当前版本管理内项目文件，面向首次接触项目和代码基础较弱的读者解释每个文件的项目作用、阅读顺序、代码结构、协作关系和修改注意事项；该文档不改变运行代码、配置 schema 或硬件控制逻辑。
+- 2026-05-11：将 OMC / oh-my-claudecode 生成的本地项目缓存目录 `.omc/` 加入 `.gitignore`，避免工具元数据污染 `git status` 或被误提交；该目录不属于远程源码内容。
 - 2026-05-11：继续优化 SIM 采集设置弹窗 DAQ 页布局：在 `DAQ Wiring` 组内为设备行、线路矩阵、测试行和底部之间增加均衡的垂直弹性间隔，并将线路矩阵行距加大，避免空白集中在组底部；同步重新生成 `ui_sim_settings_dialog.py`，新增 UI 回归断言验证三段垂直空白分布和底部剩余空间。
 - 2026-05-11：美化 SIM 采集设置弹窗布局：保留 `Laser` / `DAQ` 双页签和原生 PyQt5 外观，将标题区固定为紧凑高度，页签区域改为主体扩展，DAQ 页移除左右居中 spacer 并让 `DAQ Wiring` 区域铺开；放宽 DAQ 线路与测试目标下拉框宽度，并用底部弹性 spacer 避免内容被垂直分散。已从 `.ui` 重新生成 `ui_sim_settings_dialog.py`，并新增 UI 几何回归断言覆盖标题高度、页签起点、DAQ 组宽度和下拉框宽度。
 - 2026-05-11：根据 review 发现的问题补齐 SIM Timing 默认配置修正：`config/sim_control_config.json` 中 `timing.inter_frame_gap_us` 已从 `10_000 us` 改为 `50_000 us`，与 `TimingConfig` 默认值、controller/worker 正式采集生效规则和主界面摘要显示保持一致。

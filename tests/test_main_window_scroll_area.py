@@ -1,3 +1,8 @@
+"""历史 CellSorting 主界面滚动容器测试。
+
+测试确认 setup_scrollable_cellsorting_ui 会把固定尺寸的旧 UI 放进 QScrollArea，既保留原布局尺寸，又允许较小窗口滚动查看。
+"""
+
 import importlib
 import sys
 import types
@@ -21,6 +26,7 @@ sys.modules.setdefault("FastCameraThread", types.ModuleType("FastCameraThread"))
 
 
 class MainWindowScrollAreaTests(unittest.TestCase):
+    """验证历史主界面滚动容器封装不破坏窗口基础属性。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()

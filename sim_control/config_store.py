@@ -1,4 +1,9 @@
-﻿from __future__ import annotations
+"""SIM 配置文件读写、迁移和校验。
+
+这个模块负责把 JSON 配置与 AppConfig 数据类互相转换，并在加载旧配置时执行 schema 迁移，例如补齐 9 个 pattern 文件、将旧 640nm 命名迁移到 647nm、移除本机绝对 config_path。GUI 和集成主界面都通过这里读写默认配置。
+"""
+
+from __future__ import annotations
 
 from dataclasses import asdict
 import json
@@ -15,6 +20,7 @@ CURRENT_CONFIG_VERSION = 3
 
 
 def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
+    """按目标长度补齐或截断 pattern 文件列表，保持 SIM9 schema 稳定。"""
     merged = list(values[:desired_length])
     if len(merged) < desired_length:
         merged.extend([""] * (desired_length - len(merged)))
@@ -36,6 +42,7 @@ def _migrate_v0_to_v1(payload: dict) -> dict:
 
 
 def _migrate_v1_to_v2(payload: dict) -> dict:
+    """执行一个配置 schema 版本迁移步骤，只处理该版本新增或变更的字段。"""
     backend = dict(payload.get("backend") or {})
     backend.setdefault("simulation_mode", False)
     payload["backend"] = backend
@@ -44,6 +51,7 @@ def _migrate_v1_to_v2(payload: dict) -> dict:
 
 
 def _migrate_v2_to_v3(payload: dict) -> dict:
+    """执行一个配置 schema 版本迁移步骤，只处理该版本新增或变更的字段。"""
     payload.setdefault("selected_running_order", "")
     payload["config_version"] = 3
     return payload
@@ -56,7 +64,9 @@ _MIGRATIONS: list[tuple[int, callable]] = [
 ]
 
 
+# 迁移按版本串联执行，保证旧配置逐步升级而不是靠一次性猜测字段。
 def _run_migrations(payload: dict) -> dict:
+    """按版本顺序执行配置迁移，把旧 JSON 升级到当前 schema。"""
     version = int(payload.get("config_version", 0))
     for from_version, migrate_fn in _MIGRATIONS:
         if version <= from_version:
@@ -66,6 +76,7 @@ def _run_migrations(payload: dict) -> dict:
 
 
 def app_config_to_dict(config: AppConfig) -> dict:
+    """把 AppConfig 展开为可写入 JSON 的 schema 字典。"""
     payload = asdict(config)
     payload.pop("config_path", None)
     payload["pattern_files"] = _merge_list(payload.get("pattern_files", []))
@@ -73,6 +84,7 @@ def app_config_to_dict(config: AppConfig) -> dict:
 
 
 def app_config_from_dict(payload: dict) -> AppConfig:
+    """从 JSON 字典恢复 AppConfig，并完成旧字段兼容和默认值补齐。"""
     payload = _run_migrations(dict(payload))
     daq = DaqLineConfig(**(payload.get("daq") or {}))
     camera = CameraConfig(**(payload.get("camera") or {}))
@@ -101,6 +113,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
 
 
 def validate_app_config(config: AppConfig) -> list[str]:
+    """集中校验输入条件，把错误尽早转成可报告的问题。"""
     errors: list[str] = []
     camera = config.camera
     timing = config.timing
@@ -139,6 +152,7 @@ def validate_app_config(config: AppConfig) -> list[str]:
 
 
 def load_app_config(path: str | Path | None = None) -> AppConfig:
+    """从默认或指定路径读取配置，完成迁移和数据类转换。"""
     config_path = Path(path or DEFAULT_CONFIG_PATH)
     if not path and not config_path.exists() and LEGACY_CONFIG_PATH.exists():
         with LEGACY_CONFIG_PATH.open("r", encoding="utf-8") as handle:
@@ -159,6 +173,7 @@ def load_app_config(path: str | Path | None = None) -> AppConfig:
 
 
 def save_app_config(config: AppConfig, path: str | Path | None = None) -> Path:
+    """把当前 AppConfig 写回 JSON 文件，并记录实际保存路径。"""
     config_path = Path(path or config.config_path or DEFAULT_CONFIG_PATH)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config.config_path = str(config_path)

@@ -1,3 +1,8 @@
+"""uint16 预览灰度映射工具测试。
+
+测试覆盖手动灰度上限、自动百分位对比度、快速 resize+LUT 路径和输出尺寸，确保显示优化不改变预期灰度行为。
+"""
+
 import unittest
 
 import numpy as np
@@ -13,6 +18,7 @@ from sim_control.preview_contrast import (
 
 
 class PreviewContrastTests(unittest.TestCase):
+    """验证 uint16 到 uint8 预览转换的手动和自动对比度路径。"""
     def test_manual_conversion_matches_existing_gray_max_scaling(self):
         frame = np.array([[0, 1000, 5000, 70000]], dtype=np.uint32)
 

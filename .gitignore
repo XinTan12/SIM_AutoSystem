@@ -9,6 +9,7 @@ __pycache__/
 htmlcov/
 
 .superpowers/
+.omc/
 .codex_tmp_pyc/
 .playwright-mcp/
 .history/

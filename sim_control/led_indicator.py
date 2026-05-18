@@ -1,3 +1,8 @@
+"""SIM 硬件状态指示灯控件。
+
+这个小控件用 PyQt5 自绘圆点表达 camera、SLM、DAQ 等状态。主界面只需设置 gray/yellow/green/red 等状态字符串，paintEvent 会把状态映射成颜色。
+"""
+
 from __future__ import annotations
 
 from PyQt5.QtCore import QSize, Qt
@@ -6,6 +11,7 @@ from PyQt5.QtWidgets import QWidget
 
 
 class LedIndicator(QWidget):
+    """用固定尺寸圆点展示硬件连接、准备、错误等状态。"""
     COLORS = {
         "gray": QColor("#8b949e"),
         "yellow": QColor("#f2b705"),

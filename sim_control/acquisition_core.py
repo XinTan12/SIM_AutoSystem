@@ -1,3 +1,8 @@
+"""脱离 Qt 的单次 SIM 采集核心。
+
+这个文件把一次 9 帧采集拆成纯 Python 流程：校验取消状态，应用相机配置，准备相机/SLM/DAQ，播放 USB-6423 波形，读取图像栈，并在 finally 中确保相机 disarm 与 DAQ 全低。controller 和 GUI 只负责调度它，硬件动作通过 adapter 协议注入。
+"""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -21,23 +26,28 @@ FrameCallback = Callable[[int, float], None]
 
 
 class AcquisitionCancelled(RuntimeError):
+    """表示采集流程被用户或 stop_event 主动取消，区别于硬件错误。"""
     pass
 
 
 def _noop_status(status: str, payload: dict[str, Any]) -> None:
+    """默认状态回调占位，让采集核心可在无 UI 时复用。"""
     pass
 
 
 def _stop_requested(stop_event: Any | None) -> bool:
+    """集中检查停止信号，兼容 threading.Event 和测试里的轻量替身。"""
     return bool(stop_event is not None and stop_event.is_set())
 
 
 def _raise_if_cancelled(stop_event: Any | None) -> None:
+    """把停止请求转换为采集取消异常，统一交给上层控制器收尾。"""
     if _stop_requested(stop_event):
         raise AcquisitionCancelled("Acquisition cancelled.")
 
 
 def _validate_acquisition_result(stack: Any, timestamps: list[float], expected_frames: int) -> np.ndarray:
+    """集中校验输入条件，把错误尽早转成可报告的问题。"""
     if not isinstance(stack, np.ndarray):
         raise HardwareError("Camera returned a non-NumPy acquisition stack.")
     if stack.ndim != 3:
@@ -53,6 +63,7 @@ def _validate_acquisition_result(stack: Any, timestamps: list[float], expected_f
     return stack
 
 
+# 核心采集流程保持脱离 Qt，便于 GUI worker、测试和未来自动化入口复用同一套硬件顺序。
 def run_single_acquisition(
     task: SimTaskConfig,
     daq_config: DaqLineConfig,
@@ -94,6 +105,7 @@ def run_single_acquisition(
         emitted_frames.add(int(frame_index))
         on_status("frame_captured", {"task_id": task_id, "frame_index": int(frame_index), "timestamp": float(timestamp)})
 
+    # 从 arm 到 DAQ 播放再到读帧必须保证 finally 清理，避免异常后硬件停在触发或高电平状态。
     try:
         _raise_if_cancelled(stop_event)
         camera.apply_config(task.camera)

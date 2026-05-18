@@ -1,3 +1,8 @@
+"""SIM 相机 ROI 尺寸预设与对齐规则。
+
+这里负责根据传感器尺寸生成常用 ROI 预设，把界面标签转成宽高，并按相机步进约束修正 ROI 原点。集成主界面和真实相机配置都会复用这些规则，避免 GUI 与 adapter 采用不同 ROI 对齐方式。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -32,6 +37,7 @@ def _normalize_size_presets(
 
 
 def build_sim_camera_size_presets(sensor_width: int, sensor_height: int) -> tuple[tuple[int, int], ...]:
+    """按传感器全幅尺寸生成全幅、半幅和四分之一幅 ROI 预设。"""
     sensor_width = max(1, int(sensor_width))
     sensor_height = max(1, int(sensor_height))
     presets: list[tuple[int, int]] = []

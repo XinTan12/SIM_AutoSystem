@@ -1,3 +1,8 @@
+"""集成主界面 SIM 预览重启与正式采集状态测试。
+
+本文件用大量轻量 spy/mock 对象调用 control_wangbo.main.MainWindow 方法，验证 live preview 停止、重启、轮询、ROI 控件提交、正式采集前后状态恢复和设置弹窗共享 adapter 行为。
+"""
+
 import importlib
 import sys
 import time
@@ -25,10 +30,12 @@ sys.modules.setdefault("FastCameraThread", types.ModuleType("FastCameraThread"))
 
 
 def load_legacy_main_module():
+    """为测试准备 load_legacy_main_module 所需的轻量对象、导入入口或断言辅助。"""
     return importlib.import_module("control_wangbo.main")
 
 
 class TimerSpy:
+    """记录 QTimer.start/stop 调用，便于断言预览重启节流行为。"""
     def __init__(self):
         self.start_calls = []
         self.stop_calls = 0
@@ -41,6 +48,7 @@ class TimerSpy:
 
 
 class PreviewControllerSpy:
+    """模拟预览控制器的 active/stopping 状态和 stop 调用。"""
     def __init__(self):
         self.stop_calls = []
         self.active = True
@@ -51,6 +59,7 @@ class PreviewControllerSpy:
 
 
 class LabelSpy:
+    """记录 QLabel.setText 的最后一次文本，用于状态和 FPS 断言。"""
     def __init__(self):
         self.text = None
 
@@ -59,6 +68,7 @@ class LabelSpy:
 
 
 class ButtonSpy:
+    """记录按钮 enabled、text、style 状态，替代真实 QPushButton。"""
     def __init__(self):
         self.enabled = None
         self.text = None
@@ -75,6 +85,7 @@ class ButtonSpy:
 
 
 class SpinBoxSpy:
+    """模拟 QSpinBox 的值、最大值和启用状态。"""
     def __init__(self, value=0, maximum=2304, enabled=True):
         self._value = value
         self._maximum = maximum
@@ -107,6 +118,7 @@ class SpinBoxSpy:
 
 
 class SignalBlockingSpinBoxSpy(SpinBoxSpy):
+    """扩展 SpinBoxSpy，记录 blockSignals 与 setValue 时的阻塞状态。"""
     def __init__(self, value=0, maximum=2304, enabled=True):
         super().__init__(value=value, maximum=maximum, enabled=enabled)
         self._signals_blocked = False
@@ -123,6 +135,7 @@ class SignalBlockingSpinBoxSpy(SpinBoxSpy):
 
 
 class ComboBoxSpy:
+    """模拟 QComboBox 的文本、索引、启用状态和条目列表。"""
     def __init__(self, text="", current_index=-1, enabled=True):
         self._text = text
         self._current_index = current_index
@@ -176,6 +189,7 @@ class ComboBoxSpy:
 
 
 class SimPreviewRestartTests(unittest.TestCase):
+    """验证集成主界面 live preview 的停止、重启和采集前后状态切换。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()
@@ -1446,6 +1460,7 @@ class SimPreviewRestartTests(unittest.TestCase):
 
 
 class SimPreviewControllerTests(unittest.TestCase):
+    """验证预览 controller 与 worker 信号、线程状态之间的协作。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()
@@ -1568,6 +1583,7 @@ class SimPreviewControllerTests(unittest.TestCase):
 
 
 class SimPreviewPollingTests(unittest.TestCase):
+    """验证主界面轮询 latest-frame-wins 预览快照时的显示行为。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()
@@ -1673,6 +1689,7 @@ class SimPreviewPollingTests(unittest.TestCase):
 
 
 class SimCameraSpinBoxCommitTests(unittest.TestCase):
+    """验证 SIM ROI 和曝光 spinbox 只在确认输入后提交值。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()
@@ -1777,6 +1794,7 @@ class SimCameraSpinBoxCommitTests(unittest.TestCase):
 
 
 class SimSettingsDialogTests(unittest.TestCase):
+    """验证设置弹窗复用外部 adapter、延迟刷新和 DAQ/SIM 测试路径。"""
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()

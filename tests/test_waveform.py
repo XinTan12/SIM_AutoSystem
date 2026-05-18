@@ -1,3 +1,8 @@
+"""NI USB-6423 波形生成测试。
+
+这些测试验证短曝光/帧间隔告警、SLM finish 脉冲边界、标准 SIM9 50ms 间隔和 packed-only 波形与完整角色矩阵的一致性。
+"""
+
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class WaveformValidationTests(unittest.TestCase):
+    """验证 SIM9 DAQ 波形生成、告警和 packed-only 输出一致性。"""
     def test_waveform_plan_exposes_warnings_for_short_exposure_and_gap(self):
         from sim_control.models import DaqLineConfig, TimingConfig
         from sim_control.waveform import NIDaqWaveformBuilder
