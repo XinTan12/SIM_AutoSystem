@@ -1,6 +1,41 @@
-"""SIM 控制链路共享的数据模型。
+"""SIM 控制链路共享的数据模型与常量。
 
-所有配置、采集任务、采集结果、重建结果、特征结果和决策结果都在这里用 dataclass 定义。其它模块通过这些数据类传递结构化信息，避免用松散 dict 在 GUI、controller、adapter 和 pipeline 之间漂移。
+作用：
+    本文件用 ``dataclass`` 集中定义**整个 SIM 控制链路**会跨模块流转的所有
+    结构化数据：硬件配置（``DaqLineConfig``/``CameraConfig``/``TimingConfig``/
+    ``BackendConfig``）、采集任务（``SimTaskConfig``）、采集中间产物
+    （``PatternPreparationResult``/``AcquisitionBatch``）以及后续重建/特征/
+    决策的结果对象。所有其它模块通过这些数据类传递信息，从而避免在 GUI、
+    controller、adapter、pipeline 之间用松散 dict 漂移。
+    同时这里也定义了 USB-6423 DAQ 线位的项目固定约定（DAQ_ROLE_ORDER/
+    DEFAULT_DAQ_LINE_INDICES）、波长 → DAQ 角色映射（LASER_ROLE_MAP）和
+    默认帧间隔（DEFAULT_INTER_FRAME_GAP_US）。
+
+协作关系：
+    上游：``config_store.py``（JSON 互转）、``sim_control/gui.py``（GUI 绑定）、
+          ``controller.py``（采集流程）。
+    下游：被 ``adapters.py``、``sim_adapters.py``、``waveform.py``、
+          ``acquisition_core.py``、``summary.py`` 等模块读取使用。
+    相关：所有 ``tests/test_*`` 用例都从这里 import 数据类来构造夹具。
+
+关键概念：
+    - ``DAQ_ROLE_ORDER``：DAQ 8 路角色的固定排列，决定波形构建器中 role →
+      line 索引的对应顺序，**绝对不可改顺序**，否则会和真实接线错位。
+    - ``DEFAULT_DAQ_LINE_INDICES``：项目唯一固定的 USB-6423 端口/线位映射，
+      与硬件实际接线一致（slm_enable=0/trigger=1/finish=2/cam=5/
+      405=8/488=6/561=7/647=9）。
+    - ``DEFAULT_INTER_FRAME_GAP_US = 50_000``：SIM9 正式采集帧间隔默认 50 ms，
+      只有相机推荐值（recommended_inter_frame_gap_us）小于该值时才能覆盖。
+    - ``SUPPORTED_LASERS = (405, 488, 561, 647)``：项目唯一支持的四档波长。
+    - 9 帧 pattern：``pattern_files`` 列表始终 9 槽位长度，Running Order
+      模式下槽位值由元数据覆盖（实际由 SLM 端 RO 控制）。
+
+维护要点：
+    - dataclass 字段顺序与默认值是 JSON schema 的事实定义，新增字段必须同步
+      更新 ``config_store.py`` 的迁移逻辑，避免老配置无法加载。
+    - 不要在数据类里写硬件 IO、SDK 调用或耗时计算；它们必须保持纯数据形态。
+    - ``DAQ_ROLE_ORDER`` 与 ``DEFAULT_DAQ_LINE_INDICES`` 的修改会影响波形
+      builder、GUI 摘要和真机接线之间的协议，必须经过硬件验证才能改。
 """
 
 from __future__ import annotations
@@ -12,6 +47,8 @@ import time
 import uuid
 
 
+# DAQ 角色名顺序：波形构建、配置文件 schema、UI 摘要都按此顺序枚举 8 路 TTL。
+# 顺序固定为「SLM 三线 + 相机触发 + 四档激光」，与项目接线约定对齐。
 DAQ_ROLE_ORDER = [
     "slm_enable_line",
     "slm_trigger_line",
@@ -23,6 +60,8 @@ DAQ_ROLE_ORDER = [
     "laser_647_line",
 ]
 
+# 项目唯一规范化的 USB-6423 port0 线位号。任何修改都必须经过硬件验收。
+# 来源：AGENTS.md「关键约束」与 PROJECT_MEMORY.md「当前硬件与集成状态」。
 DEFAULT_DAQ_LINE_INDICES = {
     "slm_enable_line": 0,
     "slm_trigger_line": 1,
@@ -36,15 +75,32 @@ DEFAULT_DAQ_LINE_INDICES = {
 
 
 def default_daq_line_name(device_name: str, role: str) -> str:
-    """按照项目固定的 USB-6423 端口约定生成单条 TTL 线名。"""
+    """按项目固定的 USB-6423 端口约定生成一条 TTL 线名。
+
+    返回：
+        形如 ``"Dev1/port0/line5"``，由 ``device_name`` 与
+        ``DEFAULT_DAQ_LINE_INDICES[role]`` 拼接而成。
+
+    参数：
+        device_name: NI MAX 中的设备名（默认 ``"Dev1"``）。
+        role: ``DAQ_ROLE_ORDER`` 中的某个角色键；不在表中会触发 ``KeyError``。
+    """
+    # 拼接结果用作 nidaqmx 的 channel 名，必须符合 ``<device>/port<N>/line<N>``。
     return f"{device_name}/port0/line{DEFAULT_DAQ_LINE_INDICES[role]}"
 
 
 def default_daq_line_map(device_name: str) -> dict[str, str]:
-    """生成默认 DAQ 角色到物理 TTL 线的完整映射。"""
+    """生成默认 DAQ 角色→物理 TTL 线的完整 8 项映射。
+
+    用途：
+        ``DaqLineConfig`` 字段默认值、新建配置和 GUI 复位都用这个函数生成基线，
+        避免在多处复制硬编码。
+    """
+    # 字典推导一次性生成 8 个键值对，保持与 ``DAQ_ROLE_ORDER`` 同步。
     return {role: default_daq_line_name(device_name, role) for role in DAQ_ROLE_ORDER}
 
 
+# 激光波长（nm）→ DAQ 角色键的映射。controller 选定波长后用它定位要拉高的 TTL。
 LASER_ROLE_MAP = {
     405: "laser_405_line",
     488: "laser_488_line",
@@ -52,36 +108,82 @@ LASER_ROLE_MAP = {
     647: "laser_647_line",
 }
 
+# 项目支持的 4 档激光波长，UI 下拉、波形 builder 校验都从这里取。
 SUPPORTED_LASERS = tuple(LASER_ROLE_MAP.keys())
-# 50ms 是当前正式 SIM9 默认帧间隔；只有更短的相机推荐值才允许覆盖。
+# 50 ms 是正式 SIM9 默认帧间隔。仅当相机针对当前 ROI/接口推荐的
+# ``recommended_inter_frame_gap_us`` < 50_000 时才允许覆盖此默认。
 DEFAULT_INTER_FRAME_GAP_US = 50_000
 
 
 def _default_pattern_files() -> list[str]:
-    """为 SIM9 采集准备 9 个图案槽位，Running Order 模式会用元数据覆盖。"""
+    """为 SIM9 采集准备 9 个图案文件槽位。
+
+    用途：
+        SIM 任务必须有 9 个图案路径槽位（与 Running Order 9 帧对齐）；
+        Running Order 模式下槽位值由 ``PatternPreparationResult.metadata``
+        覆盖，实际并不读取这些字符串，但 9 的长度仍是协议级约束。
+
+    返回：
+        长度为 9 的空字符串列表。
+    """
+    # 9 个空字符串槽位：上层负责按需填入文件路径或留空（Running Order 模式）。
     return [""] * 9
 
 
 def new_task_id(prefix: str = "sim") -> str:
-    """用时间戳和短 UUID 生成采集任务目录/记录可读且低冲突的标识。"""
+    """生成「时间戳 + 短 UUID」组合的采集任务 ID。
+
+    用途：
+        采集结果目录、日志、TIFF 文件名都用同一个 task_id 串起来，便于事后排查。
+        时间戳保证可读、UUID 前缀保证同一秒内多次启动也不冲突。
+
+    参数：
+        prefix: 业务前缀（默认 ``"sim"``），便于在其它生成器中复用此函数。
+    """
+    # 1) 取本地时间精确到秒，避免微秒造成不必要的文件名长度。
     ts = time.strftime("%Y%m%d_%H%M%S")
+    # 2) 拼接 UUID4 的前 8 个 hex 字符作为去重后缀，足够区分同秒多次启动。
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
 
 
 def effective_inter_frame_gap_us(recommended_gap_us: int | float | None = None) -> int:
-    """在手动间隔和相机建议读出时间之间取可用帧间隔，默认保持 50 ms。"""
+    """在默认 50 ms 与相机推荐间隔之间选出实际生效的帧间隔。
+
+    规则：
+        - 推荐值 None / 缺失：使用 ``DEFAULT_INTER_FRAME_GAP_US`` = 50 ms。
+        - 推荐值 ≥ 50 ms：仍使用 50 ms（项目策略不允许放慢默认时序）。
+        - 推荐值 < 50 ms 且 ≥ 0：使用推荐值（更快读出时缩短帧间）。
+
+    返回：
+        实际写入波形 builder 的 ``inter_frame_gap_us``（整数微秒）。
+    """
+    # 1) 没有相机推荐：直接回落默认值。
     if recommended_gap_us is None:
         return DEFAULT_INTER_FRAME_GAP_US
+    # 2) 强转 int（兼容 numpy 浮点等类型），保持后续比较确定。
     gap_us = int(recommended_gap_us)
+    # 3) 推荐值在 [0, 50_000) 之间才有"更快"的意义，超过默认则继续使用默认。
     if 0 <= gap_us < DEFAULT_INTER_FRAME_GAP_US:
         return gap_us
     return DEFAULT_INTER_FRAME_GAP_US
 
 
-# 以下数据类是跨 GUI、controller、adapter、pipeline 传递状态的稳定结构。
+# ============================================================================
+# 跨模块流转的数据类（以下全部是纯数据载体，不应包含硬件 IO / 阻塞调用）
+# ============================================================================
 @dataclass
 class DaqLineConfig:
-    """保存 USB-6423 设备名和各 SIM TTL 角色对应的物理线位。"""
+    """保存 USB-6423 设备名和各 SIM TTL 角色对应的物理线位。
+
+    职责：
+        - 8 个角色字段（``slm_enable_line`` ... ``laser_647_line``）记录线名。
+        - 提供 ``line_map()`` 把字段重新组织为角色→线名字典，供波形 builder 与
+          adapter 直接使用。
+
+    协作：
+        - 由 ``AppConfig`` 持有，作为 SIM 配置 JSON 的一部分被读写。
+        - 被 ``waveform.NIDaqWaveformBuilder`` 校验后转成 packed port 波形。
+    """
     device_name: str = "Dev1"
     slm_enable_line: str = default_daq_line_name("Dev1", "slm_enable_line")
     slm_trigger_line: str = default_daq_line_name("Dev1", "slm_trigger_line")
@@ -93,13 +195,27 @@ class DaqLineConfig:
     laser_647_line: str = default_daq_line_name("Dev1", "laser_647_line")
 
     def line_map(self) -> dict[str, str]:
-        """把 dataclass 字段重新组织成采集核心需要的角色到线名字典。"""
+        """把 dataclass 字段重新组织成采集核心需要的角色→线名字典。
+
+        返回：
+            8 项字典，键来自 ``DAQ_ROLE_ORDER``、值是配置里实际填写的线名。
+        """
+        # 使用 ``getattr`` 按 DAQ_ROLE_ORDER 顺序读字段，避免硬编码键名。
         return {role: getattr(self, role) for role in DAQ_ROLE_ORDER}
 
 
 @dataclass
 class CameraConfig:
-    """保存相机选择、ROI、曝光、位深、超时和触发模式等采集参数。"""
+    """保存相机选择、ROI、曝光、位深、超时和触发模式等采集参数。
+
+    职责：
+        是 GUI / Worker / Adapter 之间「相机怎么用」的唯一配置载体；
+        被 ``apply_config()`` 翻译成 DCAM 属性写入硬件。
+
+    维护要点：
+        - ``trigger_mode`` 默认 ``external_level``：与 NI USB-6423 输出的电平触发匹配。
+        - ROI 必须经过 ``sim_camera_presets.normalize_sim_camera_roi`` 校准后再下发。
+    """
     device_index: int = 0
     device_label: str = ""
     roi_x: int = 0
@@ -114,7 +230,18 @@ class CameraConfig:
 
 @dataclass
 class TimingConfig:
-    """保存 DAQ 波形采样率、脉冲宽度、帧间隔和 SLM 保护时间。"""
+    """保存 DAQ 波形采样率、脉冲宽度、帧间隔和 SLM 保护时间。
+
+    职责：
+        提供波形 builder 必需的四个时序量；DAQ 页面已不再向用户暴露这些字段，
+        但它们仍作为内部可调参数保留，便于实验时修改。
+
+    维护要点：
+        - ``inter_frame_gap_us`` 默认 50_000 µs，与 ``DEFAULT_INTER_FRAME_GAP_US`` 一致；
+          运行时实际生效值由 ``effective_inter_frame_gap_us`` 决定。
+        - ``edge_pulse_us`` 控制 SLM trigger / camera trigger / laser 的上升沿持续时间，
+          一般不需要改。
+    """
     sample_rate_hz: int = 1_000_000
     edge_pulse_us: int = 50
     inter_frame_gap_us: int = DEFAULT_INTER_FRAME_GAP_US
@@ -123,7 +250,12 @@ class TimingConfig:
 
 @dataclass
 class BackendConfig:
-    """保存真实 SDK 路径和仿真模式开关，决定 controller 创建哪类 adapter。"""
+    """保存真实 SDK 路径和仿真模式开关，决定 controller 创建哪类 adapter。
+
+    维护要点：
+        - ``simulation_mode=True`` 时 controller 优先创建 ``sim_adapters.*Sim*``。
+        - SDK 路径为空时 adapter 会用其内部默认搜索路径回落。
+    """
     fusion_bt_sdk_path: str = ""
     slm_sdk_path: str = ""
     simulation_mode: bool = False
@@ -131,7 +263,16 @@ class BackendConfig:
 
 @dataclass
 class SimTaskConfig:
-    """描述一次 SIM9 采集任务，包括激光、图案/RO、相机参数和时序参数。"""
+    """描述一次 SIM9 采集任务的全部输入参数。
+
+    职责：
+        把"波长、9 帧 pattern / Running Order、相机参数、时序参数"打包成一次性
+        交给 ``acquisition_core.run_single_acquisition()`` 的请求结构。
+
+    维护要点：
+        - ``pattern_files`` 始终 9 项，长度由 ``_default_pattern_files`` 锁定。
+        - Running Order 模式下 ``running_order_name`` 非空且 ``pattern_files`` 内容不被读取。
+    """
     laser_wavelength_nm: int = 488
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     running_order_name: str = ""
@@ -141,7 +282,16 @@ class SimTaskConfig:
 
 @dataclass
 class PatternPreparationResult:
-    """记录 SLM 图案文件、句柄和 Running Order 元数据，供采集核心激活。"""
+    """记录 SLM 图案准备结果（文件、句柄、模式元数据）。
+
+    职责：
+        ``SlmAdapter.program_patterns()`` 完成后返回此结构，``activate_prepared_patterns()``
+        会据此把图案/RO 真正写到 SLM。
+
+    维护要点：
+        - Running Order 模式：``handles=[-1]``、``metadata["mode"]="running_order"``。
+        - 普通 pattern 模式：``handles`` 为 SDK 返回的图案句柄列表。
+    """
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     handles: list[int] = field(default_factory=list)
     prepared_at: float = 0.0
@@ -150,7 +300,17 @@ class PatternPreparationResult:
 
 @dataclass
 class AcquisitionBatch:
-    """承载一次采集完成后的图像 stack、时间戳和采集元数据。"""
+    """承载一次 SIM9 采集完成后的图像 stack、时间戳和元数据。
+
+    职责：
+        ``acquisition_core.run_single_acquisition()`` 的返回结构；下游重建/特征
+        pipeline 直接消费 ``stack``（``(9, H, W)`` ``numpy.uint16``）。
+
+    维护要点：
+        - ``stack`` 形状固定 ``(frame_count, H, W)``，dtype 必须 ``uint16``，
+          否则后续 pipeline 接口约束失败。
+        - ``timestamps`` 长度与 ``frame_count`` 一致，单位为秒。
+    """
     task_id: str
     stack: Any
     timestamps: list[float]
@@ -162,7 +322,13 @@ class AcquisitionBatch:
 
 @dataclass
 class ReconstructionResult:
-    """承载占位重建阶段输出的预览图、元数据和成功状态。"""
+    """承载占位重建阶段输出的预览图、元数据和成功状态。
+
+    维护要点：
+        - ``preview_image`` 当前是占位 numpy 2D 数组；实际重建接入后将替换为
+          同学的算法产物（高分辨重建图）。
+        - 出错时 ``succeeded=False`` 并在 ``metadata`` 中写入原因。
+    """
     task_id: str
     preview_image: Any
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -171,7 +337,12 @@ class ReconstructionResult:
 
 @dataclass
 class FeatureResult:
-    """承载特征提取阶段输出的特征字典、元数据和成功状态。"""
+    """承载特征提取阶段输出的特征字典、元数据和成功状态。
+
+    维护要点：
+        ``features`` 字典键名应与下游决策器约定，例如
+        ``{"intensity_mean": ..., "intensity_std": ..., "max_xy": ...}``。
+    """
     task_id: str
     features: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -180,7 +351,13 @@ class FeatureResult:
 
 @dataclass
 class DecisionResult:
-    """承载 release/sort 决策、原因、评分和后续回传所需元数据。"""
+    """承载 release/sort 决策、原因、评分和回传所需元数据。
+
+    维护要点：
+        - ``decision`` 字符串应当只取自约定集合（如 ``"release"``、``"sort"``、
+          ``"discard"``）。
+        - ``score`` 用于让上层做阈值或比较，0.0 表示尚未评分。
+    """
     task_id: str
     decision: str
     reason: str
@@ -190,7 +367,18 @@ class DecisionResult:
 
 @dataclass
 class AppConfig:
-    """聚合 SIM GUI 的完整配置，是 JSON 配置读写和界面同步的根对象。"""
+    """聚合 SIM GUI 的完整配置，是 JSON 配置读写和界面同步的根对象。
+
+    职责：
+        - 持有四个子配置（``daq`` / ``camera`` / ``timing`` / ``backend``）。
+        - 记录用户级选择（``selected_laser_nm`` / ``selected_running_order`` /
+          ``pattern_files``）和元信息（``config_version`` / ``config_path``）。
+        - 提供 ``resolved_config_path()`` 帮调用方拿到合法 ``Path``。
+
+    维护要点：
+        - ``config_version`` 升一档时务必在 ``config_store._MIGRATIONS`` 加迁移函数。
+        - ``config_path`` 用作"上次保存的位置"提示，不参与 JSON schema 校验。
+    """
     daq: DaqLineConfig = field(default_factory=DaqLineConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
@@ -202,7 +390,13 @@ class AppConfig:
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:
-        """把可选字符串配置路径规范化为 Path，便于保存和重载时复用。"""
+        """把可选字符串 ``config_path`` 规范化为 ``Path``。
+
+        返回：
+            ``Path`` 对象；当 ``config_path`` 为空字符串或 ``None`` 时返回 ``None``，
+            调用方据此决定回落到默认配置路径。
+        """
+        # 空字符串视为"未指定"，避免向 ``Path("")`` 后续做相对路径解析。
         if not self.config_path:
             return None
         return Path(self.config_path)

@@ -1,6 +1,35 @@
 """集成主界面 SIM 预览重启与正式采集状态测试。
 
-本文件用大量轻量 spy/mock 对象调用 control_wangbo.main.MainWindow 方法，验证 live preview 停止、重启、轮询、ROI 控件提交、正式采集前后状态恢复和设置弹窗共享 adapter 行为。
+作用：
+    SIM 系统最厚的测试集（2100+ 行），覆盖 ``control_wangbo/main.py`` 与
+    ``sim_control/preview.py``、``sim_control/gui.py`` 在以下场景的不变量：
+        1. live preview 停止 / 重启的状态机：``_active`` / ``_stopping`` flag、
+           ``signal_status_changed("preview_started"/"preview_stopped")`` 的广播顺序、
+           ``QTimer`` 轮询逻辑、worker 重入保护。
+        2. ROI / 曝光 / bit_depth SpinBox 提交：用户改控件值时主界面应同步刷新
+           SIM 摘要并把更新写回 ``AppConfig``；live preview 期间限制部分字段不可编辑。
+        3. 正式采集前后状态恢复：发起 9 帧采集前必须先停 live preview，采集完成
+           或失败后必须能恢复到之前的预览请求状态。
+        4. SimSettingsDialog 共享 adapter：弹窗不应该 disconnect 主界面已连接的相机/SLM。
+        5. ``running_order_selected`` 状态被广播时主界面摘要刷新；``patterns_prepared``
+           会更新 controller 内部 ``pattern_result`` 但不影响 GUI 预览。
+
+协作关系：
+    上游：``unittest``、``unittest.mock``、``numpy``、PyQt5 (QtCore/QtTest/QtWidgets)、
+          ``importlib`` 用于动态导入 ``control_wangbo.main``。
+    下游：``control_wangbo.main.MainWindow`` 与 helper 函数、``sim_control.preview``、
+          ``sim_control.gui``、``sim_control.controller``。
+
+维护要点：
+    - 本测试在 import 阶段就给 ``MCUTriggerThread`` / ``mvsdk`` / ``FastCameraThread``
+      注入空 stub（参考 ``test_main_window_scroll_area.py``）；改动主界面 import
+      路径时需要同步更新这些 stub。
+    - 测试中 ``MainWindow`` 用真实 PyQt5 实例化但 controller / camera_adapter / slm_adapter
+      通过 ``SimpleNamespace`` mock；可以放心地在无硬件环境下运行。
+    - 几个类的测试范围：``SimPreviewRestartTests`` 覆盖 live preview 状态机；
+      ``SimPreviewControllerTests`` 覆盖 ``preview.py``；``SimPreviewPollingTests``
+      覆盖 GUI 端 latest-frame-wins 轮询；``SimCameraSpinBoxCommitTests`` 覆盖
+      ROI/曝光控件提交时机；``SimSettingsDialogTests`` 覆盖共享 adapter 行为。
 """
 
 import importlib
@@ -189,6 +218,17 @@ class ComboBoxSpy:
 
 
 class SimPreviewRestartTests(unittest.TestCase):
+    """``control_wangbo/main.py`` 中 SIM live preview 停 / 启 / 重启的状态机测试。
+
+    覆盖：
+        - 用户按 "Live" → 必须先 ``apply_camera_config`` 再 ``start preview``。
+        - "Live" 按下时状态机切到 ``preview_requested``；worker 广播
+          ``preview_started`` 后切到 ``preview_active``。
+        - 正式采集前必须停 live preview；停止失败要阻止采集并恢复请求状态。
+        - 9 帧采集完成后若用户原本在 live preview，应自动重启 live preview。
+        - 设置弹窗打开/关闭不影响 live preview 状态。
+    """
+
     """验证集成主界面 live preview 的停止、重启和采集前后状态切换。"""
     @classmethod
     def setUpClass(cls):
@@ -1460,6 +1500,16 @@ class SimPreviewRestartTests(unittest.TestCase):
 
 
 class SimPreviewControllerTests(unittest.TestCase):
+    """``sim_control/preview.py`` 中 ``SimPreviewWorker`` / ``SimPreviewController`` 的状态机测试。
+
+    覆盖：
+        - ``prepare_for_start`` 清取消标志 + 清最新快照。
+        - ``request_stop`` 线程安全清快照。
+        - ``publish_preview_frame`` 单调递增 sequence、覆盖旧快照。
+        - ``take_latest_frame`` "取走即清"（latest-frame-wins）。
+        - ``SimPreviewController.start`` 拒绝在 active/stopping 时重入。
+    """
+
     """验证预览 controller 与 worker 信号、线程状态之间的协作。"""
     @classmethod
     def setUpClass(cls):
@@ -1583,6 +1633,14 @@ class SimPreviewControllerTests(unittest.TestCase):
 
 
 class SimPreviewPollingTests(unittest.TestCase):
+    """GUI 主界面 QTimer 轮询 ``take_latest_frame`` 的回归测试。
+
+    覆盖：
+        - QTimer interval 与 ``gui_preview_fps_limit`` 一致。
+        - 轮询取到 None 时不应崩溃也不应刷新图像。
+        - 取到帧后调用 ``preview_contrast.fast_*`` 走显示压缩链路。
+    """
+
     """验证主界面轮询 latest-frame-wins 预览快照时的显示行为。"""
     @classmethod
     def setUpClass(cls):
@@ -1689,6 +1747,13 @@ class SimPreviewPollingTests(unittest.TestCase):
 
 
 class SimCameraSpinBoxCommitTests(unittest.TestCase):
+    """ROI / 曝光 / bit_depth SpinBox 编辑后提交时机的回归测试。
+
+    覆盖：
+        - 失去焦点 / Enter 键提交时同步刷新 AppConfig 与摘要。
+        - live preview 期间禁用部分字段，停止后恢复可编辑。
+    """
+
     """验证 SIM ROI 和曝光 spinbox 只在确认输入后提交值。"""
     @classmethod
     def setUpClass(cls):
@@ -1794,6 +1859,14 @@ class SimCameraSpinBoxCommitTests(unittest.TestCase):
 
 
 class SimSettingsDialogTests(unittest.TestCase):
+    """``SimSettingsDialog`` 与主界面共享 ``slm_adapter`` / ``camera_adapter`` 的回归测试。
+
+    覆盖：
+        - 共享 adapter 的弹窗在 ``closeEvent`` 中不应 disconnect 已连接的硬件。
+        - ``signal_settings_saved`` 把更新的 ``AppConfig`` 回传给主界面。
+        - SIM 采集测试路径要求 SLM 已连接，否则抛 HardwareError。
+    """
+
     """验证设置弹窗复用外部 adapter、延迟刷新和 DAQ/SIM 测试路径。"""
     @classmethod
     def setUpClass(cls):
@@ -1963,9 +2036,9 @@ class SimSettingsDialogTests(unittest.TestCase):
             dialog,
             "_write_uint16_tiff",
         ):
-            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
+            result = dialog._run_sim_acquisition_test(dialog.config.daq)
 
-        self.assertEqual(output_path, Path("dummy.tiff"))
+        self.assertEqual(result.output_path, Path("dummy.tiff"))
         slm_adapter.select_running_order.assert_called_once_with(1)
         dialog.close()
 
@@ -2004,9 +2077,9 @@ class SimSettingsDialogTests(unittest.TestCase):
             "sim_control.gui.create_camera_adapter_for_backend",
             side_effect=AssertionError("Should reuse injected camera adapter"),
         ):
-            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
+            result = dialog._run_sim_acquisition_test(dialog.config.daq)
 
-        self.assertEqual(output_path, Path("dummy.tiff"))
+        self.assertEqual(result.output_path, Path("dummy.tiff"))
         camera_adapter.apply_config.assert_called_once()
         camera_adapter.arm.assert_called_once_with(frame_count=9)
         camera_adapter.disarm.assert_called_once_with()
@@ -2035,7 +2108,7 @@ class SimSettingsDialogTests(unittest.TestCase):
         camera_adapter.is_connected.return_value = True
         camera_adapter.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
         waveform_builder = mock.Mock()
-        waveform_plan = object()
+        waveform_plan = SimpleNamespace(duration_s=4.5001)
         waveform_builder.build.return_value = waveform_plan
         with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
@@ -2058,10 +2131,15 @@ class SimSettingsDialogTests(unittest.TestCase):
         ), mock.patch(
             "sim_control.gui.NIDaqWaveformBuilder",
             return_value=waveform_builder,
+        ), mock.patch(
+            "time.perf_counter",
+            return_value=11.25,
         ):
-            output_path = dialog._run_sim_acquisition_test(dialog.config.daq)
+            result = dialog._run_sim_acquisition_test(dialog.config.daq, acquisition_started_at_s=10.0)
 
-        self.assertEqual(output_path, Path("dummy.tiff"))
+        self.assertEqual(result.output_path, Path("dummy.tiff"))
+        self.assertAlmostEqual(result.actual_acquisition_duration_s, 1.25)
+        self.assertAlmostEqual(result.daq_waveform_duration_s, 4.5001)
         self.assertEqual(dialog.config.camera.exposure_us, 20_000)
         self.assertEqual(dialog.config.timing.inter_frame_gap_us, 10_000)
         slm_adapter.select_running_order.assert_called_once_with(1)
@@ -2072,6 +2150,45 @@ class SimSettingsDialogTests(unittest.TestCase):
         timing_config = waveform_builder.build.call_args.kwargs["timing"]
         self.assertEqual(timing_config.inter_frame_gap_us, 50_000)
         dialog.daq_adapter.play_waveform.assert_called_once_with("Dev1", waveform_plan)
+        dialog.close()
+
+    def test_sim_acquisition_pulse_message_shows_actual_and_daq_durations_from_command_start(self):
+        from sim_control.gui import SIM_ACQUISITION_TEST_ID, SimAcquisitionTestResult, SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+        dialog.combo_test_target.addItem("SIM采集", SIM_ACQUISITION_TEST_ID)
+        dialog.combo_test_target.setCurrentIndex(0)
+        events = []
+        dialog._current_daq_config = mock.Mock(
+            side_effect=lambda: events.append("daq_config") or dialog.config.daq
+        )
+        dialog._run_sim_acquisition_test = mock.Mock(
+            return_value=SimAcquisitionTestResult(
+                output_path=Path("dummy.tiff"),
+                actual_acquisition_duration_s=1.25,
+                daq_waveform_duration_s=0.6301,
+            )
+        )
+
+        with mock.patch("time.perf_counter", side_effect=lambda: events.append("timer") or 123.0), mock.patch(
+            "sim_control.gui.QMessageBox.information"
+        ) as info_mock:
+            dialog._run_pulse_test()
+
+        self.assertEqual(events[:2], ["timer", "daq_config"])
+        dialog._run_sim_acquisition_test.assert_called_once_with(
+            dialog.config.daq,
+            acquisition_started_at_s=123.0,
+        )
+        message = info_mock.call_args.args[2]
+        self.assertIn("16位 TIFF 已保存到:\ndummy.tiff", message)
+        self.assertIn("SIM采集实际用时: 1250.000 ms", message)
+        self.assertIn("DAQ完整播放时长: 630.100 ms", message)
         dialog.close()
 
 

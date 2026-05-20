@@ -1,6 +1,21 @@
-"""SLM Running Order 名称解析和选择规则测试。
+"""SLM Running Order 名称解析与选择规则测试。
 
-用例验证 405/488/561/647 波长、曝光桶、3.5 pitch、2d 模式和非 _ang0 条件，防止正式采集选错预烧录 Running Order。
+作用：
+    覆盖 ``adapters.parse_running_order_name`` 与 ``find_best_running_order`` 的核心
+    用例：
+        1. 名称解析正确（波长、pitch、mode、曝光桶、_ang0 标记）。
+        2. ``_ang0`` 单角度变体被识别为 ``single_angle=True``。
+        3. 非法名字返回 ``None``，不会污染候选列表。
+        4. 选择规则严格按 (3.5, 2d, 非 ang0, 曝光桶) 四联条件筛选。
+        5. 当没有匹配项时返回 ``(None, "", warnings)``，由 GUI 转为对话框文本。
+
+协作关系：
+    上游：``unittest``。
+    下游：``sim_control.adapters.parse_running_order_name`` 与 ``find_best_running_order``。
+
+维护要点：
+    - 曝光桶规则：``<10 ms`` → 1ms 桶；``10..50 ms`` → 10ms 桶；``≥50 ms`` → 50ms 桶。
+    - 修改命名约定时同步 ``adapters._RUNNING_ORDER_NAME_RE`` 正则与本测试。
 """
 
 import sys
@@ -14,12 +29,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class RunningOrderSelectionTests(unittest.TestCase):
-    """验证 SLM Running Order 名称解析和最佳匹配选择。"""
+    """覆盖 SLM Running Order 名称解析与最佳匹配选择。"""
+
     def test_parse_running_order_name_extracts_fields(self):
+        """``"488_3.5_2d_10ms"`` 应被解析为 5 个结构化字段。"""
         from sim_control.adapters import parse_running_order_name
 
         parsed = parse_running_order_name("488_3.5_2d_10ms")
 
+        # 严格相等：保护正则命名组数量与字段类型。
         self.assertEqual(
             parsed,
             {
@@ -32,6 +50,7 @@ class RunningOrderSelectionTests(unittest.TestCase):
         )
 
     def test_parse_running_order_name_marks_single_angle_variant(self):
+        """``_ang0`` 后缀必须把 ``single_angle`` 标为 True。"""
         from sim_control.adapters import parse_running_order_name
 
         parsed = parse_running_order_name("488_3.5_2d_10ms_ang0")
@@ -39,14 +58,18 @@ class RunningOrderSelectionTests(unittest.TestCase):
         self.assertTrue(parsed["single_angle"])
 
     def test_parse_running_order_name_rejects_malformed_names(self):
+        """缺字段或非数字波长 → 返回 None；调用方 should skip。"""
         from sim_control.adapters import parse_running_order_name
 
+        # 缺曝光后缀 / 波长非数字 都应返回 None。
         self.assertIsNone(parse_running_order_name("488_3.5_2d"))
         self.assertIsNone(parse_running_order_name("bad_3.5_2d_10ms"))
 
     def test_find_best_running_order_uses_exposure_buckets_and_ignores_ang0(self):
+        """对每个曝光桶都正确选出非 _ang0 / 3.5 / 2d 的候选。"""
         from sim_control.adapters import find_best_running_order
 
+        # 构造一个 6 项 RO 列表：包含 _ang0、非 3.5、非 2d 等"应被忽略"项。
         running_orders = [
             (0, "488_3.5_2d_1ms_ang0"),
             (1, "488_3.5_2d_1ms"),
@@ -56,6 +79,7 @@ class RunningOrderSelectionTests(unittest.TestCase):
             (5, "488_3.5_3d_1ms"),
         ]
 
+        # 4 个曝光桶边界：9_999 落 1ms；10_000 → 10ms；49_999 → 10ms；50_000 → 50ms。
         cases = [
             (9_999, (1, "488_3.5_2d_1ms")),
             (10_000, (2, "488_3.5_2d_10ms")),
@@ -66,15 +90,19 @@ class RunningOrderSelectionTests(unittest.TestCase):
             with self.subTest(exposure_us=exposure_us):
                 index, name, warnings = find_best_running_order(running_orders, 488, exposure_us)
                 self.assertEqual((index, name), expected)
+                # 找到候选时 warnings 应为空。
                 self.assertEqual(warnings, [])
 
     def test_find_best_running_order_reports_no_match(self):
+        """没匹配到 RO 时返回 (None, "", [warning, ...])。"""
         from sim_control.adapters import find_best_running_order
 
+        # 列表里只有 _ang0 变体，因此筛选后必然为空。
         index, name, warnings = find_best_running_order([(0, "488_3.5_2d_1ms_ang0")], 488, 5_000)
 
         self.assertIsNone(index)
         self.assertEqual(name, "")
+        # warnings 应至少有一条，便于 GUI 翻译。
         self.assertTrue(warnings)
 
 

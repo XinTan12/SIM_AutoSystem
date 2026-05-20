@@ -1,6 +1,22 @@
 """配置校验与 controller 阻断行为测试。
 
-这些用例确保 AppConfig 中非法相机、Timing 或 DAQ 线位会被报告，并验证 controller 在发起 worker 前先拦截无效配置。
+作用：
+    覆盖两条防御链路：
+        1. ``validate_app_config`` 能列出多种非法字段的错误（曝光、ROI、采样率、
+           边沿脉冲、激光波长）。
+        2. ``SimAcquisitionController`` 在 ``start_single_acquisition`` 前必须先
+           跑同一套校验，让 worker 永远拿不到非法 payload。
+    同时验证：``selected_running_order`` 已选中时允许空 ``pattern_files``（RO 模式下
+    pattern 列表是占位的）。
+
+协作关系：
+    上游：``unittest``。
+    下游：``sim_control.config_store.validate_app_config``、
+          ``sim_control.controller.SimAcquisitionController``、``sim_control.models``。
+
+维护要点：
+    - 新增 AppConfig 字段时，应同步在 ``validate_app_config`` 添加校验并在此处加用例。
+    - 用例必须验证"controller 拒绝时不发 worker 信号"，否则后台 worker 可能跑非法配置。
 """
 
 import sys
@@ -8,17 +24,21 @@ import unittest
 from pathlib import Path
 
 
+# 把项目根加入 sys.path，避免本测试在不同工作目录下 import 失败。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
 class ConfigValidationTests(unittest.TestCase):
-    """验证配置校验错误和 controller 启动前阻断行为。"""
+    """覆盖 ``validate_app_config`` 与 controller 启动前阻断行为。"""
+
     def test_validate_app_config_reports_invalid_camera_and_timing_values(self):
+        """5 个非法字段（曝光 0、ROI 负、采样率过低、脉冲 0、波长非法）都应报错。"""
         from sim_control.config_store import validate_app_config
         from sim_control.models import AppConfig
 
+        # 1) 构造一个包含 5 类问题的极端配置：每条都应出现在错误列表里。
         config = AppConfig()
         config.camera.exposure_us = 0
         config.camera.roi_width = -1
@@ -28,6 +48,7 @@ class ConfigValidationTests(unittest.TestCase):
 
         errors = validate_app_config(config)
 
+        # 2) 用 ``any(...)`` 而非完全相等的字符串匹配，让校验文案小幅调整不破坏测试。
         self.assertTrue(any("exposure_us" in error for error in errors))
         self.assertTrue(any("roi_width" in error for error in errors))
         self.assertTrue(any("sample_rate_hz" in error for error in errors))
@@ -35,9 +56,11 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertTrue(any("selected_laser_nm" in error for error in errors))
 
     def test_validate_app_config_allows_empty_legacy_pattern_files_when_running_order_is_selected(self):
+        """RO 模式下 ``pattern_files=[]`` 合法（pattern 列表只是占位）。"""
         from sim_control.config_store import validate_app_config
         from sim_control.models import AppConfig
 
+        # 显式 ``selected_running_order`` 非空，校验应跳过 pattern_files 长度检查。
         config = AppConfig(pattern_files=[], selected_running_order="488_3.5_2d_1ms")
 
         errors = validate_app_config(config)
@@ -45,22 +68,29 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertFalse(any("pattern_files" in error for error in errors))
 
     def test_controller_blocks_invalid_config_before_emitting_worker_start(self):
+        """controller 应在 ``start_single_acquisition`` 前抛 ValueError，且不发 worker 信号。"""
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import BackendConfig, SimTaskConfig
 
+        # 1) 用仿真 backend 构造 controller，避免触发真实硬件初始化。
         controller = SimAcquisitionController(BackendConfig(simulation_mode=True))
         emitted_payloads = []
+        # 2) 监听 ``signal_start_worker``；预期它在本用例中**不**被触发。
         controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+        # 3) 模拟"已 prepare patterns"，让 controller 跳过 handles 检查直奔 validate。
         controller.pattern_result.handles = list(range(9))
 
         try:
+            # 4) 故意把 exposure 设为 0，触发 ``validate_app_config`` 抛错。
             task = SimTaskConfig()
             task.camera.exposure_us = 0
             with self.assertRaisesRegex(ValueError, "exposure_us"):
                 controller.start_single_acquisition(task)
         finally:
+            # 5) 不论成功失败都 shutdown，避免后续测试受 worker 线程影响。
             controller.shutdown()
 
+        # 6) ``signal_start_worker`` 永远不应被触发：controller 必须在 validate 失败时立刻 raise。
         self.assertEqual(emitted_payloads, [])
 
 

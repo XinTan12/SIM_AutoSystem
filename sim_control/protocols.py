@@ -1,6 +1,34 @@
-"""相机、SLM 和 DAQ adapter 的协议边界。
+"""相机、SLM 和 DAQ adapter 的协议（Protocol）边界。
 
-这些 Protocol 描述 controller 需要的最小硬件能力：相机连接/预览/采集，SLM 连接/Running Order/图案激活，DAQ 线位枚举/波形输出/脉冲测试。真实 adapter 和仿真 adapter 都按这些方法对齐。
+作用：
+    本文件定义三个 ``typing.Protocol``，列出 controller 需要从硬件层得到的
+    **最小**能力集合：
+        - ``CameraAdapter``：枚举/连接相机、应用配置、预览、武装/采集 9 帧。
+        - ``SlmAdapter``：枚举/连接 SLM、列出 Running Order、激活预烧录 RO 或
+          普通 9 帧 pattern。
+        - ``DaqAdapter``：枚举设备/线位、播放 ``WaveformPlan``、把所有线置低、
+          测试单线脉冲。
+    真实 adapter（``adapters.py``）和仿真 adapter（``sim_adapters.py``）都按
+    这些方法实现，从而让 controller 与测试可以面向同一个抽象编程。
+
+协作关系：
+    上游：``controller.py`` 与 ``tests/`` 中的 mock adapter。
+    下游：``adapters.py`` 提供真实硬件实现；``sim_adapters.py`` 提供仿真实现。
+    相关：``models.py`` 提供参数与返回值类型；``waveform.py`` 提供
+          ``WaveformPlan``。
+
+关键概念：
+    - ``@runtime_checkable`` 让 ``isinstance(x, CameraAdapter)`` 仅做"方法名
+      存在性"检查，不验证签名；测试里用得到。
+    - Protocol 体内方法只写 ``...``（无实现），形式上是抽象签名声明。
+
+维护要点：
+    - 修改 Protocol 方法签名前，必须先确保 ``adapters.py``、``sim_adapters.py``、
+      ``controller.py``、相关测试都已同步；任何一处漏改都会让运行期失败。
+    - 不要在 Protocol 中堆砌可选 helper；Protocol 应只保留 controller 真正
+      调用的方法，其它工具方法放具体实现类即可。
+    - Protocol 方法 docstring 不放在 ``...`` 上方会有解析歧义，**保持
+      ``def xxx(self, ...) -> T: ...`` 同一行结尾**，docstring 放在类签名下方。
 """
 
 from __future__ import annotations
@@ -15,8 +43,21 @@ from .waveform import WaveformPlan
 
 @runtime_checkable
 class CameraAdapter(Protocol):
+    """controller 期望的相机最小能力集合。
 
-    """封装 CameraAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
+    职责：
+        - 设备枚举/连接（``list_devices`` / ``connect`` / ``disconnect``）。
+        - 配置下发（``apply_config`` 把 ``CameraConfig`` 翻译成 DCAM 属性）。
+        - 实时预览（``start_preview`` / ``read_preview_frame`` / ``stop_preview``），
+          采用 latest-frame-wins 模型。
+        - SIM9 采集（``arm`` / ``read_frame_sequence`` / ``disarm``），返回
+          ``(9, H, W)`` ``uint16`` stack 与时间戳。
+
+    协作：
+        被 ``SimAcquisitionController`` 直接调用；真实实现在
+        ``FusionBtCameraAdapter``，仿真实现在 ``SimulatedCameraAdapter``。
+    """
+
     def initialize(self) -> None: ...
 
     def list_devices(self) -> list[dict[str, Any]]: ...
@@ -58,8 +99,20 @@ class CameraAdapter(Protocol):
 
 @runtime_checkable
 class SlmAdapter(Protocol):
+    """controller 期望的 SLM 最小能力集合。
 
-    """封装 SlmAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
+    职责：
+        - 设备枚举/连接。
+        - Running Order 列举 / 选择（正式 SIM 采集走 RO 路径）。
+        - 普通图案准备 / 激活（保留兼容旧调试路径）。
+        - 暴露 ``prepared_summary`` 供 GUI 摘要使用。
+
+    协作：
+        真实实现在 ``KopinSlmAdapter``，仿真实现在 ``SimulatedSlmAdapter``。
+        ``SimSettingsDialog`` 不应持有 SLM 生命周期，必须共享 controller 的
+        ``slm_adapter`` 实例，避免 R11 WinUSB 设备被重复打开。
+    """
+
     def initialize(self) -> None: ...
 
     def list_devices(self) -> list[dict[str, str]]: ...
@@ -85,8 +138,18 @@ class SlmAdapter(Protocol):
 
 @runtime_checkable
 class DaqAdapter(Protocol):
+    """controller 期望的 DAQ 最小能力集合。
 
-    """封装 DaqAdapter 对应的硬件或仿真实现，让上层只依赖统一 adapter 方法。"""
+    职责：
+        - 设备/线位枚举（GUI 下拉用）。
+        - 播放 ``WaveformPlan``（一次 SIM9 采集的核心动作）。
+        - 把所有 SIM 相关线置低（采集结束或停止后做安全归位）。
+        - 单线脉冲测试（DAQ 设置弹窗的诊断按钮使用）。
+
+    协作：
+        真实实现在 ``NIDaqAdapter``，仿真实现在 ``SimulatedDaqAdapter``。
+    """
+
     def list_devices(self, default_device: str = "Dev1") -> list[str]: ...
 
     def list_port0_lines(self, device_name: str | None = None, default_device: str | None = None) -> list[str]: ...

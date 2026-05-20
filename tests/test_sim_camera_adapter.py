@@ -1,6 +1,32 @@
-"""真实相机 adapter 与采集 controller 的综合测试。
+"""``FusionBtCameraAdapter`` 与 ``SimAcquisitionController`` 的综合测试。
 
-这些测试用 mock DCAM 模块和 controller payload 捕获方式，验证 ROI/bit-depth 应用、frame wait、Running Order 状态同步、worker preflight 和采集任务发射，不依赖真实硬件。
+作用：
+    本文件是 SIM 系统最厚的测试集，覆盖：
+        - ``CameraConfig`` round-trip：device_index/label、ROI、bit_depth、曝光等字段
+          在 ``app_config_*_dict`` 转换前后保持一致。
+        - 真实 ``FusionBtCameraAdapter`` 的 ROI 对齐、bit_depth 选择、readout speed 锁定、
+          ``apply_config`` 错误回滚、``cap_transferinfo`` 路径、``read_preview_frame``
+          dtype 等行为。这些都用 mock DCAM 模块替代真实 ``dcam.py`` / ``dcamapi4``。
+        - ``SimAcquisitionController`` worker payload 字段：``start_single_acquisition``
+          与 ``start_prepare_experiment`` 投递给 worker 的字典必须包含
+          ``initialize_hardware/apply_daq_config/apply_camera_config/prepare_running_order``
+          等开关、task/daq_config/pattern_result 引用、stop_event 引用。
+        - Worker 中相机 / SLM / DAQ 预备阶段顺序：相机 ``apply_config`` 在 SLM
+          ``select_running_order`` 之前；``prepare_only`` 路径不进 DAQ 播放。
+        - controller 状态同步：``running_order_selected`` 状态广播让 controller 也更新
+          ``pattern_result`` / ``selected_running_order``。
+
+协作关系：
+    上游：``unittest``、``unittest.mock``、``numpy``、``threading``。
+    下游：``sim_control.adapters.FusionBtCameraAdapter``、``sim_control.controller``、
+          ``sim_control.config_store``、``sim_control.models``、``sim_control.waveform``。
+
+维护要点：
+    - 真实 DCAM SDK 不可用时本测试依然能跑（全靠 mock）；改动 ``adapters.py`` 中
+      DCAM 调用顺序前，请先阅读本测试覆盖的属性写入序列。
+    - ``_start_*_for_payload_test`` 这两个 helper 把 controller 的 ``signal_start_worker``
+      重新绑定到本地 list，便于断言 worker payload 内容；用完测试不要忘了
+      ``controller.shutdown()`` 避免 QThread 泄漏。
 """
 
 import sys
@@ -19,8 +45,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
-    """为测试准备 _start_single_acquisition_for_payload_test 所需的轻量对象、导入入口或断言辅助。"""
+    """断开 controller 默认的 ``signal_start_worker`` 信号并改接到本地 list。
+
+    用途：
+        许多测试需要"controller 发起 worker 时"捕获 payload 内容做断言。该 helper
+        让 ``start_single_acquisition`` 把 payload 投递到 ``emitted_payloads``，
+        而不是真正的 worker。
+    返回：
+        ``(task_id, emitted_payloads)``；后者会在 emit 后追加 payload dict。
+    """
     emitted_payloads = []
+    # 旧绑定可能不存在；``TypeError/RuntimeError`` 都安全吞掉。
     try:
         controller.signal_start_worker.disconnect()
     except (TypeError, RuntimeError):
@@ -31,7 +66,7 @@ def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
 
 
 def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
-    """为测试准备 _start_prepare_experiment_for_payload_test 所需的轻量对象、导入入口或断言辅助。"""
+    """同 ``_start_single_acquisition_for_payload_test``，但走 prepare-only 路径。"""
     emitted_payloads = []
     try:
         controller.signal_start_worker.disconnect()
@@ -43,7 +78,7 @@ def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
 
 
 class CameraConfigTests(unittest.TestCase):
-    """验证相机配置数据模型和能力应用规则。"""
+    """覆盖 ``CameraConfig`` 在 dict round-trip 与默认值层面的不变量。"""
     def test_app_config_round_trip_preserves_selected_camera_identity(self):
         from sim_control.config_store import app_config_from_dict, app_config_to_dict
         from sim_control.models import AppConfig, CameraConfig
@@ -137,7 +172,14 @@ def _fake_dcamapi4_for_roi_tests():
 
 
 class FusionBtCameraAdapterTests(unittest.TestCase):
-    """验证 Hamamatsu DCAM adapter 的配置、等待和读帧逻辑。"""
+    """覆盖 ``FusionBtCameraAdapter`` 在 mock DCAM SDK 下的 ROI/位深/触发/读帧行为。
+
+    本测试用一组手写 mock 替代真实 ``dcam.py`` / ``dcamapi4``：
+        - ``apply_config`` 写入属性顺序、错误回滚、ROI 步进对齐、bit_depth 选择。
+        - ``read_frame_sequence`` 优先消费 ``cap_transferinfo`` 已到帧，再 wait 新增帧。
+        - ``read_preview_frame`` dtype/uint16 转换。
+        - 通过 ``mock.patch.object`` 替换模块内的 ``importlib.import_module`` 来注入假 DCAM 模块。
+    """
     def test_adapters_reject_removed_legacy_kwargs(self):
         from sim_control.adapters import FusionBtCameraAdapter, KopinSlmAdapter, NIDaqAdapter
 
@@ -837,7 +879,16 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
 
 
 class SimAcquisitionControllerTests(unittest.TestCase):
-    """验证采集 controller 的 payload、状态同步和 worker 调度。"""
+    """覆盖 ``SimAcquisitionController`` 的 payload 字段、状态同步与 worker 调度。
+
+    重点验证：
+        - ``start_single_acquisition`` 与 ``start_prepare_experiment`` 投递给 worker
+          的 payload 包含正确开关与共享 adapter 引用。
+        - ``running_order_selected`` / ``patterns_prepared`` / ``camera_config_applied``
+          状态信号被 controller 正确转发并更新本地缓存。
+        - ``stop()`` 把 stop_event 置位且不直接接触硬件。
+        - ``shutdown()`` 收尾 QThread 与 adapter disconnect。
+    """
     def test_payload_capture_helper_does_not_start_internal_worker(self):
         from sim_control.controller import SimAcquisitionController
         from sim_control.models import PatternPreparationResult, SimTaskConfig
