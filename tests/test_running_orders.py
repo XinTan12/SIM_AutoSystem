@@ -106,5 +106,47 @@ class RunningOrderSelectionTests(unittest.TestCase):
         self.assertTrue(warnings)
 
 
+    def test_find_z_scan_running_order_accepts_only_488_zscan3p_presets(self):
+        """Z-scan 只能选择 488 nm 专用三相位 RO，且按固定 preset 精确匹配。"""
+        from sim_control.adapters import find_z_scan_running_order, parse_z_scan_running_order_name
+
+        running_orders = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "561_3.5_2d_zscan3p_8ms"),
+            (2, "488_3.5_2d_zscan3p_5ms"),
+            (3, "488_3.5_2d_zscan3p_8ms"),
+            (4, "488_4.0_2d_zscan3p_8ms"),
+        ]
+
+        parsed = parse_z_scan_running_order_name("488_3.5_2d_zscan3p_8ms")
+        self.assertEqual(
+            parsed,
+            {
+                "wavelength_nm": 488,
+                "pitch": "3.5",
+                "mode": "2d",
+                "exposure_preset_ms": 8,
+            },
+        )
+
+        index, name, warnings = find_z_scan_running_order(running_orders, exposure_preset_ms=8)
+
+        self.assertEqual((index, name), (3, "488_3.5_2d_zscan3p_8ms"))
+        self.assertEqual(warnings, [])
+
+    def test_find_z_scan_running_order_reports_missing_preset(self):
+        """缺少指定 z-scan preset 时应返回 warning，而不是回退到正式 SIM9 RO。"""
+        from sim_control.adapters import find_z_scan_running_order
+
+        index, name, warnings = find_z_scan_running_order(
+            [(0, "488_3.5_2d_10ms"), (1, "488_3.5_2d_zscan3p_5ms")],
+            exposure_preset_ms=14,
+        )
+
+        self.assertIsNone(index)
+        self.assertEqual(name, "")
+        self.assertTrue(any("z-scan" in warning.lower() for warning in warnings))
+
+
 if __name__ == "__main__":
     unittest.main()

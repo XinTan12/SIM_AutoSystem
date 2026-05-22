@@ -236,6 +236,67 @@ class SimPreviewRestartTests(unittest.TestCase):
         if cls.app is None:
             cls.app = QtWidgets.QApplication([])
 
+    def test_reconstruction_runtime_status_does_not_mark_hardware_leds_failed(self):
+        legacy_main = load_legacy_main_module()
+
+        class Led:
+            state = "gray"
+
+        class Label:
+            text = ""
+
+            def setText(self, text):
+                self.text = text
+
+        leds = {key: Led() for key in ("camera", "slm", "daq", "reconstruction")}
+        labels = {key: Label() for key in ("camera", "slm", "daq", "reconstruction")}
+        window = SimpleNamespace(
+            sim_runtime_leds=leds,
+            sim_runtime_status_labels=labels,
+        )
+        window.set_sim_runtime_led_state = lambda led, state: setattr(led, "state", state)
+
+        legacy_main.MainWindow.update_sim_runtime_status_widgets(window, "reconstruction_failed", {})
+
+        self.assertEqual(leds["reconstruction"].state, "red")
+        self.assertEqual(labels["reconstruction"].text, "Failed")
+        self.assertEqual(leds["camera"].state, "gray")
+        self.assertEqual(leds["slm"].state, "gray")
+        self.assertEqual(leds["daq"].state, "gray")
+
+    def test_reconstruction_runtime_led_matches_existing_led_visual_size(self):
+        legacy_main = load_legacy_main_module()
+        from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
+
+        host = QtWidgets.QWidget()
+        ui = Ui_Single_Cell_Sorting()
+        ui.setupUi(host)
+        window = SimpleNamespace(ui=ui)
+        window.set_sim_runtime_led_state = lambda led, state: legacy_main.MainWindow.set_sim_runtime_led_state(
+            window, led, state
+        )
+
+        legacy_main.MainWindow.setup_sim_runtime_status_widgets(window)
+
+        reconstruction_led = window.sim_runtime_leds["reconstruction"]
+        self.assertTrue(hasattr(ui, "led_simRuntimeReconstruction"))
+        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionName"))
+        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionStatus"))
+        self.assertIs(reconstruction_led, ui.led_simRuntimeReconstruction)
+        self.assertIs(window.sim_runtime_status_labels["reconstruction"], ui.lbl_simRuntimeReconstructionStatus)
+        self.assertEqual(ui.lbl_simRuntimeReconstructionName.text(), "Reconstruction")
+        reference_leds = (
+            ui.led_simRuntimeCamera,
+            ui.led_simRuntimeSlm,
+            ui.led_simRuntimeDaq,
+        )
+        for reference_led in reference_leds:
+            with self.subTest(reference=reference_led.objectName()):
+                self.assertIsInstance(reconstruction_led, QtWidgets.QLabel)
+                self.assertEqual(reconstruction_led.minimumSize(), reference_led.minimumSize())
+                self.assertEqual(reconstruction_led.maximumSize(), reference_led.maximumSize())
+                self.assertEqual(reconstruction_led.styleSheet(), reference_led.styleSheet())
+
     def test_live_setting_change_keeps_config_update_in_memory(self):
         legacy_main = load_legacy_main_module()
         save_flags = []
@@ -690,19 +751,15 @@ class SimPreviewRestartTests(unittest.TestCase):
         controller.initialize_hardware.assert_not_called()
         controller.start_single_acquisition.assert_not_called()
 
-    def test_slot_handle_sim_acquisition_ready_accepts_acquisition_batch_object(self):
+    def test_slot_handle_sim_acquisition_ready_accepts_summary_payload_without_raw_stack(self):
         legacy_main = load_legacy_main_module()
-        from sim_control.models import AcquisitionBatch
 
-        stack = np.arange(9 * 2 * 3, dtype=np.uint16).reshape(9, 2, 3)
-        batch = AcquisitionBatch(
-            task_id="task-2",
-            stack=stack,
-            timestamps=[float(index) for index in range(9)],
-            laser_wavelength_nm=488,
-            exposure_us=10_000,
-            pattern_files=[""] * 9,
-        )
+        summary = {
+            "task_id": "task-2",
+            "stack_shape": [9, 2, 3],
+            "stack_dtype": "uint16",
+            "metadata": {"running_order_name": "488_3.5_2d_10ms"},
+        }
         action_updates = []
         controls_enabled = []
         starts = []
@@ -711,19 +768,19 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_camera_connected=True,
             sim_resume_preview_after_acquisition=True,
             sim_current_task_id="",
-            sim_last_acquisition_batch=None,
+            sim_last_acquisition_batch="previous-batch",
             update_sim_camera_action_buttons=lambda: action_updates.append("updated"),
             set_sim_camera_controls_enabled=lambda enabled: controls_enabled.append(enabled),
             start_sim_preview=lambda: starts.append("start"),
         )
 
-        legacy_main.MainWindow.slot_handle_sim_acquisition_ready(window, batch)
+        legacy_main.MainWindow.slot_handle_sim_acquisition_ready(window, summary)
 
         self.assertFalse(window.sim_acquisition_in_progress)
         self.assertEqual(action_updates, ["updated"])
         self.assertEqual(controls_enabled, [True])
-        self.assertIs(window.sim_last_acquisition_batch, batch)
-        np.testing.assert_array_equal(window.sim_last_preview_frame, stack[0])
+        self.assertEqual(window.sim_last_acquisition_batch, "previous-batch")
+        self.assertFalse(hasattr(window, "sim_last_preview_frame"))
         self.assertEqual(window.sim_current_task_id, "task-2")
         self.assertEqual(starts, ["start"])
 
@@ -1947,6 +2004,580 @@ class SimSettingsDialogTests(unittest.TestCase):
         self.assertTrue(dialog._camera_externally_owned)
         dialog.close()
         camera_adapter.disconnect.assert_not_called()
+
+    def test_dialog_keeps_auto_z_start_when_displaying_connected_stage_position(self):
+        from sim_control.gui import SimSettingsDialog, read_z_scan_config_from_widgets
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 7.25
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=None)),
+                stage_adapter=stage_adapter,
+            )
+
+        self.assertAlmostEqual(dialog.spin_zscan_start_um.value(), 7.25)
+        self.assertIsNone(read_z_scan_config_from_widgets(dialog).start_um)
+        dialog.close()
+
+    def test_zscan_test_targets_are_populated_and_disabled_with_zscan(self):
+        from sim_control.gui import (
+            Z_SCAN_TEST_STAGE_ONLY,
+            Z_SCAN_TEST_STAGE_PLUS_CAPTURE,
+            SimSettingsDialog,
+        )
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        self.assertEqual(dialog.combo_zscan_test_target.count(), 2)
+        self.assertEqual(dialog.combo_zscan_test_target.itemData(0), Z_SCAN_TEST_STAGE_ONLY)
+        self.assertEqual(dialog.combo_zscan_test_target.itemData(1), Z_SCAN_TEST_STAGE_PLUS_CAPTURE)
+
+        dialog.check_zscan_enabled.setChecked(False)
+        self.assertFalse(dialog.ui.group_zscan_preview.isEnabled())
+        self.assertFalse(dialog.ui.group_zscan_test.isEnabled())
+        self.assertFalse(dialog.btn_zscan_test.isEnabled())
+        dialog._run_zscan_stage_only_test = mock.Mock(side_effect=AssertionError("disabled z-scan should not run tests"))
+
+        with mock.patch("sim_control.gui.QMessageBox.critical") as critical:
+            dialog._run_zscan_test()
+
+        critical.assert_called_once()
+        dialog._run_zscan_stage_only_test.assert_not_called()
+        dialog.close()
+
+    def test_zscan_preview_auto_start_without_connected_stage_avoids_fake_start_position(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = False
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=None, step_um=0.3, num_steps=4)),
+                stage_adapter=stage_adapter,
+            )
+
+        self.assertEqual(dialog.label_zscan_preview_start_value.text(), "运行时读取当前 Z")
+        self.assertEqual(dialog.label_zscan_preview_end_value.text(), "--")
+        self.assertFalse(hasattr(dialog, "label_zscan_preview_breakdown_value"))
+        self.assertTrue(dialog.label_zscan_preview_eta_value.text().endswith(" ms"))
+        self.assertAlmostEqual(dialog.spin_zscan_step_um.value(), 300.0)
+        self.assertAlmostEqual(dialog.spin_zscan_step_um.singleStep(), 10.0)
+        self.assertEqual(dialog.spin_zscan_step_um.suffix(), " nm")
+        stage_adapter.connect.assert_not_called()
+        stage_adapter.move_z_um.assert_not_called()
+        dialog.close()
+
+    def test_zscan_scan_gap_spinbox_round_trips_nm_to_um_config(self):
+        from sim_control.gui import SimSettingsDialog, read_z_scan_config_from_widgets
+        from sim_control.models import AppConfig, ZScanConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.3, num_steps=10)),
+            )
+
+        self.assertAlmostEqual(dialog.spin_zscan_step_um.value(), 300.0)
+        self.assertEqual(dialog.ui.label_zscan_step_um.text(), "Scan gap")
+        self.assertEqual(dialog.ui.label_zscan_num_steps.text(), "Moves")
+        dialog.spin_zscan_step_um.setValue(250.0)
+        cfg = read_z_scan_config_from_widgets(dialog)
+
+        self.assertAlmostEqual(cfg.step_um, 0.25)
+        dialog.close()
+
+    def test_read_current_z_refreshes_zscan_preview(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 12.5
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        dialog._read_current_z_into_start()
+
+        self.assertAlmostEqual(dialog.spin_zscan_start_um.value(), 12.5)
+        self.assertIn("12.500", dialog.label_zscan_preview_start_value.text())
+        self.assertIn("14.000", dialog.label_zscan_preview_end_value.text())
+        dialog.close()
+
+    def test_read_current_z_button_click_ignores_qpushbutton_checked_argument(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 21.125
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.25, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        dialog.btn_zscan_read_current.click()
+        self.app.processEvents()
+
+        self.assertAlmostEqual(dialog.spin_zscan_start_um.value(), 21.125)
+        self.assertNotIn("positional argument", dialog.lbl_error.text())
+        self.assertIn("21.125", dialog.label_zscan_preview_start_value.text())
+        dialog.close()
+
+    def test_zscan_test_button_click_ignores_qpushbutton_checked_argument(self):
+        from sim_control.gui import SimSettingsDialog, Z_SCAN_TEST_STAGE_ONLY
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+        dialog.combo_zscan_test_target.setCurrentIndex(dialog.combo_zscan_test_target.findData(Z_SCAN_TEST_STAGE_ONLY))
+        dialog._run_zscan_stage_only_test = mock.Mock(
+            return_value=mock.Mock(
+                positions_visited=[1.0, 1.5, 2.0, 2.5],
+                total_duration_s=0.1,
+                move_latencies_ms=[1.0],
+                frame_count=0,
+            )
+        )
+
+        with mock.patch("sim_control.gui.QMessageBox.information") as information:
+            dialog.btn_zscan_test.click()
+            self.app.processEvents()
+
+        information.assert_called_once()
+        dialog._run_zscan_stage_only_test.assert_called_once()
+        self.assertNotIn("positional argument", dialog.lbl_error.text())
+        dialog.close()
+
+    def test_zscan_stage_only_test_moves_positions_and_returns_to_start(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        with mock.patch(
+            "sim_control.gui.time.perf_counter",
+            side_effect=[10.0, 10.01, 10.02, 10.03, 10.04, 10.05, 10.06, 10.07, 10.08],
+        ):
+            result = dialog._run_zscan_stage_only_test(started_at_s=10.0)
+
+        self.assertEqual(result.positions_visited, [1.0, 1.5, 2.0, 2.5])
+        self.assertEqual([call.args[0] for call in stage_adapter.move_z_um.call_args_list], [1.0, 1.5, 2.0, 2.5, 1.0])
+        self.assertEqual(result.frame_count, 0)
+        self.assertIsNone(getattr(dialog, "_pending_zscan_restore_warning", None))
+        dialog.close()
+
+    def test_zscan_stage_only_out_of_range_does_not_move(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 1.2)
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        with self.assertRaisesRegex(Exception, "超出位移台量程"):
+            dialog._run_zscan_stage_only_test(started_at_s=10.0)
+
+        stage_adapter.move_z_um.assert_not_called()
+        dialog.close()
+
+    def test_zscan_stage_only_restore_failure_uses_warning_dialog(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        move_targets = []
+
+        def _move(target):
+            move_targets.append(target)
+            if len(move_targets) == 5:
+                raise RuntimeError("restore failed")
+
+        stage_adapter.move_z_um.side_effect = _move
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        with mock.patch("sim_control.gui.QMessageBox.warning") as warning, mock.patch(
+            "sim_control.gui.QMessageBox.information"
+        ) as info, mock.patch("sim_control.gui.QMessageBox.critical") as critical:
+            dialog._run_zscan_test()
+
+        warning.assert_called_once()
+        info.assert_not_called()
+        critical.assert_not_called()
+        self.assertIn("回到起始层失败", dialog.lbl_error.text())
+        self.assertEqual(move_targets, [1.0, 1.5, 2.0, 2.5, 1.0])
+        dialog.close()
+
+    def test_acquisition_failed_dialog_deduplicates_zscan_ro_warning(self):
+        from control_wangbo import main as main_module
+
+        window = main_module.MainWindow.__new__(main_module.MainWindow)
+        window.sim_acquisition_in_progress = True
+        window.sim_camera_connected = False
+        window.sim_current_task_id = ""
+        window.sim_resume_preview_after_acquisition = False
+        window.update_sim_camera_action_buttons = mock.Mock()
+        window.set_sim_camera_controls_enabled = mock.Mock()
+        window.update_sim_runtime_status_widgets = mock.Mock()
+        warning_line = "Z-scan failed and formal SIM running order could not be restored; SLM may still be on z-scan RO: cannot select 3"
+        message = f"z scan failed\n{warning_line}\nTraceback...\n{warning_line}"
+
+        with mock.patch("control_wangbo.main.qw.QMessageBox.warning") as warning:
+            main_module.MainWindow.slot_handle_sim_acquisition_failed(window, "task-1", message)
+
+        display_message = warning.call_args.args[2]
+        self.assertIn("z scan failed", display_message)
+        self.assertEqual(display_message.count("SLM may still be on z-scan RO"), 1)
+
+    def test_zscan_stage_plus_capture_requires_connected_slm(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = False
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, num_steps=3)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+            )
+
+        with self.assertRaisesRegex(Exception, "需要先连接 SLM"):
+            dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        slm_adapter.connect.assert_not_called()
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_rejects_large_stack_before_hardware_actions(self):
+        from sim_control.gui import SimSettingsDialog, Z_SCAN_TEST_CAPTURE_MAX_STEPS
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        slm_adapter = mock.Mock()
+        camera_adapter = mock.Mock()
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(
+                    z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=Z_SCAN_TEST_CAPTURE_MAX_STEPS + 1)
+                ),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+
+        with self.assertRaisesRegex(Exception, "最多允许"):
+            dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        stage_adapter.connect.assert_not_called()
+        stage_adapter.move_z_um.assert_not_called()
+        slm_adapter.is_connected.assert_not_called()
+        camera_adapter.disarm.assert_not_called()
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_runs_core_with_stack_retention_and_cleans_up(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+        from sim_control.z_scan_core import ZFocusPoint, ZScanResult
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(7, "488_3.5_2d_zscan3p_8ms")]
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        stack = np.zeros((4, 2, 2), dtype=np.uint16)
+        z_result = ZScanResult(
+            best_z_um=1.5,
+            focus_curve=[
+                ZFocusPoint(1.0, 1.0),
+                ZFocusPoint(1.5, 3.0),
+                ZFocusPoint(2.0, 2.0),
+                ZFocusPoint(2.5, 1.5),
+            ],
+            exposure_actual_us=7_884,
+            captured_stack=stack,
+        )
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3, exposure_preset_ms=8)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+        dialog._current_daq_config = mock.Mock(return_value=dialog.config.daq)
+
+        with mock.patch("sim_control.gui.run_z_scan", return_value=z_result) as run_core, mock.patch.object(
+            dialog,
+            "_test_capture_path",
+            return_value=Path("zscan.tiff"),
+        ) as capture_path, mock.patch.object(dialog, "_write_uint16_tiff") as write_tiff:
+            result = dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        slm_adapter.select_running_order.assert_called_once_with(7)
+        self.assertTrue(run_core.call_args.kwargs["keep_captured_stack"])
+        self.assertEqual(run_core.call_args.kwargs["z_scan_config"].num_steps, 3)
+        capture_path.assert_called_once_with("zscan_capture", "zscan_8ms_3moves")
+        write_tiff.assert_called_once()
+        self.assertIs(write_tiff.call_args.args[1], stack)
+        dialog.daq_adapter.set_all_low.assert_called_once_with("Dev1")
+        camera_adapter.disarm.assert_called_once()
+        camera_adapter.disconnect.assert_not_called()
+        self.assertEqual(result.frame_count, 4)
+        self.assertEqual(result.best_layer_index, 1)
+        self.assertAlmostEqual(result.best_z_um, 1.5)
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_core_failure_after_stage_move_cleans_up_and_returns_start(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(7, "488_3.5_2d_zscan3p_8ms")]
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3, exposure_preset_ms=8)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+        dialog._current_daq_config = mock.Mock(return_value=dialog.config.daq)
+
+        def _fail_after_stage_move(**kwargs):
+            kwargs["on_status"]("z_scan_stage_positioned", {"z_um": 1.0})
+            raise RuntimeError("camera read failed")
+
+        with mock.patch("sim_control.gui.run_z_scan", side_effect=_fail_after_stage_move):
+            with self.assertRaisesRegex(RuntimeError, "camera read failed"):
+                dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        stage_adapter.move_z_um.assert_called_once_with(1.0)
+        dialog.daq_adapter.set_all_low.assert_called_once_with("Dev1")
+        camera_adapter.disarm.assert_called_once()
+        camera_adapter.disconnect.assert_not_called()
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_core_failure_before_stage_move_does_not_move_stage(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(7, "488_3.5_2d_zscan3p_8ms")]
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3, exposure_preset_ms=8)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+        dialog._current_daq_config = mock.Mock(return_value=dialog.config.daq)
+
+        with mock.patch("sim_control.gui.run_z_scan", side_effect=RuntimeError("apply config failed")):
+            with self.assertRaisesRegex(RuntimeError, "apply config failed"):
+                dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        stage_adapter.move_z_um.assert_not_called()
+        dialog.daq_adapter.set_all_low.assert_called_once_with("Dev1")
+        camera_adapter.disarm.assert_called_once()
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_focus_curve_length_must_match_stack(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+        from sim_control.z_scan_core import ZFocusPoint, ZScanResult
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(7, "488_3.5_2d_zscan3p_8ms")]
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        z_result = ZScanResult(
+            best_z_um=1.0,
+            focus_curve=[ZFocusPoint(1.0, 1.0)],
+            exposure_actual_us=7_884,
+            captured_stack=np.zeros((4, 2, 2), dtype=np.uint16),
+        )
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3, exposure_preset_ms=8)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+        dialog._current_daq_config = mock.Mock(return_value=dialog.config.daq)
+
+        with mock.patch("sim_control.gui.run_z_scan", return_value=z_result):
+            with self.assertRaisesRegex(Exception, "focus curve"):
+                dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        dialog.close()
+
+    def test_zscan_stage_plus_capture_reports_missing_running_order(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(1, "488_3.5_2d_10ms")]
+        camera_adapter = mock.Mock()
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3, exposure_preset_ms=8)),
+                stage_adapter=stage_adapter,
+                slm_adapter=slm_adapter,
+                camera_adapter=camera_adapter,
+            )
+        dialog.daq_adapter = mock.Mock()
+        dialog._current_daq_config = mock.Mock(return_value=dialog.config.daq)
+
+        with self.assertRaisesRegex(Exception, "No z-scan Running Order"):
+            dialog._run_zscan_stage_plus_capture_test(started_at_s=10.0)
+
+        slm_adapter.select_running_order.assert_not_called()
+        dialog.close()
+
+    def test_zscan_failure_message_mentions_possible_zscan_running_order(self):
+        from sim_control.gui import Z_SCAN_TEST_STAGE_PLUS_CAPTURE, SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines",
+            return_value=[],
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+        dialog.combo_zscan_test_target.setCurrentIndex(dialog.combo_zscan_test_target.findData(Z_SCAN_TEST_STAGE_PLUS_CAPTURE))
+
+        def _fail_after_select(_started_at_s):
+            dialog._pending_zscan_slm_warning = "SLM 当前 RO 可能仍为 z-scan RO。"
+            raise RuntimeError("capture failed")
+
+        dialog._run_zscan_stage_plus_capture_test = mock.Mock(side_effect=_fail_after_select)
+
+        with mock.patch("sim_control.gui.QMessageBox.critical") as critical:
+            dialog._run_zscan_test()
+
+        message = critical.call_args.args[2]
+        self.assertIn("capture failed", message)
+        self.assertIn("SLM 当前 RO 可能仍为 z-scan RO", message)
+        dialog.close()
 
     def test_camera_trigger_test_uses_external_camera_adapter_without_reopening_dcam(self):
         from sim_control.gui import SimSettingsDialog

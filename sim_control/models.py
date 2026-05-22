@@ -113,6 +113,15 @@ SUPPORTED_LASERS = tuple(LASER_ROLE_MAP.keys())
 # 50 ms 是正式 SIM9 默认帧间隔。仅当相机针对当前 ROI/接口推荐的
 # ``recommended_inter_frame_gap_us`` < 50_000 时才允许覆盖此默认。
 DEFAULT_INTER_FRAME_GAP_US = 50_000
+Z_SCAN_EXPOSURE_PRESETS_US = {
+    5: 4_884,
+    8: 7_884,
+    14: 13_884,
+    20: 19_884,
+}
+Z_SCAN_EXPOSURE_PRESETS_MS = tuple(Z_SCAN_EXPOSURE_PRESETS_US.keys())
+Z_SCAN_DIRECTIONS = ("positive_z", "negative_z")
+Z_SCAN_FOCUS_METRICS = ("sml",)
 
 
 def _default_pattern_files() -> list[str]:
@@ -366,6 +375,49 @@ class DecisionResult:
 
 
 @dataclass
+class ZScanConfig:
+    """Configuration for the pre-SIM z-stack autofocus pass."""
+
+    enabled: bool = True
+    start_um: float | None = None
+    direction: str = "positive_z"
+    step_um: float = 0.3
+    num_steps: int = 10
+    exposure_preset_ms: int = 8
+    focus_metric: str = "sml"
+    return_to_start_on_cancel: bool = True
+
+    @property
+    def actual_exposure_us(self) -> int:
+        return Z_SCAN_EXPOSURE_PRESETS_US[int(self.exposure_preset_ms)]
+
+
+@dataclass
+class ReconstructionConfig:
+    """Configuration for the SIM9 reconstruction stage."""
+
+    enabled: bool = True
+    backend: str = "sim_wiener_gpu"
+    device: str = "cuda"
+    dtype: str = "single"
+    otf_405_path: str = ""
+    otf_488_path: str = ""
+    otf_561_path: str = ""
+    otf_647_path: str = ""
+    background_path: str = ""
+    output_path: str = "data/reconstruction"
+    wiener: float = 2.0
+    pixel_size_nm: float = 65.0
+    excitation_na: float = 1.49
+    theta_ratio: tuple[int, int, int] = (1, 1, 1)
+    recon_group_batch: int = 1
+
+    def otf_path_for_wavelength(self, wavelength_nm: int) -> str:
+        """Return the configured OTF path for a supported laser wavelength."""
+        return str(getattr(self, f"otf_{int(wavelength_nm)}_path", ""))
+
+
+@dataclass
 class AppConfig:
     """聚合 SIM GUI 的完整配置，是 JSON 配置读写和界面同步的根对象。
 
@@ -383,10 +435,12 @@ class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
+    z_scan: ZScanConfig = field(default_factory=ZScanConfig)
+    reconstruction: ReconstructionConfig = field(default_factory=ReconstructionConfig)
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     selected_running_order: str = ""
     selected_laser_nm: int = 488
-    config_version: int = 3
+    config_version: int = 7
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

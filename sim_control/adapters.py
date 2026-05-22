@@ -54,7 +54,7 @@ from typing import Any
 
 import numpy as np
 
-from .models import CameraConfig, PatternPreparationResult
+from .models import CameraConfig, PatternPreparationResult, Z_SCAN_EXPOSURE_PRESETS_MS
 from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE, SIM_CAMERA_ROI_STEP_PX, build_sim_camera_size_presets
 from .waveform import WaveformPlan
 
@@ -105,6 +105,10 @@ _RUNNING_ORDER_NAME_RE = re.compile(
     r"^(?P<wavelength>\d+)_(?P<pitch>\d+(?:\.\d+)?)_(?P<mode>[A-Za-z0-9]+)_"
     r"(?P<exposure>\d+)ms(?P<single_angle>_ang0)?$"
 )
+_Z_SCAN_RUNNING_ORDER_NAME_RE = re.compile(
+    r"^(?P<wavelength>\d+)_(?P<pitch>\d+(?:\.\d+)?)_(?P<mode>[A-Za-z0-9]+)_"
+    r"zscan3p_(?P<exposure>\d+)ms$"
+)
 
 
 def parse_running_order_name(name: str) -> dict[str, Any] | None:
@@ -136,6 +140,22 @@ def parse_running_order_name(name: str) -> dict[str, Any] | None:
         return None
 
 
+def parse_z_scan_running_order_name(name: str) -> dict[str, Any] | None:
+    """Parse a z-scan dedicated Running Order name."""
+    match = _Z_SCAN_RUNNING_ORDER_NAME_RE.match(str(name).strip())
+    if match is None:
+        return None
+    try:
+        return {
+            "wavelength_nm": int(match.group("wavelength")),
+            "pitch": match.group("pitch"),
+            "mode": match.group("mode").lower(),
+            "exposure_preset_ms": int(match.group("exposure")),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def _target_running_order_exposure_ms(exposure_us: int) -> int:
     """把任务曝光时间归入 SLM repertoire 支持的 1 / 10 / 50 ms RO 桶。
 
@@ -151,6 +171,37 @@ def _target_running_order_exposure_ms(exposure_us: int) -> int:
     if exposure_us < 50_000:
         return 10
     return 50
+
+
+def find_z_scan_running_order(
+    running_orders: list[tuple[int, str]],
+    exposure_preset_ms: int,
+) -> tuple[int | None, str, list[str]]:
+    """Select the fixed 488 nm three-phase z-scan Running Order."""
+    preset = int(exposure_preset_ms)
+    warnings: list[str] = []
+    if preset not in Z_SCAN_EXPOSURE_PRESETS_MS:
+        return None, "", [f"Unsupported z-scan exposure preset: {preset} ms."]
+
+    for index, name in running_orders:
+        parsed = parse_z_scan_running_order_name(name)
+        if parsed is None:
+            continue
+        if parsed["wavelength_nm"] != 488:
+            continue
+        if parsed["pitch"] != "3.5":
+            continue
+        if parsed["mode"] != "2d":
+            continue
+        if parsed["exposure_preset_ms"] != preset:
+            continue
+        return int(index), str(name), warnings
+
+    warnings.append(
+        "No matching z-scan running order found for "
+        f"488 nm, 3.5/2d, zscan3p, {preset} ms preset."
+    )
+    return None, "", warnings
 
 
 def find_best_running_order(

@@ -67,6 +67,37 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertFalse(any("pattern_files" in error for error in errors))
 
+    def test_validate_app_config_requires_current_laser_otf_when_reconstruction_enabled(self):
+        """启用真实重建时，当前波长必须配置对应 OTF 路径。"""
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            selected_laser_nm=488,
+            reconstruction=ReconstructionConfig(enabled=True),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertTrue(any("reconstruction.otf_488_path" in error for error in errors))
+
+    def test_validate_app_config_rejects_reconstruction_output_tiff_file_path(self):
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            selected_laser_nm=488,
+            reconstruction=ReconstructionConfig(
+                enabled=True,
+                otf_488_path="E:/calibration/488_otf.tif",
+                output_path="data/reconstruction/sim_reconstruction.tif",
+            ),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertTrue(any("reconstruction.output_path must be an output directory" in error for error in errors))
+
     def test_controller_blocks_invalid_config_before_emitting_worker_start(self):
         """controller 应在 ``start_single_acquisition`` 前抛 ValueError，且不发 worker 信号。"""
         from sim_control.controller import SimAcquisitionController
@@ -91,6 +122,26 @@ class ConfigValidationTests(unittest.TestCase):
             controller.shutdown()
 
         # 6) ``signal_start_worker`` 永远不应被触发：controller 必须在 validate 失败时立刻 raise。
+        self.assertEqual(emitted_payloads, [])
+
+    def test_controller_blocks_enabled_reconstruction_without_current_laser_otf(self):
+        """启用重建但缺当前波长 OTF 时，controller 应在采集前阻断。"""
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import BackendConfig, ReconstructionConfig, SimTaskConfig
+
+        controller = SimAcquisitionController(BackendConfig(simulation_mode=True))
+        emitted_payloads = []
+        controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+        controller.pattern_result.handles = list(range(9))
+        controller.reconstruction_config = ReconstructionConfig(enabled=True)
+
+        try:
+            task = SimTaskConfig(laser_wavelength_nm=488)
+            with self.assertRaisesRegex(ValueError, "reconstruction.otf_488_path"):
+                controller.start_single_acquisition(task)
+        finally:
+            controller.shutdown()
+
         self.assertEqual(emitted_payloads, [])
 
 

@@ -44,7 +44,14 @@ from typing import Any
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from .acquisition_core import AcquisitionCancelled, run_single_acquisition
-from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter, find_best_running_order
+from .adapters import (
+    FusionBtCameraAdapter,
+    HardwareError,
+    KopinSlmAdapter,
+    NIDaqAdapter,
+    find_best_running_order,
+    find_z_scan_running_order,
+)
 from .config_store import validate_app_config
 from .models import (
     AppConfig,
@@ -52,12 +59,29 @@ from .models import (
     CameraConfig,
     DaqLineConfig,
     PatternPreparationResult,
+    ReconstructionConfig,
     SimTaskConfig,
+    ZScanConfig,
     effective_inter_frame_gap_us,
     new_task_id,
 )
 from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
+from .stage_adapter import SimulatedZStageAdapter, Ti2ZStageAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
+
+
+def _acquisition_summary_payload(batch: Any) -> dict[str, Any]:
+    """Build the GUI-facing acquisition summary without copying image data."""
+    stack = getattr(batch, "stack", None)
+    shape = getattr(stack, "shape", ())
+    dtype = getattr(stack, "dtype", "")
+    metadata = getattr(batch, "metadata", {}) or {}
+    return {
+        "task_id": str(getattr(batch, "task_id", "")),
+        "stack_shape": list(shape),
+        "stack_dtype": str(dtype),
+        "metadata": dict(metadata),
+    }
 
 
 # Worker 运行在 QThread 中，所有可能阻塞的硬件初始化和采集动作都从 GUI 线程移出。
@@ -72,15 +96,19 @@ class SimAcquisitionWorker(QObject):
     状态信号：
         - ``signal_status_changed(status_name, payload_dict)``：阶段性进度。
         - ``signal_acquisition_ready(batch)``：正式采集成功。
+        - ``signal_acquisition_summary_ready(payload)``：正式采集成功后的 GUI 轻量摘要。
         - ``signal_acquisition_failed(task_id, traceback)``：硬件/逻辑失败。
         - ``signal_acquisition_cancelled(task_id, message)``：用户/stop_event 取消。
         - ``signal_prepare_ready(task_id, payload)``：prepare_only 路径完成。
     """
     signal_status_changed = pyqtSignal(str, dict)
     signal_acquisition_ready = pyqtSignal(object)
+    signal_acquisition_summary_ready = pyqtSignal(dict)
     signal_acquisition_failed = pyqtSignal(str, str)
     signal_acquisition_cancelled = pyqtSignal(str, str)
     signal_prepare_ready = pyqtSignal(str, dict)
+    signal_z_scan_progress = pyqtSignal(int, int, float, float)
+    signal_z_scan_complete = pyqtSignal(float, object)
 
     @pyqtSlot(object)
     def slot_start(self, payload: dict[str, Any]) -> None:
@@ -102,21 +130,40 @@ class SimAcquisitionWorker(QObject):
         daq = payload["daq_adapter"]
         camera = payload["camera_adapter"]
         slm = payload["slm_adapter"]
+        stage = payload.get("stage_adapter")
+        z_scan_config: ZScanConfig | None = payload.get("z_scan_config")
+        z_scan_enabled = bool(payload.get("z_scan_enabled")) and z_scan_config is not None
+        z_scan_pattern_result: PatternPreparationResult | None = None
         stop_event = payload.get("stop_event")
+
+        def emit_status(status: str, data: dict[str, Any]) -> None:
+            self.signal_status_changed.emit(status, data)
+            if status == "z_scan_progress":
+                self.signal_z_scan_progress.emit(
+                    int(data.get("step_index", 0)),
+                    int(data.get("total_steps", 0)),
+                    float(data.get("z_um", 0.0)),
+                    float(data.get("focus_score", 0.0)),
+                )
+            elif status == "z_scan_complete":
+                self.signal_z_scan_complete.emit(
+                    float(data.get("best_z_um", 0.0)),
+                    data.get("focus_curve", []),
+                )
 
         try:
             _raise_if_cancelled(stop_event)
             # 2) 可选阶段 1：硬件初始化。仅当 controller 显式请求时执行；多次启动可跳过。
             if payload.get("initialize_hardware"):
-                self.signal_status_changed.emit("hardware_initializing", {})
+                emit_status("hardware_initializing", {})
                 camera.initialize()
                 _raise_if_cancelled(stop_event)
                 slm.initialize()
-                self.signal_status_changed.emit("hardware_initialized", {})
+                emit_status("hardware_initialized", {})
             # 3) 可选阶段 2：DAQ 配置校验（不直接打开 NI 任务，只确认线位合法）。
             if payload.get("apply_daq_config"):
                 validate_daq_line_config(daq_config)
-                self.signal_status_changed.emit("daq_config_applied", {"device_name": daq_config.device_name})
+                emit_status("daq_config_applied", {"device_name": daq_config.device_name})
             # 4) 可选阶段 3：把相机配置下发到 DCAM，并把相机回报反写到 task 与时序。
             if payload.get("apply_camera_config"):
                 if task.camera.trigger_mode != "external_level":
@@ -129,7 +176,7 @@ class SimAcquisitionWorker(QObject):
                 )
                 # 4b) 把整段相机配置 + 相机回报合并广播给 GUI，便于显示实际生效参数。
                 payload_data = {"camera_config": dict(task.camera.__dict__), **dict(result)}
-                self.signal_status_changed.emit("camera_config_applied", payload_data)
+                emit_status("camera_config_applied", payload_data)
             # 5) 可选阶段 4：自动选择匹配波长 + 曝光的 Running Order。
             if payload.get("prepare_running_order"):
                 running_orders = slm.list_running_orders()
@@ -146,9 +193,28 @@ class SimAcquisitionWorker(QObject):
                 pattern_result = _coerce_running_order_pattern_result(result, ro_index, ro_name)
                 task.running_order_name = ro_name
                 task.pattern_files = list(pattern_result.pattern_files)
-                self.signal_status_changed.emit(
+                emit_status(
                     "running_order_selected",
                     _running_order_payload(result, pattern_result, ro_index, ro_name, warnings),
+                )
+            if z_scan_enabled:
+                if stage is None:
+                    raise HardwareError("Z-scan is enabled but no Z stage adapter is available.")
+                if not getattr(stage, "is_connected", False):
+                    info = stage.connect()
+                    emit_status("z_stage_connected", dict(info or {}))
+                running_orders = slm.list_running_orders()
+                z_ro_index, z_ro_name, z_warnings = find_z_scan_running_order(
+                    running_orders,
+                    exposure_preset_ms=int(z_scan_config.exposure_preset_ms),
+                )
+                if z_ro_index is None:
+                    raise HardwareError("; ".join(z_warnings) or "No matching z-scan running order found.")
+                z_result = slm.select_running_order(z_ro_index)
+                z_scan_pattern_result = _coerce_running_order_pattern_result(z_result, z_ro_index, z_ro_name)
+                emit_status(
+                    "z_scan_running_order_selected",
+                    _running_order_payload(z_result, z_scan_pattern_result, z_ro_index, z_ro_name, z_warnings),
                 )
             _raise_if_cancelled(stop_event)
             # 6) prepare-only 路径：到这里就算完成；返回前广播"patterns_prepared"事件。
@@ -160,7 +226,7 @@ class SimAcquisitionWorker(QObject):
                     "handles": list(pattern_result.handles),
                     "metadata": dict(pattern_result.metadata),
                 }
-                self.signal_status_changed.emit("patterns_prepared", prepared_payload)
+                emit_status("patterns_prepared", prepared_payload)
                 self.signal_prepare_ready.emit(task_id, prepared_payload)
                 return
             # 7) 正式采集路径：调 ``run_single_acquisition``，由它负责 9 帧硬件流程。
@@ -173,15 +239,19 @@ class SimAcquisitionWorker(QObject):
                 daq=daq,
                 waveform_builder=waveform_builder,
                 task_id=task_id,
-                on_status=lambda status, data: self.signal_status_changed.emit(status, data),
+                on_status=emit_status,
                 stop_event=stop_event,
+                stage_adapter=stage,
+                z_scan_config=z_scan_config if z_scan_enabled else None,
+                z_scan_pattern_result=z_scan_pattern_result,
             )
             self.signal_acquisition_ready.emit(batch)
+            self.signal_acquisition_summary_ready.emit(_acquisition_summary_payload(batch))
         except AcquisitionCancelled as exc:
             # 8a) 取消路径：广播 ``acquisition_cancelled``，不发 failed 信号，
             #     便于 GUI 区分"用户主动停"和"硬件出错"。
             message = str(exc) or "Acquisition cancelled."
-            self.signal_status_changed.emit("acquisition_cancelled", {"task_id": task_id, "message": message})
+            emit_status("acquisition_cancelled", {"task_id": task_id, "message": message})
             self.signal_acquisition_cancelled.emit(task_id, message)
         except Exception as exc:
             # 8b) 失败路径：附上完整 traceback，让 GUI 弹错误对话框时可让用户复制。
@@ -279,8 +349,11 @@ class SimAcquisitionController(QObject):
     """
     signal_status_changed = pyqtSignal(str, dict)
     signal_acquisition_ready = pyqtSignal(object)
+    signal_acquisition_summary_ready = pyqtSignal(dict)
     signal_acquisition_failed = pyqtSignal(str, str)
     signal_acquisition_cancelled = pyqtSignal(str, str)
+    signal_z_scan_progress = pyqtSignal(int, int, float, float)
+    signal_z_scan_complete = pyqtSignal(float, object)
     # 跨线程信号：把 payload 投递给 worker 的 ``slot_start``。
     signal_start_worker = pyqtSignal(object)
 
@@ -292,10 +365,17 @@ class SimAcquisitionController(QObject):
         # 3) 单实例波形 builder，避免每次采集都重建。
         self.waveform_builder = NIDaqWaveformBuilder()
         # 4) 创建 3 个 adapter（真实 or 仿真，由 backend.simulation_mode 决定）。
-        self.camera_adapter, self.slm_adapter, self.daq_adapter = self._create_adapters(self.backend)
+        (
+            self.camera_adapter,
+            self.slm_adapter,
+            self.daq_adapter,
+            self.stage_adapter,
+        ) = self._create_adapters(self.backend)
         # 5) 默认 DAQ/相机/图案配置；后续 GUI 会通过 ``apply_*`` 覆盖。
         self.daq_config = DaqLineConfig()
         self.camera_config = CameraConfig()
+        self.z_scan_config = ZScanConfig()
+        self.reconstruction_config = ReconstructionConfig()
         self.pattern_result = PatternPreparationResult()
         # 6) 记录相机最近一次回报的 timing 信息（含 recommended_inter_frame_gap_us）。
         self._latest_camera_timing: dict[str, Any] = {}
@@ -311,11 +391,14 @@ class SimAcquisitionController(QObject):
         self._worker.moveToThread(self._thread)
         self._worker.signal_status_changed.connect(self.signal_status_changed)
         self._worker.signal_acquisition_ready.connect(self.signal_acquisition_ready)
+        self._worker.signal_acquisition_summary_ready.connect(self.signal_acquisition_summary_ready)
         self._worker.signal_acquisition_failed.connect(self.signal_acquisition_failed)
         self._worker.signal_acquisition_cancelled.connect(self.signal_acquisition_cancelled)
+        self._worker.signal_z_scan_progress.connect(self.signal_z_scan_progress)
+        self._worker.signal_z_scan_complete.connect(self.signal_z_scan_complete)
         # 8a) 三个清理钩子：prepare_ready/ready/failed/cancelled 都要从字典里移除 stop_event。
         self._worker.signal_prepare_ready.connect(self._clear_stop_event_for_task)
-        self._worker.signal_acquisition_ready.connect(self._clear_stop_event_for_batch)
+        self._worker.signal_acquisition_summary_ready.connect(self._clear_stop_event_for_summary)
         self._worker.signal_acquisition_failed.connect(self._clear_stop_event_for_task)
         self._worker.signal_acquisition_cancelled.connect(self._clear_stop_event_for_task)
         # 8b) ``signal_start_worker`` 触发 worker.slot_start；跨线程投递。
@@ -331,12 +414,13 @@ class SimAcquisitionController(QObject):
         """
         # 仿真模式 → 立刻返回 Simulated*Adapter；不引入任何真实 SDK 依赖。
         if backend.simulation_mode:
-            return SimulatedCameraAdapter(), SimulatedSlmAdapter(), SimulatedDaqAdapter()
+            return SimulatedCameraAdapter(), SimulatedSlmAdapter(), SimulatedDaqAdapter(), SimulatedZStageAdapter()
         # 真实模式 → 把 SDK 路径透传给相机和 SLM adapter；DAQ adapter 无路径需求。
         return (
             FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path),
             KopinSlmAdapter(sdk_path=backend.slm_sdk_path),
             NIDaqAdapter(),
+            Ti2ZStageAdapter(),
         )
 
     def shutdown(self) -> None:
@@ -360,6 +444,10 @@ class SimAcquisitionController(QObject):
             pass
         try:
             self.slm_adapter.disconnect()
+        except Exception:
+            pass
+        try:
+            self.stage_adapter.disconnect()
         except Exception:
             pass
 
@@ -459,6 +547,23 @@ class SimAcquisitionController(QObject):
     def slm_connection_info(self) -> dict[str, Any]:
         return self.slm_adapter.connection_info()
 
+    def connect_stage(self) -> dict[str, Any]:
+        """Connect the Nikon Ti2 ZDrive adapter and broadcast the current position."""
+        info = self.stage_adapter.connect()
+        self.signal_status_changed.emit("z_stage_connected", dict(info or {}))
+        return info
+
+    def disconnect_stage(self) -> None:
+        self.stage_adapter.disconnect()
+        self.signal_status_changed.emit("z_stage_disconnected", {})
+
+    def get_stage_position_um(self) -> float:
+        return float(self.stage_adapter.get_position_um())
+
+    def move_stage_to_um(self, target_um: float) -> None:
+        self.stage_adapter.move_z_um(float(target_um))
+        self.signal_status_changed.emit("z_stage_moved", {"z_um": float(target_um)})
+
     def prepare_patterns(self, pattern_files: list[str], device_path: str | None = None) -> PatternPreparationResult:
         """把文件型 9 帧 pattern 编程到 SLM；正式采集应优先用 Running Order 路径。"""
         # 1) 调 adapter.program_patterns，得到包含 handles 的 PatternPreparationResult。
@@ -506,6 +611,8 @@ class SimAcquisitionController(QObject):
         initialize_hardware: bool = False,
         apply_daq_config: bool = False,
         apply_camera_config: bool = False,
+        z_scan_config: ZScanConfig | None = None,
+        z_scan_enabled: bool | None = None,
     ) -> str:
         """启动单次 SIM9 正式采集；返回新分配的 ``task_id``。"""
         return self._start_worker_task(
@@ -515,6 +622,8 @@ class SimAcquisitionController(QObject):
             apply_daq_config=apply_daq_config,
             apply_camera_config=apply_camera_config,
             prepare_only=False,
+            z_scan_config=z_scan_config,
+            z_scan_enabled=z_scan_enabled,
         )
 
     def start_prepare_experiment(
@@ -545,6 +654,8 @@ class SimAcquisitionController(QObject):
         apply_daq_config: bool,
         apply_camera_config: bool,
         prepare_only: bool,
+        z_scan_config: ZScanConfig | None = None,
+        z_scan_enabled: bool | None = None,
     ) -> str:
         """``start_*`` 系列的统一实现：组装 payload、做配置校验、生成 task_id、投递信号。"""
         # 1) 防御：非 RO 路径要求 controller.pattern_result.handles 已就绪。
@@ -554,6 +665,12 @@ class SimAcquisitionController(QObject):
         task.timing.inter_frame_gap_us = effective_inter_frame_gap_us(
             self._latest_camera_timing.get("recommended_inter_frame_gap_us")
         )
+        selected_z_scan_config = z_scan_config or self.z_scan_config
+        selected_z_scan_enabled = (
+            bool(selected_z_scan_config.enabled) if z_scan_enabled is None else bool(z_scan_enabled)
+        )
+        if prepare_only:
+            selected_z_scan_enabled = False
         # 3) 选定的 pattern_result：RO 路径稍后由 worker 重新生成；非 RO 路径用 controller 持有的。
         pattern_result = self.pattern_result if not prepare_running_order else PatternPreparationResult()
         pattern_files = list(task.pattern_files)
@@ -571,6 +688,8 @@ class SimAcquisitionController(QObject):
             camera=task.camera,
             timing=task.timing,
             backend=self.backend,
+            z_scan=selected_z_scan_config,
+            reconstruction=self.reconstruction_config,
             pattern_files=pattern_files,
             selected_running_order=selected_running_order,
             selected_laser_nm=task.laser_wavelength_nm,
@@ -593,6 +712,9 @@ class SimAcquisitionController(QObject):
             "daq_adapter": self.daq_adapter,
             "camera_adapter": self.camera_adapter,
             "slm_adapter": self.slm_adapter,
+            "stage_adapter": self.stage_adapter,
+            "z_scan_config": selected_z_scan_config,
+            "z_scan_enabled": selected_z_scan_enabled,
             "stop_event": stop_event,
             "prepare_running_order": bool(prepare_running_order),
             "initialize_hardware": bool(initialize_hardware),
@@ -614,9 +736,9 @@ class SimAcquisitionController(QObject):
             stop_event.set()
         self.signal_status_changed.emit("stop_requested", {})
 
-    def _clear_stop_event_for_batch(self, batch: Any) -> None:
-        """signal_acquisition_ready 的清理回调；把 batch.task_id 转给统一清理函数。"""
-        task_id = getattr(batch, "task_id", "")
+    def _clear_stop_event_for_summary(self, payload: dict[str, Any]) -> None:
+        """signal_acquisition_summary_ready 的清理回调；避免 controller 接收 raw stack。"""
+        task_id = str((payload or {}).get("task_id", ""))
         self._clear_stop_event_for_task(task_id, "")
 
     def _clear_stop_event_for_task(self, task_id: str, _message: str = "") -> None:

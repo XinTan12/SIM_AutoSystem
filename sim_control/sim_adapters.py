@@ -50,6 +50,9 @@ SIMULATED_RUNNING_ORDERS = [
     for wavelength in (405, 488, 561, 647)
     for exposure in ("10ms", "1ms", "50ms")
     for suffix in ("", "_ang0")
+] + [
+    f"488_3.5_2d_zscan3p_{preset}ms"
+    for preset in (5, 8, 14, 20)
 ]
 # 仿真相机支持的 bit depth；与真实 Hamamatsu Fusion BT 的常用集合保持一致。
 SIMULATED_CAMERA_BIT_DEPTHS = [8, 12, 16]

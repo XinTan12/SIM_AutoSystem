@@ -43,10 +43,12 @@ from .models import (
     DaqLineConfig,
     PatternPreparationResult,
     SimTaskConfig,
+    ZScanConfig,
     new_task_id,
 )
 from .protocols import CameraAdapter, DaqAdapter, SlmAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
+from .z_scan_core import ZScanCancelled, ZScanResult, run_z_scan
 
 # 状态回调签名：``(status_name, payload_dict) -> None``。
 # 用 ``Callable`` 而不是直接绑定 Qt signal，保持本模块 Qt 无感。
@@ -128,6 +130,9 @@ def run_single_acquisition(
     task_id: str | None = None,
     on_status: StatusCallback = _noop_status,
     stop_event: Any | None = None,
+    stage_adapter: Any | None = None,
+    z_scan_config: ZScanConfig | None = None,
+    z_scan_pattern_result: PatternPreparationResult | None = None,
 ) -> AcquisitionBatch:
     """同步运行一次 9 帧 SIM 采集；不依赖 Qt。
 
@@ -174,10 +179,84 @@ def run_single_acquisition(
 
     # 5) 记录"已上报的帧索引"集合，避免 finally 路径补发已发过的 frame_captured 事件。
     emitted_frames: set[int] = set()
+    z_scan_result: ZScanResult | None = None
 
     def emit_frame_captured(frame_index: int, timestamp: float) -> None:
         emitted_frames.add(int(frame_index))
         on_status("frame_captured", {"task_id": task_id, "frame_index": int(frame_index), "timestamp": float(timestamp)})
+
+    def restore_formal_running_order_after_z_scan(status: str = "running_order_restored") -> None:
+        formal_ro_index = pattern_result.metadata.get("running_order_index")
+        if formal_ro_index is not None:
+            slm.select_running_order(int(formal_ro_index))
+            on_status(
+                status,
+                {
+                    "task_id": task_id,
+                    "running_order_index": int(formal_ro_index),
+                    "running_order_name": pattern_result.metadata.get("running_order_name", ""),
+                },
+            )
+        elif pattern_result.metadata.get("mode") == "running_order":
+            raise HardwareError("Cannot restore formal SIM running order after z-scan: missing running_order_index.")
+
+    def try_restore_formal_running_order_after_z_scan_failure() -> str | None:
+        try:
+            restore_formal_running_order_after_z_scan("running_order_restored_after_z_scan_failure")
+            return None
+        except Exception as restore_exc:
+            warning = (
+                "Z-scan failed and formal SIM running order could not be restored; "
+                f"SLM may still be on z-scan RO: {restore_exc}"
+            )
+            on_status(
+                "running_order_restore_warning",
+                {
+                    "task_id": task_id,
+                    "message": warning,
+                },
+            )
+            return warning
+
+    if z_scan_config is not None and z_scan_config.enabled:
+        if stage_adapter is None:
+            raise HardwareError("Z-scan is enabled but no Z stage adapter is available.")
+        if z_scan_pattern_result is None:
+            raise HardwareError("Z-scan is enabled but no z-scan running order is selected.")
+        on_status(
+            "z_scan_starting",
+            {
+                "task_id": task_id,
+                "exposure_preset_ms": int(z_scan_config.exposure_preset_ms),
+                "z_scan_running_order_name": z_scan_pattern_result.metadata.get("running_order_name", ""),
+            },
+        )
+        try:
+            z_scan_result = run_z_scan(
+                stage_adapter=stage_adapter,
+                camera_adapter=camera,
+                slm_adapter=slm,
+                daq_adapter=daq,
+                daq_config=daq_config,
+                camera_config=task.camera,
+                timing=task.timing,
+                z_scan_config=z_scan_config,
+                waveform_builder=waveform_builder,
+                stop_event=stop_event,
+                on_status=on_status,
+            )
+        except ZScanCancelled as exc:
+            restore_warning = try_restore_formal_running_order_after_z_scan_failure()
+            if restore_warning:
+                raise HardwareError(f"Acquisition cancelled.\n{restore_warning}") from exc
+            raise AcquisitionCancelled("Acquisition cancelled.") from exc
+        except Exception as exc:
+            restore_warning = try_restore_formal_running_order_after_z_scan_failure()
+            if restore_warning:
+                raise HardwareError(f"{exc}\n{restore_warning}") from exc
+            raise
+
+        restore_formal_running_order_after_z_scan()
 
     # 6) 主流程：arm → 激活 → 播波形 → 读帧。任何阶段抛错或取消都要走 finally 收尾。
     try:
@@ -237,6 +316,22 @@ def run_single_acquisition(
     # 10) 广播"采集完成"事件，并返回打包好的 AcquisitionBatch。
     on_status("acquisition_complete", {"task_id": task_id, "stack_shape": list(stack.shape)})
 
+    metadata = {
+        "pattern_handles": list(pattern_result.handles),
+        "pattern_mode": pattern_result.metadata.get("mode", ""),
+        "running_order_name": task.running_order_name
+        or str(pattern_result.metadata.get("running_order_name", "")),
+        "waveform": plan.metadata,
+        "daq_device": daq_config.device_name,
+    }
+    if z_scan_result is not None:
+        metadata["z_scan"] = {
+            "best_z_um": z_scan_result.best_z_um,
+            "focus_curve": [(point.z_um, point.focus_score) for point in z_scan_result.focus_curve],
+            "exposure_actual_us": z_scan_result.exposure_actual_us,
+            "exposure_preset_ms": int(z_scan_config.exposure_preset_ms) if z_scan_config else None,
+        }
+
     return AcquisitionBatch(
         task_id=task_id,
         stack=stack,
@@ -244,12 +339,5 @@ def run_single_acquisition(
         laser_wavelength_nm=task.laser_wavelength_nm,
         exposure_us=task.camera.exposure_us,
         pattern_files=list(pattern_result.pattern_files),
-        metadata={
-            "pattern_handles": list(pattern_result.handles),
-            "pattern_mode": pattern_result.metadata.get("mode", ""),
-            "running_order_name": task.running_order_name
-            or str(pattern_result.metadata.get("running_order_name", "")),
-            "waveform": plan.metadata,
-            "daq_device": daq_config.device_name,
-        },
+        metadata=metadata,
     )

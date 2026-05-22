@@ -278,6 +278,83 @@ class NIDaqWaveformBuilder:
             warnings=sorted(set(warnings)),
         )
 
+    def build_z_scan(
+        self,
+        daq_config: DaqLineConfig,
+        timing: TimingConfig,
+        exposure_us: int,
+        include_role_matrix: bool = True,
+    ) -> WaveformPlan:
+        """Generate the single-frame z-scan TTL waveform.
+
+        ``slm_enable`` is asserted at sample 0, then after
+        ``timing.slm_enable_guard_us`` the SLM trigger edge, camera trigger and
+        488 nm laser window start together. The z-scan RO is not FINISH-looped,
+        so this waveform deliberately leaves ``slm_finish`` low.
+        """
+        validate_daq_line_config(daq_config)
+        if exposure_us <= 0:
+            raise ValueError("exposure_us must be positive.")
+        if timing.sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive.")
+
+        edge_pulse_samples = self._us_to_samples(timing.edge_pulse_us, timing.sample_rate_hz)
+        exposure_samples = self._us_to_samples(exposure_us, timing.sample_rate_hz)
+        guard_samples = self._us_to_samples(timing.slm_enable_guard_us, timing.sample_rate_hz)
+        sample_count = (guard_samples * 2) + exposure_samples
+        frame_start = guard_samples
+        frame_end = frame_start + exposure_samples
+        trigger_end = min(frame_start + edge_pulse_samples, sample_count)
+        warnings: list[str] = []
+        if exposure_samples < edge_pulse_samples:
+            warnings.append("z-scan exposure is shorter than the trigger pulse width.")
+
+        matrix = (
+            {role: np.zeros(sample_count, dtype=np.uint8) for role in DAQ_ROLE_ORDER}
+            if include_role_matrix
+            else {}
+        )
+        packed = np.zeros(sample_count, dtype=np.uint32)
+        line_bits = {
+            role: np.uint32(1 << parse_line_name(getattr(daq_config, role))[2])
+            for role in DAQ_ROLE_ORDER
+        }
+        active_laser_role = LASER_ROLE_MAP[488]
+
+        if include_role_matrix:
+            matrix["slm_enable_line"][:frame_end] = 1
+            matrix["slm_trigger_line"][frame_start:trigger_end] = 1
+            matrix["camera_trigger_line"][frame_start:frame_end] = 1
+            matrix[active_laser_role][frame_start:frame_end] = 1
+            packed = self._pack_port_values(daq_config, matrix, sample_count)
+        else:
+            packed[:frame_end] |= line_bits["slm_enable_line"]
+            packed[frame_start:trigger_end] |= line_bits["slm_trigger_line"]
+            packed[frame_start:frame_end] |= line_bits["camera_trigger_line"] | line_bits[active_laser_role]
+
+        duration_s = sample_count / float(timing.sample_rate_hz)
+        metadata = {
+            "z_scan": True,
+            "frame_count": 1,
+            "exposure_us": exposure_us,
+            "sample_rate_hz": timing.sample_rate_hz,
+            "edge_pulse_samples": edge_pulse_samples,
+            "slm_enable_guard_samples": guard_samples,
+            "frame_start_samples": [frame_start],
+            "frame_end_samples": [frame_end],
+            "active_laser_role": active_laser_role,
+        }
+        return WaveformPlan(
+            line_order=list(DAQ_ROLE_ORDER),
+            packed_port_values=packed,
+            role_matrix=matrix,
+            sample_rate_hz=timing.sample_rate_hz,
+            sample_count=sample_count,
+            duration_s=duration_s,
+            metadata=metadata,
+            warnings=sorted(set(warnings)),
+        )
+
     @staticmethod
     def _us_to_samples(microseconds: int, sample_rate_hz: int) -> int:
         """把微秒时长换算成 DAQ 采样点数，并保证非零脉冲至少占一个点。

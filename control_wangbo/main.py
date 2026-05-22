@@ -4,7 +4,7 @@
 """
 
 import sys
-from PyQt5.QtCore import QEvent, QMetaObject, Qt, pyqtSlot,pyqtSignal,QTimer
+from PyQt5.QtCore import QEvent, QMetaObject, QThread, Qt, pyqtSlot,pyqtSignal,QTimer
 from PyQt5.QtGui import QImage, QPixmap
 import PyQt5.QtWidgets as qw
 import CellSorting_ui
@@ -40,8 +40,8 @@ from sim_control.gui import (
     create_camera_adapter_for_backend,
     create_daq_adapter_for_backend,
 )
-from sim_control.led_indicator import LedIndicator
 from sim_control.models import SimTaskConfig
+from sim_control.pipeline import ReconstructionWorker
 from sim_control.preview import SimPreviewController
 from sim_control.preview_contrast import AutoContrastState, fast_preview_uint16_to_uint8
 from sim_control.summary import build_sim_settings_summary
@@ -64,6 +64,11 @@ SIM_EXPOSURE_MAX_MS = 10_000
 SIM_EXPOSURE_DEFAULT_MS = 10
 SIM_BIT_DEPTH_DEFAULT = 16
 USER_FACING_BIT_DEPTHS = (8, 12, 16)
+SIM_RUNTIME_LED_SIZE_PX = 16
+SIM_RUNTIME_LED_RADIUS_PX = SIM_RUNTIME_LED_SIZE_PX // 2
+SIM_RUNTIME_LED_GRAY_STYLE = (
+    f"background-color: #8b949e; border-radius: {SIM_RUNTIME_LED_RADIUS_PX}px;"
+)
 
 
 # 旧 CellSorting UI 是固定尺寸生成界面，这里外包一层滚动区以适配较小显示器。
@@ -115,11 +120,23 @@ def merge_legacy_sim_control_payload(base_config, legacy_payload):
     merged.daq = legacy_config.daq
     merged.camera = legacy_config.camera
     merged.timing = legacy_config.timing
+    merged.z_scan = legacy_config.z_scan
+    merged.reconstruction = legacy_config.reconstruction
     merged.pattern_files = list(legacy_config.pattern_files)
     merged.selected_running_order = legacy_config.selected_running_order
     merged.selected_laser_nm = legacy_config.selected_laser_nm
     merged.config_path = base_config.config_path
     return merged
+
+
+def create_sim_runtime_led(parent, object_name=""):
+    led = qw.QLabel(parent)
+    if object_name:
+        led.setObjectName(object_name)
+    led.setFixedSize(SIM_RUNTIME_LED_SIZE_PX, SIM_RUNTIME_LED_SIZE_PX)
+    led.setText("")
+    led.setStyleSheet(SIM_RUNTIME_LED_GRAY_STYLE)
+    return led
 
 
 def apply_real_hardware_preference(config, camera_devices, slm_devices, daq_devices):
@@ -272,6 +289,9 @@ class MainWindow(qw.QWidget):
         self.sim_acquisition_in_progress = False
         self.sim_resume_preview_after_acquisition = False
         self.sim_last_acquisition_batch = None
+        self.sim_last_reconstruction_result = None
+        self.sim_recon_thread = None
+        self.sim_recon_worker = None
         self.sim_current_task_id = ""
         self.sim_last_preview_frame = None
         self.sim_last_preview_sequence = -1
@@ -285,8 +305,12 @@ class MainWindow(qw.QWidget):
         self.sim_preview_restart_timer.timeout.connect(self.restart_sim_preview_with_current_settings)
         self.sim_preview_poll_timer = QTimer(self)
         self.sim_preview_poll_timer.timeout.connect(self.poll_latest_sim_preview_frame)
+        self.sim_stage_position_timer = QTimer(self)
+        self.sim_stage_position_timer.setInterval(500)
+        self.sim_stage_position_timer.timeout.connect(self.poll_sim_stage_position)
         self.UI_Init()
         self.setup_sim_runtime_status_widgets()
+        self.setup_sim_z_position_widgets()
         # 初始化统计细胞ID和个数
         self.cell_ID = 0                   # 用来记录是哪次细胞的
         self.totalNumb_capture = 0
@@ -385,11 +409,54 @@ class MainWindow(qw.QWidget):
             self.FastCameraThread.wait()  # 确保线程完全停止
     
         # 接受关闭事件
+        if hasattr(self, "sim_stage_position_timer"):
+            self.sim_stage_position_timer.stop()
         if self.sim_preview_controller:
             self.sim_preview_controller.shutdown()
         if self.sim_acquisition_controller:
             self.sim_acquisition_controller.shutdown()
+        self.shutdown_sim_reconstruction_worker()
         event.accept()
+
+    def ensure_sim_reconstruction_worker(self):
+        if self.sim_recon_worker is not None:
+            self.sim_recon_worker.set_reconstruction_config(self.sim_app_config.reconstruction)
+            return
+        self.sim_recon_thread = QThread(self)
+        self.sim_recon_worker = ReconstructionWorker(self.sim_app_config.reconstruction)
+        self.sim_recon_worker.moveToThread(self.sim_recon_thread)
+        self.sim_recon_worker.signal_reconstruction_ready.connect(self.slot_handle_sim_reconstruction_ready)
+        self.sim_recon_worker.signal_reconstruction_failed.connect(self.slot_handle_sim_reconstruction_failed)
+        self.sim_recon_thread.start()
+
+    def connect_sim_reconstruction_worker_to_controller(self):
+        if self.sim_acquisition_controller is None:
+            return
+        self.ensure_sim_reconstruction_worker()
+        try:
+            self.sim_acquisition_controller.signal_acquisition_ready.disconnect(
+                self.sim_recon_worker.slot_reconstruct
+            )
+        except TypeError:
+            pass
+        self.sim_acquisition_controller.signal_acquisition_ready.connect(
+            self.sim_recon_worker.slot_reconstruct
+        )
+
+    def shutdown_sim_reconstruction_worker(self):
+        worker = getattr(self, "sim_recon_worker", None)
+        thread = getattr(self, "sim_recon_thread", None)
+        if worker is not None:
+            try:
+                worker.signal_reconstruction_ready.disconnect(self.slot_handle_sim_reconstruction_ready)
+                worker.signal_reconstruction_failed.disconnect(self.slot_handle_sim_reconstruction_failed)
+            except TypeError:
+                pass
+            self.sim_recon_worker = None
+        if thread is not None:
+            thread.quit()
+            thread.wait(2000)
+            self.sim_recon_thread = None
 
     def _promote_sim_exposure_spinbox(self):
         old = self.ui.spb_sCMOS_exposureTime
@@ -692,12 +759,22 @@ class MainWindow(qw.QWidget):
             self.sim_preview_requested = False
             self.stop_sim_preview(wait=True)
         self.ensure_sim_runtime()
-        dialog = SimSettingsDialog(
-            config=self.sim_app_config,
-            parent=self,
-            slm_adapter=self.sim_acquisition_controller.slm_adapter,
-            camera_adapter=self.sim_acquisition_controller.camera_adapter,
-        )
+        dialog_kwargs = {
+            "config": self.sim_app_config,
+            "parent": self,
+            "slm_adapter": self.sim_acquisition_controller.slm_adapter,
+            "camera_adapter": self.sim_acquisition_controller.camera_adapter,
+        }
+        stage_adapter = getattr(self.sim_acquisition_controller, "stage_adapter", None)
+        if stage_adapter is not None:
+            dialog_kwargs["stage_adapter"] = stage_adapter
+        try:
+            dialog = SimSettingsDialog(**dialog_kwargs)
+        except TypeError as exc:
+            if "stage_adapter" not in str(exc):
+                raise
+            dialog_kwargs.pop("stage_adapter", None)
+            dialog = SimSettingsDialog(**dialog_kwargs)
         dialog.signal_settings_saved.connect(self.apply_sim_settings)
         dialog.exec_()
         if resume_live_after_dialog and self.sim_camera_connected and not self.sim_acquisition_in_progress:
@@ -706,12 +783,17 @@ class MainWindow(qw.QWidget):
     def apply_sim_settings(self, config):
         self.sim_app_config = app_config_from_dict(app_config_to_dict(config))
         save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+        ensure_reconstruction_worker = getattr(self, "ensure_sim_reconstruction_worker", None)
+        if callable(ensure_reconstruction_worker):
+            ensure_reconstruction_worker()
         self.prefer_real_sim_hardware(
             save_to_disk=True,
             probe_camera=not self.sim_camera_connected,
         )
         try:
             self.sim_acquisition_controller.apply_daq_config(self.sim_app_config.daq)
+            self.sim_acquisition_controller.z_scan_config = self.sim_app_config.z_scan
+            self.sim_acquisition_controller.reconstruction_config = self.sim_app_config.reconstruction
         except Exception as e:
             print(f"SIM DAQ apply failed: {str(e)}")
             qw.QMessageBox.warning(self, "SIM DAQ", str(e))
@@ -1181,6 +1263,9 @@ class MainWindow(qw.QWidget):
             backend.simulation_mode,
         )
         if self.sim_acquisition_controller is not None and signature == self.sim_runtime_backend_signature:
+            self.sim_acquisition_controller.z_scan_config = self.sim_app_config.z_scan
+            self.sim_acquisition_controller.reconstruction_config = self.sim_app_config.reconstruction
+            self.connect_sim_reconstruction_worker_to_controller()
             return
         preview_poll_timer = getattr(self, "sim_preview_poll_timer", None)
         if preview_poll_timer is not None:
@@ -1196,8 +1281,13 @@ class MainWindow(qw.QWidget):
         self.sim_available_slms = []
         self.sim_app_config.selected_running_order = ""
         self.sim_acquisition_controller = SimAcquisitionController(backend=backend, parent=self)
+        self.sim_acquisition_controller.z_scan_config = self.sim_app_config.z_scan
+        self.sim_acquisition_controller.reconstruction_config = self.sim_app_config.reconstruction
         self.sim_acquisition_controller.signal_status_changed.connect(self.slot_handle_sim_acquisition_status)
-        self.sim_acquisition_controller.signal_acquisition_ready.connect(self.slot_handle_sim_acquisition_ready)
+        self.sim_acquisition_controller.signal_z_scan_progress.connect(self.slot_handle_sim_z_scan_progress)
+        self.sim_acquisition_controller.signal_z_scan_complete.connect(self.slot_handle_sim_z_scan_complete)
+        self.sim_acquisition_controller.signal_acquisition_summary_ready.connect(self.slot_handle_sim_acquisition_ready)
+        self.connect_sim_reconstruction_worker_to_controller()
         self.sim_acquisition_controller.signal_acquisition_failed.connect(self.slot_handle_sim_acquisition_failed)
         self.sim_acquisition_controller.signal_acquisition_cancelled.connect(self.slot_handle_sim_acquisition_cancelled)
         self.sim_camera_adapter = self.sim_acquisition_controller.camera_adapter
@@ -1206,6 +1296,8 @@ class MainWindow(qw.QWidget):
         self.sim_preview_controller.signal_status_changed.connect(self.slot_handle_sim_preview_status)
         self.sim_runtime_backend_signature = signature
         self.sim_preview_backend_signature = signature
+        if hasattr(self, "sim_stage_position_timer") and not self.sim_stage_position_timer.isActive():
+            self.sim_stage_position_timer.start()
 
     def detect_real_sim_hardware(self, probe_camera=True):
         backend = self.sim_app_config.backend
@@ -1264,23 +1356,32 @@ class MainWindow(qw.QWidget):
         self.sync_sim_camera_roi_position_controls(controls_enabled=enabled)
 
     def setup_sim_runtime_status_widgets(self):
+        runtime_devices = ("camera", "slm", "daq", "reconstruction")
         existing_group = getattr(self.ui, "grp_simRuntime", None)
         existing_leds = {
             "camera": getattr(self.ui, "led_simRuntimeCamera", None),
             "slm": getattr(self.ui, "led_simRuntimeSlm", None),
             "daq": getattr(self.ui, "led_simRuntimeDaq", None),
+            "reconstruction": getattr(self.ui, "led_simRuntimeReconstruction", None),
         }
         existing_labels = {
             "camera": getattr(self.ui, "lbl_simRuntimeCameraStatus", None),
             "slm": getattr(self.ui, "lbl_simRuntimeSlmStatus", None),
             "daq": getattr(self.ui, "lbl_simRuntimeDaqStatus", None),
+            "reconstruction": getattr(self.ui, "lbl_simRuntimeReconstructionStatus", None),
         }
-        if existing_group is not None and all(existing_leds.values()) and all(existing_labels.values()):
+        if (
+            existing_group is not None
+            and all(existing_leds[device] for device in runtime_devices)
+            and all(existing_labels[device] for device in runtime_devices)
+        ):
             self.sim_runtime_leds = existing_leds
             self.sim_runtime_status_labels = existing_labels
-            for device in ("camera", "slm", "daq"):
-                self.set_sim_runtime_led_state(existing_leds[device], "gray")
-                existing_labels[device].setText("Not initialized")
+            for device in runtime_devices:
+                if existing_leds.get(device) is not None:
+                    self.set_sim_runtime_led_state(existing_leds[device], "gray")
+                if existing_labels.get(device) is not None:
+                    existing_labels[device].setText("Not initialized")
             return
 
         layout = getattr(self.ui, "verticalLayout_simConfiguration", None)
@@ -1290,9 +1391,9 @@ class MainWindow(qw.QWidget):
         status_layout = qw.QVBoxLayout(group)
         self.sim_runtime_leds = {}
         self.sim_runtime_status_labels = {}
-        for key, label_text in (("camera", "Camera"), ("slm", "SLM"), ("daq", "DAQ")):
+        for key, label_text in (("camera", "Camera"), ("slm", "SLM"), ("daq", "DAQ"), ("reconstruction", "Reconstruction")):
             row = qw.QHBoxLayout()
-            led = LedIndicator("gray", group)
+            led = create_sim_runtime_led(group, f"led_simRuntime{label_text}")
             label = qw.QLabel("Not initialized", group)
             self.sim_runtime_leds[key] = led
             self.sim_runtime_status_labels[key] = label
@@ -1303,6 +1404,37 @@ class MainWindow(qw.QWidget):
             status_layout.addLayout(row)
         insert_index = 2 if hasattr(self.ui, "grp_hardvareConnection_SLM") else 1
         layout.insertWidget(insert_index, group)
+
+    def setup_sim_z_position_widgets(self):
+        parent = getattr(self.ui, "grp_realTimeLiveView_2", None)
+        if parent is None:
+            return
+        if not hasattr(self.ui, "lbl_z_position_label"):
+            self.ui.lbl_z_position_label = qw.QLabel("Z:", parent)
+            self.ui.lbl_z_position_label.setObjectName("lbl_z_position_label")
+            self.ui.lbl_z_position_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.ui.lbl_z_position_label.setGeometry(122, 486, 18, 24)
+            self.ui.lbl_z_position_label.show()
+        if not hasattr(self.ui, "lbl_z_position_value"):
+            self.ui.lbl_z_position_value = qw.QLabel("-- um", parent)
+            self.ui.lbl_z_position_value.setObjectName("lbl_z_position_value")
+            self.ui.lbl_z_position_value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.ui.lbl_z_position_value.setGeometry(142, 486, 90, 24)
+            self.ui.lbl_z_position_value.show()
+
+    def poll_sim_stage_position(self):
+        label = getattr(self.ui, "lbl_z_position_value", None)
+        if label is None:
+            return
+        controller = getattr(self, "sim_acquisition_controller", None)
+        if controller is None:
+            label.setText("-- um")
+            return
+        try:
+            z_um = float(controller.get_stage_position_um())
+            label.setText(f"{z_um:.2f} um")
+        except Exception:
+            label.setText("-- um")
 
     def set_sim_runtime_led_state(self, led, state):
         if hasattr(led, "set_state"):
@@ -1342,6 +1474,14 @@ class MainWindow(qw.QWidget):
             set_device("slm", "red", "Disconnected")
         elif status == "daq_config_applied":
             set_device("daq", "green", "Ready")
+        elif status == "reconstruction_starting":
+            set_device("reconstruction", "yellow", "Running")
+        elif status == "reconstruction_complete":
+            shape = payload.get("preview_shape", "")
+            suffix = f" {shape}" if shape else ""
+            set_device("reconstruction", "green", f"Ready{suffix}")
+        elif status == "reconstruction_failed":
+            set_device("reconstruction", "red", "Failed")
         elif status in {"acquisition_failed", "hardware_error"} or str(status).endswith("failed"):
             for device in ("camera", "slm", "daq"):
                 set_device(device, "red", "Error")
@@ -1545,6 +1685,7 @@ class MainWindow(qw.QWidget):
                 initialize_hardware=True,
                 apply_daq_config=True,
                 apply_camera_config=True,
+                z_scan_config=app_config_snapshot.z_scan,
             )
             print(f"SIM acquisition started from {trigger_source}: {self.sim_current_task_id}")
         except Exception as e:
@@ -1689,24 +1830,63 @@ class MainWindow(qw.QWidget):
             print(f"SIM acquisition status: {status} {payload}")
         elif status in {"acquisition_complete", "acquisition_cancelled", "patterns_prepared", "camera_connected", "frame_captured", "slm_connected", "slm_disconnected", "daq_config_applied"}:
             print(f"SIM acquisition status: {status} {payload}")
+        elif status == "running_order_restore_warning":
+            print(f"SIM acquisition status: {status} {payload}")
+
+    def slot_handle_sim_z_scan_progress(self, step_index, total_steps, z_um, focus_score):
+        print(
+            "SIM z-scan progress: "
+            f"{int(step_index)}/{int(total_steps)} z={float(z_um):.3f} um score={float(focus_score):.3f}"
+        )
+
+    def slot_handle_sim_z_scan_complete(self, best_z_um, focus_curve):
+        print(f"SIM z-scan complete: best_z={float(best_z_um):.3f} um, points={len(focus_curve or [])}")
+        self.poll_sim_stage_position()
 
     def slot_handle_sim_acquisition_ready(self, payload):
         self.sim_acquisition_in_progress = False
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(self.sim_camera_connected)
-        self.sim_last_acquisition_batch = payload
-        stack = payload.get("stack") if hasattr(payload, "get") else getattr(payload, "stack", None)
-        if stack is not None and getattr(stack, "size", 0):
-            self.sim_last_preview_frame = stack[0]
-        task_id = payload.get("task_id", self.sim_current_task_id) if hasattr(payload, "get") else getattr(payload, "task_id", self.sim_current_task_id)
+        payload = dict(payload or {})
+        task_id = payload.get("task_id", self.sim_current_task_id)
         self.sim_current_task_id = task_id
         update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
         if callable(update_runtime):
-            update_runtime("acquisition_complete", {"task_id": task_id})
+            update_runtime(
+                "acquisition_complete",
+                {
+                    "task_id": task_id,
+                    "stack_shape": payload.get("stack_shape", []),
+                    "stack_dtype": payload.get("stack_dtype", ""),
+                    "metadata": dict(payload.get("metadata", {}) or {}),
+                },
+            )
+            update_runtime("reconstruction_starting", {"task_id": task_id})
         print(f"SIM acquisition ready: {task_id}")
         if self.sim_resume_preview_after_acquisition and self.sim_camera_connected:
             self.sim_resume_preview_after_acquisition = False
             self.start_sim_preview()
+
+    def slot_handle_sim_reconstruction_ready(self, result):
+        self.sim_last_reconstruction_result = result
+        task_id = getattr(result, "task_id", self.sim_current_task_id)
+        self.sim_current_task_id = task_id
+        preview = getattr(result, "preview_image", None)
+        shape = list(getattr(preview, "shape", [])) if preview is not None else []
+        update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+        if callable(update_runtime):
+            update_runtime("reconstruction_complete", {"task_id": task_id, "preview_shape": shape})
+        print(f"SIM reconstruction ready: {task_id} shape={shape}")
+
+    def slot_handle_sim_reconstruction_failed(self, task_id, message):
+        self.sim_last_reconstruction_result = None
+        update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+        if callable(update_runtime):
+            update_runtime("reconstruction_failed", {"task_id": task_id})
+        print(f"SIM reconstruction failed: {task_id} {message}")
+        message_lines = str(message).splitlines()
+        display_message = message_lines[0] if message_lines else "SIM reconstruction failed."
+        qw.QMessageBox.warning(self, "SIM Reconstruction Error", display_message)
 
     def slot_handle_sim_acquisition_failed(self, task_id, message):
         self.sim_acquisition_in_progress = False
@@ -1720,7 +1900,16 @@ class MainWindow(qw.QWidget):
         if self.sim_resume_preview_after_acquisition and self.sim_camera_connected:
             self.sim_resume_preview_after_acquisition = False
             self.start_sim_preview()
-        qw.QMessageBox.warning(self, "SIM Acquisition Error", message.splitlines()[0])
+        message_lines = str(message).splitlines()
+        display_message = message_lines[0] if message_lines else "SIM acquisition failed."
+        appended_warning_lines = set()
+        for line in message_lines[1:]:
+            if "SLM may still be on z-scan RO" in line or "formal SIM running order could not be restored" in line:
+                if line in appended_warning_lines:
+                    continue
+                appended_warning_lines.add(line)
+                display_message = f"{display_message}\n{line}"
+        qw.QMessageBox.warning(self, "SIM Acquisition Error", display_message)
 
     def slot_handle_sim_acquisition_cancelled(self, task_id, message):
         self.sim_acquisition_in_progress = False

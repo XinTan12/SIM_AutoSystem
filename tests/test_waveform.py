@@ -151,6 +151,43 @@ class WaveformValidationTests(unittest.TestCase):
         self.assertEqual(packed_only_plan.metadata, full_plan.metadata)
         self.assertEqual(packed_only_plan.warnings, full_plan.warnings)
 
+    def test_z_scan_waveform_guards_slm_enable_and_omits_finish(self):
+        """Z-scan 单帧波形应先拉高 enable，再同步 trigger/camera/488，且不使用 finish。"""
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        daq_config = DaqLineConfig()
+        timing = TimingConfig(
+            sample_rate_hz=1_000_000,
+            edge_pulse_us=50,
+            inter_frame_gap_us=50_000,
+            slm_enable_guard_us=50,
+        )
+
+        plan = NIDaqWaveformBuilder().build_z_scan(
+            daq_config=daq_config,
+            timing=timing,
+            exposure_us=7_884,
+            include_role_matrix=True,
+        )
+
+        frame_start = plan.metadata["frame_start_samples"][0]
+        frame_end = plan.metadata["frame_end_samples"][0]
+        self.assertEqual(frame_start, 50)
+        self.assertEqual(frame_end - frame_start, 7_884)
+        self.assertEqual(int(plan.role_matrix["slm_enable_line"][0]), 1)
+        self.assertEqual(int(plan.role_matrix["slm_trigger_line"][0]), 0)
+        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][0]), 0)
+        self.assertEqual(int(plan.role_matrix["laser_488_line"][0]), 0)
+        self.assertEqual(int(plan.role_matrix["slm_trigger_line"][frame_start]), 1)
+        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_start]), 1)
+        self.assertEqual(int(plan.role_matrix["laser_488_line"][frame_start]), 1)
+        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_end]), 0)
+        self.assertEqual(int(plan.role_matrix["laser_488_line"][frame_end]), 0)
+        self.assertEqual(int(plan.role_matrix["slm_enable_line"][frame_end]), 0)
+        self.assertEqual(int(plan.role_matrix["slm_finish_line"].sum()), 0)
+        self.assertEqual(int(sum(role[-1] for role in plan.role_matrix.values())), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

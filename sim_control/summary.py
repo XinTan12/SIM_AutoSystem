@@ -33,13 +33,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .models import AppConfig, effective_inter_frame_gap_us
+from .models import AppConfig, Z_SCAN_EXPOSURE_PRESETS_US, effective_inter_frame_gap_us
+from .waveform import NIDaqWaveformBuilder
 
 # SIM9 固定 9 帧：与 ``acquisition_core.run_single_acquisition`` 内的 ``frame_count`` 对齐。
 SIM9_FRAME_COUNT = 9
 # 从波形结束到 9 帧 stack 可读出额外预留的 stack 整理开销（微秒）。
 # 经验值，覆盖 DCAM transfer + numpy 重整 + 控制器信号传递的累计开销。
 SIM9_STACK_TRANSFER_OVERHEAD_US = 10_000
+Z_SCAN_STAGE_MOVE_OVERHEAD_S = 0.025
 
 
 def _sim_exposure_us_to_ms(exposure_us: int) -> int:
@@ -126,6 +128,19 @@ def _format_sim9_estimated_total_time_ms(
     return f"{duration_ms:.3f} ms"
 
 
+def _format_z_scan_estimated_total_time_ms(sim_config: AppConfig, actual_exposure_us: int) -> str:
+    """估算前置 Z-Scan 从第一层触发到最后一层采完的总用时（毫秒）。"""
+    image_layers = int(sim_config.z_scan.num_steps) + 1
+    plan = NIDaqWaveformBuilder().build_z_scan(
+        daq_config=sim_config.daq,
+        timing=sim_config.timing,
+        exposure_us=int(actual_exposure_us),
+        include_role_matrix=False,
+    )
+    duration_ms = (float(plan.duration_s) + Z_SCAN_STAGE_MOVE_OVERHEAD_S) * image_layers * 1000.0
+    return f"{duration_ms:.3f}"
+
+
 def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, Any] | None = None) -> str:
     """把当前 SIM 配置和运行时相机 timing 信息格式化为主界面摘要文本。
 
@@ -155,6 +170,33 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
         f"ROI: x={camera.roi_x}, y={camera.roi_y}, w={camera.roi_width}, h={camera.roi_height}",
         f"TIMING_READOUTTIME: {_format_readout_time_ms(runtime_timing)}",
         f"SIM9_ESTIMATED_TOTAL_TIME: {_format_sim9_estimated_total_time_ms(sim_config, runtime_timing)}",
+    ]
+    if sim_config.z_scan.enabled:
+        start_um = "-" if sim_config.z_scan.start_um is None else f"{float(sim_config.z_scan.start_um):.3f}"
+        actual_exposure_us = Z_SCAN_EXPOSURE_PRESETS_US[int(sim_config.z_scan.exposure_preset_ms)]
+        scan_moves = int(sim_config.z_scan.num_steps)
+        image_layers = scan_moves + 1
+        scan_gap_nm = float(sim_config.z_scan.step_um) * 1000.0
+        total_distance_um = abs(float(sim_config.z_scan.step_um) * scan_moves)
+        estimated_scan_time_ms = _format_z_scan_estimated_total_time_ms(sim_config, actual_exposure_us)
+        summary_lines.extend(
+            [
+                "",
+                "Z-Scan:",
+                f"  enabled: {sim_config.z_scan.enabled}",
+                f"  start_um: {start_um}",
+                f"  direction: {sim_config.z_scan.direction}",
+                f"  scan_gap_nm: {scan_gap_nm:.0f}",
+                f"  scan_moves: {scan_moves}",
+                f"  image_layers: {image_layers}",
+                f"  total_distance_um: {total_distance_um:.3f}",
+                f"  estimated_scan_time_ms: {estimated_scan_time_ms}",
+                f"  exposure_preset_ms: {int(sim_config.z_scan.exposure_preset_ms)}",
+                f"  actual_exposure_us: {actual_exposure_us}",
+            ]
+        )
+    summary_lines.extend(
+        [
         "",
         "DAQ:",
         f"  device_name: {daq.device_name}",
@@ -172,6 +214,7 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
         f"  edge_pulse_us: {timing.edge_pulse_us}",
         f"  inter_frame_gap_us: {_summary_inter_frame_gap_us(runtime_timing)}",
         f"  slm_enable_guard_us: {timing.slm_enable_guard_us}",
-    ]
+        ]
+    )
     # 5) 用换行符拼成最终摘要文本，主界面直接 ``setPlainText`` 即可显示。
     return "\n".join(summary_lines)

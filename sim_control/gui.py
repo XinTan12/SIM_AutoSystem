@@ -35,8 +35,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import functools
+import statistics
 import time
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +45,7 @@ import traceback
 
 import numpy as np
 
-from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -71,13 +72,22 @@ from PyQt5.QtWidgets import (
 )
 import tifffile
 
-from .adapters import FusionBtCameraAdapter, HardwareError, KopinSlmAdapter, NIDaqAdapter, find_best_running_order
+from .adapters import (
+    FusionBtCameraAdapter,
+    HardwareError,
+    KopinSlmAdapter,
+    NIDaqAdapter,
+    find_best_running_order,
+    find_z_scan_running_order,
+)
 from .config_store import (
     DEFAULT_CONFIG_PATH,
+    DEFAULT_RECONSTRUCTION_OUTPUT_DIR,
     app_config_from_dict,
     app_config_to_dict,
     load_app_config,
     save_app_config,
+    validate_app_config,
 )
 from .controller import SimAcquisitionController
 from .models import (
@@ -85,8 +95,10 @@ from .models import (
     CameraConfig,
     DAQ_ROLE_ORDER,
     DaqLineConfig,
+    ReconstructionConfig,
     SimTaskConfig,
     TimingConfig,
+    ZScanConfig,
     default_daq_line_name,
 )
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
@@ -95,6 +107,7 @@ from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, Simulated
 from .led_indicator import LedIndicator
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
+from .z_scan_core import run_z_scan, scan_positions
 
 
 # GUI 槽函数统一捕获异常并显示到状态区，避免 PyQt 回调静默失败。
@@ -170,6 +183,120 @@ def write_selected_laser_to_widgets(
     laser_button.setChecked(True)
 
 
+def _zscan_direction_to_index(direction: str) -> int:
+    return 1 if direction == "negative_z" else 0
+
+
+def _zscan_index_to_direction(index: int) -> str:
+    return "negative_z" if int(index) == 1 else "positive_z"
+
+
+def _zscan_preset_to_index(preset_ms: int) -> int:
+    presets = (5, 8, 14, 20)
+    try:
+        return presets.index(int(preset_ms))
+    except ValueError:
+        return presets.index(8)
+
+
+def _zscan_index_to_preset(index: int) -> int:
+    presets = (5, 8, 14, 20)
+    if 0 <= int(index) < len(presets):
+        return presets[int(index)]
+    return 8
+
+
+def write_z_scan_config_to_widgets(config: ZScanConfig, dialog: object) -> None:
+    dialog.check_zscan_enabled.setChecked(bool(config.enabled))
+    dialog.spin_zscan_start_um.blockSignals(True)
+    try:
+        if config.start_um is not None:
+            dialog.spin_zscan_start_um.setValue(float(config.start_um))
+    finally:
+        dialog.spin_zscan_start_um.blockSignals(False)
+    dialog.spin_zscan_start_um.setProperty("zscan_auto_start", config.start_um is None)
+    dialog.combo_zscan_direction.setCurrentIndex(_zscan_direction_to_index(config.direction))
+    dialog.spin_zscan_step_um.setValue(float(config.step_um) * 1000.0)
+    dialog.spin_zscan_num_steps.setValue(int(config.num_steps))
+    dialog.combo_zscan_exposure_preset.setCurrentIndex(_zscan_preset_to_index(config.exposure_preset_ms))
+    dialog.check_zscan_return_to_start.setChecked(bool(config.return_to_start_on_cancel))
+
+
+def read_z_scan_config_from_widgets(dialog: object) -> ZScanConfig:
+    auto_start = bool(dialog.spin_zscan_start_um.property("zscan_auto_start"))
+    return ZScanConfig(
+        enabled=bool(dialog.check_zscan_enabled.isChecked()),
+        start_um=None if auto_start else float(dialog.spin_zscan_start_um.value()),
+        direction=_zscan_index_to_direction(dialog.combo_zscan_direction.currentIndex()),
+        step_um=float(dialog.spin_zscan_step_um.value()) / 1000.0,
+        num_steps=int(dialog.spin_zscan_num_steps.value()),
+        exposure_preset_ms=_zscan_index_to_preset(dialog.combo_zscan_exposure_preset.currentIndex()),
+        focus_metric="sml",
+        return_to_start_on_cancel=bool(dialog.check_zscan_return_to_start.isChecked()),
+    )
+
+
+RECON_WAVELENGTHS = (405, 488, 561, 647)
+
+
+def _recon_wavelength_to_index(wavelength_nm: int) -> int:
+    try:
+        return RECON_WAVELENGTHS.index(int(wavelength_nm))
+    except ValueError:
+        return RECON_WAVELENGTHS.index(488)
+
+
+def _recon_otf_attr(wavelength_nm: int) -> str:
+    return f"otf_{int(wavelength_nm)}_path"
+
+
+def _selected_recon_wavelength_nm(combo: QComboBox) -> int:
+    data = combo.currentData()
+    if data is not None:
+        return int(data)
+    text = combo.currentText().replace("nm", "").strip()
+    return int(text) if text else 488
+
+
+def write_reconstruction_config_to_widgets(
+    config: ReconstructionConfig,
+    selected_laser_nm: int,
+    dialog: object,
+) -> None:
+    """把 ``ReconstructionConfig`` 写入 Recon 页控件。"""
+    dialog.spin_recon_wiener.setValue(float(config.wiener))
+    dialog.spin_recon_na.setValue(float(config.excitation_na))
+    dialog.spin_recon_pixel_size_nm.setValue(float(config.pixel_size_nm))
+    dialog.edit_recon_background_path.setText(str(config.background_path))
+    dialog.edit_recon_output_path.setText(str(config.output_path))
+    dialog._sync_recon_wavelength_combo(int(selected_laser_nm))
+    dialog._current_recon_wavelength_nm = int(selected_laser_nm)
+    dialog.edit_recon_otf_path.setText(config.otf_path_for_wavelength(int(selected_laser_nm)))
+
+
+def read_reconstruction_config_from_widgets(dialog: object) -> ReconstructionConfig:
+    """从 Recon 页控件构造 ``ReconstructionConfig``。"""
+    dialog._store_current_recon_otf_path()
+    current = dialog.config.reconstruction
+    return ReconstructionConfig(
+        enabled=True,
+        backend="sim_wiener_gpu",
+        device="cuda",
+        dtype="single",
+        otf_405_path=str(current.otf_405_path).strip(),
+        otf_488_path=str(current.otf_488_path).strip(),
+        otf_561_path=str(current.otf_561_path).strip(),
+        otf_647_path=str(current.otf_647_path).strip(),
+        background_path=dialog.edit_recon_background_path.text().strip(),
+        output_path=dialog.edit_recon_output_path.text().strip() or DEFAULT_RECONSTRUCTION_OUTPUT_DIR,
+        wiener=float(dialog.spin_recon_wiener.value()),
+        pixel_size_nm=float(dialog.spin_recon_pixel_size_nm.value()),
+        excitation_na=float(dialog.spin_recon_na.value()),
+        theta_ratio=tuple(current.theta_ratio),
+        recon_group_batch=int(current.recon_group_batch),
+    )
+
+
 def read_daq_config_from_line_combos(
     line_combos: dict[str, QComboBox],
     device_name: str | None = None,
@@ -200,6 +327,81 @@ def read_daq_config_from_line_combos(
     return DaqLineConfig(device_name=selected_device_name, **selections)
 
 
+class _ComboLineEditPopupFilter(QObject):
+    def __init__(self, combo: QComboBox):
+        super().__init__(combo)
+        self._combo = combo
+        self._left_press_started = False
+        self._popup_visible_on_press = False
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            if getattr(event, "button", lambda: None)() == Qt.LeftButton:
+                self._left_press_started = self._combo.isEnabled()
+                self._popup_visible_on_press = False
+                if self._combo.isEnabled():
+                    self._combo.setFocus(Qt.MouseFocusReason)
+                    view = self._combo.view()
+                    self._popup_visible_on_press = bool(view is not None and view.isVisible())
+                return True
+        if event.type() == QEvent.MouseButtonRelease:
+            if getattr(event, "button", lambda: None)() == Qt.LeftButton:
+                should_toggle = self._left_press_started and self._combo.isEnabled()
+                popup_visible_on_press = self._popup_visible_on_press
+                self._left_press_started = False
+                self._popup_visible_on_press = False
+                if should_toggle:
+                    if popup_visible_on_press:
+                        QTimer.singleShot(0, self._combo.hidePopup)
+                    else:
+                        QTimer.singleShot(0, self._combo.showPopup)
+                return True
+        return super().eventFilter(watched, event)
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+
+def _set_language_specific_label_text(label: QLabel, text: str) -> None:
+    font = label.font()
+    font.setFamily("Microsoft YaHei" if _contains_cjk(text) else "Arial")
+    font.setBold(True)
+    label.setFont(font)
+    label.setText(text)
+
+
+def _center_combobox_items(combo: QComboBox) -> None:
+    for index in range(combo.count()):
+        combo.setItemData(index, Qt.AlignCenter, Qt.TextAlignmentRole)
+
+
+def configure_centered_combobox(combo: QComboBox) -> None:
+    combo.setEditable(True)
+    combo.setInsertPolicy(QComboBox.NoInsert)
+    line_edit = combo.lineEdit()
+    if line_edit is not None:
+        line_edit.setFont(combo.font())
+        line_edit.setReadOnly(True)
+        line_edit.setAlignment(Qt.AlignCenter)
+        line_edit.setFrame(False)
+        for old_filter in combo.findChildren(_ComboLineEditPopupFilter):
+            line_edit.removeEventFilter(old_filter)
+            old_filter.setParent(None)
+            old_filter.deleteLater()
+        popup_filter = _ComboLineEditPopupFilter(combo)
+        line_edit.installEventFilter(popup_filter)
+    _center_combobox_items(combo)
+
+
+def set_combobox_current_text(combo: QComboBox, text: str) -> bool:
+    index = combo.findText(text)
+    if index < 0:
+        return False
+    combo.setCurrentIndex(index)
+    return True
+
+
 def populate_daq_line_combos(
     line_combos: dict[str, QComboBox],
     lines: list[str],
@@ -228,11 +430,12 @@ def populate_daq_line_combos(
         try:
             combo.clear()
             combo.addItems(lines)
+            _center_combobox_items(combo)
             # 4) 命中目标值优先；否则回落到项目默认线位；都不在 lines 则保持下拉首项。
             if target_value in lines:
-                combo.setCurrentText(target_value)
+                set_combobox_current_text(combo, target_value)
             elif fallback_value in lines:
-                combo.setCurrentText(fallback_value)
+                set_combobox_current_text(combo, fallback_value)
         finally:
             combo.blockSignals(False)
 
@@ -275,7 +478,14 @@ DAQ_PULSE_TEST_ROLES = (
     "laser_647_line",
 )
 # 测试采集的 TIFF 保存目录；按子目录分类相机/SIM9 采集，便于事后审阅。
-TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "test_captures"
+TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "data" / "test_captures"
+Z_SCAN_TEST_STAGE_ONLY = "zscan_stage_only"
+Z_SCAN_TEST_STAGE_PLUS_CAPTURE = "zscan_stage_plus_capture"
+Z_SCAN_TEST_TARGET_ITEMS = (
+    (Z_SCAN_TEST_STAGE_ONLY, "Z 位移台移动 (仅位移台)"),
+    (Z_SCAN_TEST_STAGE_PLUS_CAPTURE, "Z 位移台 + 每层采图 (含 SML 评分)"),
+)
+Z_SCAN_TEST_CAPTURE_MAX_STEPS = 100
 
 
 @dataclass(frozen=True)
@@ -291,6 +501,23 @@ class SimAcquisitionTestResult:
     output_path: Path
     actual_acquisition_duration_s: float
     daq_waveform_duration_s: float
+
+
+@dataclass(frozen=True)
+class ZScanTestResult:
+    mode: str
+    positions_visited: list[float]
+    total_duration_s: float
+    move_latencies_ms: list[float]
+    output_path: Path | None
+    frame_count: int
+    best_layer_index: int = -1
+    best_z_um: float = float("nan")
+    focus_scores: list[float] = field(default_factory=list)
+
+
+def build_zscan_test_target_items() -> list[tuple[str, str]]:
+    return list(Z_SCAN_TEST_TARGET_ITEMS)
 
 
 def create_camera_adapter_for_backend(backend):
@@ -368,6 +595,7 @@ class SimSettingsDialog(QDialog):
         parent: QWidget | None = None,
         slm_adapter: SlmAdapter | None = None,
         camera_adapter: CameraAdapter | None = None,
+        stage_adapter: object | None = None,
     ):
         # 1) 调父类构造让 Qt 接管对话框生命周期。
         super().__init__(parent)
@@ -384,11 +612,16 @@ class SimSettingsDialog(QDialog):
         self.daq_adapter = create_daq_adapter_for_backend(self.config.backend)
         self.slm_adapter = slm_adapter or create_slm_adapter_for_backend(self.config.backend)
         self.camera_adapter = camera_adapter or create_camera_adapter_for_backend(self.config.backend)
+        self.stage_adapter = stage_adapter
         # 5) 记录共享 flag：关闭对话框时不要 disconnect 外部传入的 adapter。
         self._slm_externally_owned = slm_adapter is not None
         self._camera_externally_owned = camera_adapter is not None
         self._preferred_daq_device = self.config.daq.device_name
         self._loaded_pattern_result = None
+        self._pending_zscan_restore_warning = None
+        self._pending_zscan_slm_warning = None
+        self._current_recon_wavelength_nm = int(self.config.selected_laser_nm)
+        self._populating_widgets = False
         # 6) 延迟硬件刷新：``showEvent`` 后再做，避免对话框未显示就阻塞 UI。
         self._initial_hardware_refresh_pending = True
         # 7) UI 构造 + 信号连接 + 控件初值填充。
@@ -410,6 +643,35 @@ class SimSettingsDialog(QDialog):
         self.btn_pulse_test = self.ui.btn_pulse_test
         self.btn_save_close = self.ui.btn_save_close
         self.btn_cancel = self.ui.btn_cancel
+        self.check_zscan_enabled = self.ui.check_zscan_enabled
+        self.spin_zscan_start_um = self.ui.spin_zscan_start_um
+        self.btn_zscan_read_current = self.ui.btn_zscan_read_current
+        self.combo_zscan_direction = self.ui.combo_zscan_direction
+        self.spin_zscan_step_um = self.ui.spin_zscan_step_um
+        self.spin_zscan_num_steps = self.ui.spin_zscan_num_steps
+        self.combo_zscan_exposure_preset = self.ui.combo_zscan_exposure_preset
+        self.check_zscan_return_to_start = self.ui.check_zscan_return_to_start
+        self.combo_zscan_test_target = self.ui.combo_zscan_test_target
+        self.btn_zscan_test = self.ui.btn_zscan_test
+        self.label_zscan_test_status = self.ui.label_zscan_test_status
+        self.label_zscan_preview_start_value = self.ui.label_zscan_preview_start_value
+        self.label_zscan_preview_end_value = self.ui.label_zscan_preview_end_value
+        self.label_zscan_preview_distance_value = self.ui.label_zscan_preview_distance_value
+        self.label_zscan_preview_eta_value = self.ui.label_zscan_preview_eta_value
+        self.spin_recon_wiener = self.ui.spin_recon_wiener
+        self.spin_recon_na = self.ui.spin_recon_na
+        self.spin_recon_pixel_size_nm = self.ui.spin_recon_pixel_size_nm
+        self.combo_recon_wavelength = self.ui.combo_recon_wavelength
+        self.edit_recon_otf_path = self.ui.edit_recon_otf_path
+        self.btn_recon_browse_otf = self.ui.btn_recon_browse_otf
+        self.edit_recon_background_path = self.ui.edit_recon_background_path
+        self.btn_recon_browse_background = self.ui.btn_recon_browse_background
+        self.edit_recon_output_path = self.ui.edit_recon_output_path
+        self.btn_recon_browse_output = self.ui.btn_recon_browse_output
+
+        self.combo_recon_wavelength.clear()
+        for wavelength in RECON_WAVELENGTHS:
+            self.combo_recon_wavelength.addItem(f"{wavelength} nm", wavelength)
 
         # 3) 8 个 DAQ 角色 → 下拉控件映射；构造时一次性建立，后续刷新只改 items。
         self.line_combos = {
@@ -434,6 +696,9 @@ class SimSettingsDialog(QDialog):
         for wavelength, button in self.laser_buttons.items():
             self.laser_group.addButton(button, wavelength)
 
+        for combo in self.findChildren(QComboBox):
+            configure_centered_combobox(combo)
+
     def _wire_signals(self) -> None:
         """绑定所有按钮 / 下拉的信号到本对话框的槽。"""
         # 1) "刷新线位"按钮 → 触发 ``_refresh_daq_devices``。
@@ -444,9 +709,35 @@ class SimSettingsDialog(QDialog):
         self.btn_pulse_test.clicked.connect(self._run_pulse_test)
         self.btn_save_close.clicked.connect(self._save_and_accept)
         self.btn_cancel.clicked.connect(self.reject)
+        self.btn_zscan_read_current.clicked.connect(lambda _checked=False: self._read_current_z_into_start())
+        self.check_zscan_enabled.toggled.connect(self._sync_zscan_enabled_state)
+        self.check_zscan_enabled.toggled.connect(lambda _enabled: self._refresh_zscan_preview())
+        self.spin_zscan_start_um.valueChanged.connect(
+            lambda _value: self.spin_zscan_start_um.setProperty("zscan_auto_start", False)
+        )
+        self.spin_zscan_start_um.valueChanged.connect(lambda _value: self._refresh_zscan_preview())
+        self.combo_zscan_direction.currentIndexChanged.connect(lambda _index: self._refresh_zscan_preview())
+        self.spin_zscan_step_um.valueChanged.connect(lambda _value: self._refresh_zscan_preview())
+        self.spin_zscan_num_steps.valueChanged.connect(lambda _value: self._refresh_zscan_preview())
+        self.combo_zscan_exposure_preset.currentIndexChanged.connect(lambda _index: self._refresh_zscan_preview())
+        self.btn_zscan_test.clicked.connect(lambda _checked=False: self._run_zscan_test())
+        self.combo_recon_wavelength.currentIndexChanged.connect(lambda _index: self._on_recon_wavelength_changed())
+        self.btn_recon_browse_otf.clicked.connect(lambda _checked=False: self._browse_recon_otf())
+        self.btn_recon_browse_background.clicked.connect(lambda _checked=False: self._browse_recon_background())
+        self.btn_recon_browse_output.clicked.connect(lambda _checked=False: self._browse_recon_output())
+        self.combo_zscan_test_target.clear()
+        for target_id, label in build_zscan_test_target_items():
+            self.combo_zscan_test_target.addItem(label, target_id)
+        if self.combo_zscan_test_target.count():
+            self.combo_zscan_test_target.setCurrentIndex(0)
+        _center_combobox_items(self.combo_zscan_test_target)
         # 4) 任意线位下拉变更 → 重建测试目标下拉（避免显示旧线位）。
         for combo in self.line_combos.values():
             combo.currentTextChanged.connect(lambda _text: self._refresh_test_targets())
+        for wavelength, button in self.laser_buttons.items():
+            button.toggled.connect(
+                lambda checked, wavelength=wavelength: self._on_laser_wavelength_toggled(wavelength, checked)
+            )
 
     def _perform_initial_hardware_refresh(self) -> None:
         """对话框显示后做一次硬件刷新；放在 ``showEvent`` 中以避免阻塞构造期。"""
@@ -454,8 +745,23 @@ class SimSettingsDialog(QDialog):
 
     def _populate_widgets_from_config(self, config: AppConfig) -> None:
         """把 AppConfig 中影响 UI 的字段写到控件初值。"""
-        self._preferred_daq_device = config.daq.device_name
-        write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
+        self._populating_widgets = True
+        try:
+            self._preferred_daq_device = config.daq.device_name
+            write_selected_laser_to_widgets(config.selected_laser_nm, self.laser_buttons)
+            write_z_scan_config_to_widgets(config.z_scan, self)
+            write_reconstruction_config_to_widgets(config.reconstruction, config.selected_laser_nm, self)
+            if config.z_scan.start_um is None and self.stage_adapter is not None and getattr(self.stage_adapter, "is_connected", False):
+                self.spin_zscan_start_um.blockSignals(True)
+                try:
+                    self.spin_zscan_start_um.setValue(float(self.stage_adapter.get_position_um()))
+                finally:
+                    self.spin_zscan_start_um.blockSignals(False)
+                self.spin_zscan_start_um.setProperty("zscan_auto_start", True)
+            self._sync_zscan_enabled_state(bool(config.z_scan.enabled))
+        finally:
+            self._populating_widgets = False
+        self._refresh_zscan_preview()
 
     def _current_daq_config(self) -> DaqLineConfig:
         """从控件读取当前 DAQ 配置；通过共享 helper 完成校验。"""
@@ -468,11 +774,426 @@ class SimSettingsDialog(QDialog):
         """从单选按钮组读取当前选中的波长（nm）。"""
         return read_selected_laser_nm(self.laser_group)
 
+    def _sync_recon_wavelength_combo(self, wavelength_nm: int) -> None:
+        """把 Recon 页波长下拉切到指定波长，过程中不触发联动槽。"""
+        self.combo_recon_wavelength.blockSignals(True)
+        try:
+            self.combo_recon_wavelength.setCurrentIndex(_recon_wavelength_to_index(wavelength_nm))
+        finally:
+            self.combo_recon_wavelength.blockSignals(False)
+
+    def _store_current_recon_otf_path(self) -> None:
+        """把当前 OTF 输入框保存到当前波长对应的 config 字段。"""
+        wavelength_nm = int(getattr(self, "_current_recon_wavelength_nm", self._selected_laser_nm()))
+        setattr(
+            self.config.reconstruction,
+            _recon_otf_attr(wavelength_nm),
+            self.edit_recon_otf_path.text().strip(),
+        )
+
+    def _load_recon_otf_path_for_wavelength(self, wavelength_nm: int) -> None:
+        """切换 Recon 波长后，把该波长的 OTF 路径显示到输入框。"""
+        self._current_recon_wavelength_nm = int(wavelength_nm)
+        self.edit_recon_otf_path.setText(
+            self.config.reconstruction.otf_path_for_wavelength(int(wavelength_nm))
+        )
+
+    def _set_laser_buttons_from_recon(self, wavelength_nm: int) -> None:
+        """Recon 页波长改变时同步 Laser 页单选按钮，避免两个页面漂移。"""
+        for button in self.laser_buttons.values():
+            button.blockSignals(True)
+        try:
+            write_selected_laser_to_widgets(int(wavelength_nm), self.laser_buttons)
+        finally:
+            for button in self.laser_buttons.values():
+                button.blockSignals(False)
+
+    def _on_recon_wavelength_changed(self) -> None:
+        """Recon 页波长下拉变化：保存旧 OTF、同步 Laser 页并显示新 OTF。"""
+        if self._populating_widgets:
+            return
+        self._store_current_recon_otf_path()
+        wavelength_nm = _selected_recon_wavelength_nm(self.combo_recon_wavelength)
+        self._set_laser_buttons_from_recon(wavelength_nm)
+        self.config.selected_laser_nm = int(wavelength_nm)
+        self._load_recon_otf_path_for_wavelength(wavelength_nm)
+
+    def _on_laser_wavelength_toggled(self, wavelength_nm: int, checked: bool) -> None:
+        """Laser 页单选按钮变化：同步 Recon 页波长与对应 OTF 路径。"""
+        if not checked:
+            return
+        if self._populating_widgets:
+            return
+        self._store_current_recon_otf_path()
+        self.config.selected_laser_nm = int(wavelength_nm)
+        self._sync_recon_wavelength_combo(int(wavelength_nm))
+        self._load_recon_otf_path_for_wavelength(int(wavelength_nm))
+
+    def _browse_recon_file(self, edit: QLineEdit, title: str, save: bool = False) -> None:
+        """Recon 页通用路径选择器。"""
+        current = edit.text().strip()
+        start_dir = str(Path(current).parent if current else Path.cwd())
+        file_filter = "TIFF Files (*.tif *.tiff);;All Files (*.*)"
+        if save:
+            path, _ = QFileDialog.getSaveFileName(self, title, start_dir, file_filter)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, title, start_dir, file_filter)
+        if path:
+            edit.setText(path)
+
+    def _browse_recon_otf(self) -> None:
+        self._browse_recon_file(self.edit_recon_otf_path, "Select OTF File")
+
+    def _browse_recon_background(self) -> None:
+        self._browse_recon_file(self.edit_recon_background_path, "Select Background File")
+
+    def _browse_recon_output(self) -> None:
+        current = self.edit_recon_output_path.text().strip()
+        start_dir = current if current else str(Path.cwd())
+        path = QFileDialog.getExistingDirectory(self, "Select Reconstruction Output Folder", start_dir)
+        if path:
+            self.edit_recon_output_path.setText(path)
+
     def _sync_config_from_widgets(self) -> AppConfig:
         """把控件最新状态同步回 ``self.config``，避免两边读到不同值。"""
         self.config.daq = self._current_daq_config()
         self.config.selected_laser_nm = self._selected_laser_nm()
+        self.config.z_scan = read_z_scan_config_from_widgets(self)
+        self.config.reconstruction = read_reconstruction_config_from_widgets(self)
         return self.config
+
+    @_catch_to_error
+    def _read_current_z_into_start(self) -> None:
+        if self.stage_adapter is None:
+            raise HardwareError("No Z stage adapter is available.")
+        if not getattr(self.stage_adapter, "is_connected", False):
+            self.stage_adapter.connect()
+        self.spin_zscan_start_um.setValue(float(self.stage_adapter.get_position_um()))
+        self.spin_zscan_start_um.setProperty("zscan_auto_start", False)
+        self._refresh_zscan_preview()
+
+    def _sync_zscan_enabled_state(self, enabled: bool) -> None:
+        for widget in (
+            self.spin_zscan_start_um,
+            self.btn_zscan_read_current,
+            self.combo_zscan_direction,
+            self.spin_zscan_step_um,
+            self.spin_zscan_num_steps,
+            self.combo_zscan_exposure_preset,
+            self.check_zscan_return_to_start,
+        ):
+            widget.setEnabled(bool(enabled))
+        for widget in (
+            getattr(self.ui, "group_zscan_preview", None),
+            getattr(self.ui, "group_zscan_test", None),
+            getattr(self, "btn_zscan_test", None),
+        ):
+            if widget is not None:
+                widget.setEnabled(bool(enabled))
+
+    def _refresh_zscan_preview(self) -> None:
+        """Update z-scan calculated preview labels without connecting or moving hardware."""
+        preview_value_labels = (
+            self.label_zscan_preview_start_value,
+            self.label_zscan_preview_end_value,
+            self.label_zscan_preview_distance_value,
+            self.label_zscan_preview_eta_value,
+        )
+        try:
+            cfg = read_z_scan_config_from_widgets(self)
+            enabled = bool(cfg.enabled)
+            self.ui.group_zscan_preview.setEnabled(enabled)
+            self.ui.group_zscan_test.setEnabled(enabled)
+            self.btn_zscan_test.setEnabled(enabled and self.combo_zscan_test_target.count() > 0)
+
+            has_runtime_start = cfg.start_um is None
+            stage_connected = (
+                self.stage_adapter is not None
+                and bool(getattr(self.stage_adapter, "is_connected", False))
+            )
+            start_um: float | None
+            if has_runtime_start and stage_connected:
+                start_um = float(self.stage_adapter.get_position_um())
+                start_text = f"{start_um:.3f} um"
+            elif has_runtime_start:
+                start_um = None
+                start_text = "运行时读取当前 Z"
+            else:
+                start_um = float(self.spin_zscan_start_um.value())
+                start_text = f"{start_um:.3f} um"
+
+            direction_sign = 1.0 if cfg.direction == "positive_z" else -1.0
+            move_count = int(cfg.num_steps)
+            image_layers = move_count + 1
+            total_um = abs(float(cfg.step_um) * move_count)
+            if start_um is None:
+                end_text = "--"
+            else:
+                end_um = start_um + direction_sign * float(cfg.step_um) * move_count
+                end_text = f"{end_um:.3f} um"
+
+            try:
+                daq_config = self._current_daq_config()
+            except Exception:
+                daq_config = self.config.daq
+            plan = NIDaqWaveformBuilder().build_z_scan(
+                daq_config=daq_config,
+                timing=self.config.timing,
+                exposure_us=cfg.actual_exposure_us,
+                include_role_matrix=False,
+            )
+            total_eta_s = (float(plan.duration_s) + 0.025) * image_layers
+
+            _set_language_specific_label_text(self.label_zscan_preview_start_value, start_text)
+            _set_language_specific_label_text(self.label_zscan_preview_end_value, end_text)
+            _set_language_specific_label_text(self.label_zscan_preview_distance_value, f"{total_um:.3f} um")
+            _set_language_specific_label_text(self.label_zscan_preview_eta_value, f"{total_eta_s * 1000.0:.1f} ms")
+        except Exception:
+            for label in preview_value_labels:
+                _set_language_specific_label_text(label, "--")
+
+    def _handle_zscan_test_error(self, err_msg: str) -> None:
+        warning = getattr(self, "_pending_zscan_restore_warning", None)
+        if warning:
+            err_msg = f"{err_msg}\n附加: {warning}"
+            self._pending_zscan_restore_warning = None
+        slm_warning = getattr(self, "_pending_zscan_slm_warning", None)
+        if slm_warning:
+            err_msg = f"{err_msg}\n附加: {slm_warning}"
+            self._pending_zscan_slm_warning = None
+        self.label_zscan_test_status.setText(f"测试失败: {err_msg}")
+        self._set_error(err_msg)
+        QMessageBox.critical(self, "Z-Scan Test", err_msg)
+
+    def _run_zscan_test(self) -> None:
+        self._pending_zscan_restore_warning = None
+        self._pending_zscan_slm_warning = None
+        started_at_s = time.perf_counter()
+        target_id = self.combo_zscan_test_target.currentData()
+        if not target_id:
+            self._handle_zscan_test_error("Please select a Z-scan test target.")
+            return
+        try:
+            self.config.z_scan = read_z_scan_config_from_widgets(self)
+            if not self.config.z_scan.enabled:
+                self._handle_zscan_test_error("Z-Scan is disabled. Enable z-scan before running tests.")
+                return
+
+            if target_id == Z_SCAN_TEST_STAGE_ONLY:
+                result = self._run_zscan_stage_only_test(started_at_s)
+                message_lines = [
+                    "位移台测试完成。",
+                    f"访问 Z 位置数: {len(result.positions_visited)}",
+                    f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
+                ]
+                if result.move_latencies_ms:
+                    message_lines.append(
+                        "移动延迟 (min/med/max): "
+                        f"{min(result.move_latencies_ms):.2f} / "
+                        f"{statistics.median(result.move_latencies_ms):.2f} / "
+                        f"{max(result.move_latencies_ms):.2f} ms"
+                    )
+                else:
+                    message_lines.append("移动延迟: 无 (没有任何一次移动成功)")
+            elif target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
+                result = self._run_zscan_stage_plus_capture_test(started_at_s)
+                score_min = min(result.focus_scores) if result.focus_scores else float("nan")
+                score_max = max(result.focus_scores) if result.focus_scores else float("nan")
+                message_lines = [
+                    "位移台 + 每层采图测试完成 (含 SML 评分)。",
+                    f"采集帧数: {result.frame_count}",
+                    f"SML 选择的最佳层: 第 {result.best_layer_index + 1} 层 / 共 {result.frame_count} 层",
+                    f"最佳层 Z: {result.best_z_um:.3f} um",
+                    f"SML 分数范围 (min/max): {score_min:.3g} / {score_max:.3g}",
+                    f"TIFF 输出: {result.output_path}",
+                    f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
+                    "提示: 测试结束后 SLM 当前 RO 仍为 z-scan RO；下一次正式 SIM9 会重新选择正式 RO。",
+                ]
+            else:
+                self._handle_zscan_test_error(f"Unknown Z-scan test target: {target_id!r}")
+                return
+
+            warning = getattr(self, "_pending_zscan_restore_warning", None)
+            if warning:
+                self._pending_zscan_restore_warning = None
+                degraded_message = "测试已完成，但回起点失败。\n" + "\n".join(message_lines[1:]) + f"\n警告: {warning}"
+                self.label_zscan_test_status.setText(degraded_message)
+                self._set_error(warning)
+                QMessageBox.warning(self, "Z-Scan Test", degraded_message)
+                return
+
+            message = "\n".join(message_lines)
+            self.label_zscan_test_status.setText(message)
+            self._set_error("-")
+            if target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
+                self._pending_zscan_slm_warning = None
+            QMessageBox.information(self, "Z-Scan Test", message)
+        except Exception as exc:
+            self._handle_zscan_test_error(str(exc))
+
+    def _zscan_positions_checked(self, cfg: ZScanConfig) -> list[float]:
+        if self.stage_adapter is None:
+            raise HardwareError("No Z stage adapter is available.")
+        if not getattr(self.stage_adapter, "is_connected", False):
+            self.stage_adapter.connect()
+        positions = scan_positions(cfg, stage_position_um=float(self.stage_adapter.get_position_um()))
+        min_um, max_um = self.stage_adapter.get_z_ranges_um()
+        out_of_range = [z for z in positions if not (float(min_um) <= float(z) <= float(max_um))]
+        if out_of_range:
+            preview = ", ".join(f"{z:.3f}" for z in out_of_range[:5])
+            suffix = f" ... (共 {len(out_of_range)} 个越界)" if len(out_of_range) > 5 else ""
+            raise HardwareError(
+                f"Z-Scan 目标位置超出位移台量程 [{float(min_um):.3f}, {float(max_um):.3f}] um："
+                f"{preview}{suffix}"
+            )
+        return [float(z) for z in positions]
+
+    def _run_zscan_stage_only_test(self, started_at_s: float) -> ZScanTestResult:
+        cfg = self.config.z_scan
+        positions = self._zscan_positions_checked(cfg)
+        started_movement = False
+        latencies_ms: list[float] = []
+        try:
+            for z_um in positions:
+                t0 = time.perf_counter()
+                self.stage_adapter.move_z_um(z_um)
+                started_movement = True
+                latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+        finally:
+            if started_movement:
+                try:
+                    self.stage_adapter.move_z_um(positions[0])
+                except Exception as restore_exc:
+                    self._pending_zscan_restore_warning = (
+                        f"回到起始层失败: {restore_exc}（位移台可能停在中间位置，请人工确认 Z）"
+                    )
+        return ZScanTestResult(
+            mode=Z_SCAN_TEST_STAGE_ONLY,
+            positions_visited=positions,
+            total_duration_s=max(0.0, time.perf_counter() - float(started_at_s)),
+            move_latencies_ms=latencies_ms,
+            output_path=None,
+            frame_count=0,
+        )
+
+    def _run_zscan_stage_plus_capture_test(self, started_at_s: float) -> ZScanTestResult:
+        cfg = self.config.z_scan
+        daq_config: DaqLineConfig | None = None
+        was_camera_connected = False
+        camera_cleanup_needed = False
+        stage_may_have_moved = False
+        positions: list[float] = []
+        try:
+            if int(cfg.num_steps) > Z_SCAN_TEST_CAPTURE_MAX_STEPS:
+                raise HardwareError(
+                    f"Z-Scan 联动采图测试最多允许 {Z_SCAN_TEST_CAPTURE_MAX_STEPS} 次移动；"
+                    f"当前为 {int(cfg.num_steps)} 次移动，请降低移动次数后重试。"
+                )
+            if self.stage_adapter is None:
+                raise HardwareError("No Z stage adapter is available.")
+            if not getattr(self.stage_adapter, "is_connected", False):
+                self.stage_adapter.connect()
+            if self.slm_adapter is None or not self.slm_adapter.is_connected():
+                raise HardwareError("Z-Scan + 采图测试前需要先连接 SLM。")
+            if self.camera_adapter is None:
+                raise HardwareError("No camera adapter is available.")
+
+            daq_config = self._current_daq_config()
+            validate_daq_line_config(daq_config)
+            positions = self._zscan_positions_checked(cfg)
+            running_orders = self.slm_adapter.list_running_orders()
+            z_ro_index, _z_ro_name, z_warnings = find_z_scan_running_order(
+                running_orders,
+                exposure_preset_ms=cfg.exposure_preset_ms,
+            )
+            if z_ro_index is None:
+                detail = "; ".join(z_warnings)
+                message = "No z-scan Running Order found."
+                if detail:
+                    message = f"{message} {detail}"
+                raise HardwareError(message)
+            self.slm_adapter.select_running_order(z_ro_index)
+            self._pending_zscan_slm_warning = "SLM 当前 RO 可能仍为 z-scan RO。"
+            was_camera_connected = self._camera_connected_for_test_cleanup()
+            camera_cleanup_needed = True
+
+            def _on_zscan_status(event: str, payload: dict[str, object]) -> None:
+                nonlocal stage_may_have_moved
+                if event == "z_scan_stage_positioned":
+                    stage_may_have_moved = True
+
+            z_result = run_z_scan(
+                stage_adapter=self.stage_adapter,
+                camera_adapter=self.camera_adapter,
+                slm_adapter=self.slm_adapter,
+                daq_adapter=self.daq_adapter,
+                daq_config=daq_config,
+                camera_config=clone_app_config(self.config).camera,
+                timing=self.config.timing,
+                z_scan_config=cfg,
+                waveform_builder=NIDaqWaveformBuilder(),
+                stop_event=None,
+                on_status=_on_zscan_status,
+                keep_captured_stack=True,
+            )
+            stack = z_result.captured_stack
+            if stack is None:
+                raise HardwareError("Z-Scan test did not return a captured stack.")
+            stack = np.asarray(stack)
+            expected_layers = int(cfg.num_steps) + 1
+            if stack.ndim != 3 or stack.shape[0] != expected_layers:
+                raise HardwareError(f"Z-Scan test returned invalid stack shape: {stack.shape!r}")
+            if stack.dtype != np.uint16:
+                raise HardwareError(f"Z-Scan test returned {stack.dtype} stack; expected uint16.")
+            if len(z_result.focus_curve) != expected_layers:
+                raise HardwareError(
+                    "Z-Scan test focus curve length "
+                    f"{len(z_result.focus_curve)} does not match expected {expected_layers}."
+                )
+
+            focus_scores = [float(point.focus_score) for point in z_result.focus_curve]
+            best_layer_index = max(
+                range(len(z_result.focus_curve)),
+                key=lambda index: z_result.focus_curve[index].focus_score,
+            )
+            exposure_ms = max(1, int(round(float(cfg.actual_exposure_us) / 1000.0)))
+            output_path = self._test_capture_path(
+                "zscan_capture",
+                f"zscan_{exposure_ms}ms_{int(cfg.num_steps)}moves",
+            )
+            self._write_uint16_tiff(output_path, stack)
+            self._pending_zscan_slm_warning = None
+            return ZScanTestResult(
+                mode=Z_SCAN_TEST_STAGE_PLUS_CAPTURE,
+                positions_visited=[float(point.z_um) for point in z_result.focus_curve],
+                total_duration_s=max(0.0, time.perf_counter() - float(started_at_s)),
+                move_latencies_ms=[],
+                output_path=output_path,
+                frame_count=int(stack.shape[0]),
+                best_layer_index=int(best_layer_index),
+                best_z_um=float(z_result.best_z_um),
+                focus_scores=focus_scores,
+            )
+        except Exception:
+            if stage_may_have_moved and positions and self.stage_adapter is not None:
+                try:
+                    self.stage_adapter.move_z_um(positions[0])
+                except Exception as restore_exc:
+                    self._pending_zscan_restore_warning = (
+                        f"回到起始层失败: {restore_exc}（位移台可能停在中间位置，请人工确认 Z）"
+                    )
+            raise
+        finally:
+            if daq_config is not None:
+                try:
+                    self.daq_adapter.set_all_low(daq_config.device_name)
+                except Exception:
+                    pass
+            if camera_cleanup_needed:
+                try:
+                    self._cleanup_test_camera(was_camera_connected)
+                except Exception:
+                    pass
 
     def _clear_line_combos(self) -> None:
         """清空所有线位下拉（设备不可用或换设备失败时使用）。"""
@@ -492,6 +1213,7 @@ class SimSettingsDialog(QDialog):
         self.combo_daq_device.blockSignals(True)
         self.combo_daq_device.clear()
         self.combo_daq_device.addItems(devices)
+        _center_combobox_items(self.combo_daq_device)
         # 3) 选中策略：优先 _preferred_daq_device，其次 current_device，最后 devices[0]。
         selected_device = self._preferred_daq_device if self._preferred_daq_device in devices else ""
         if not selected_device and current_device in devices:
@@ -499,7 +1221,7 @@ class SimSettingsDialog(QDialog):
         if not selected_device and devices:
             selected_device = devices[0]
         if selected_device:
-            self.combo_daq_device.setCurrentText(selected_device)
+            set_combobox_current_text(self.combo_daq_device, selected_device)
         self.combo_daq_device.blockSignals(False)
         # 4) 找不到任何设备 → 清线位下拉 + 显示错误。
         if not devices:
@@ -556,6 +1278,7 @@ class SimSettingsDialog(QDialog):
         if daq_config is not None:
             for target_id, label in build_daq_test_target_items(daq_config):
                 self.combo_test_target.addItem(label, target_id)
+            _center_combobox_items(self.combo_test_target)
             selected_index = self.combo_test_target.findData(selected_target)
             # 3) 旧选项不在新列表 → 退回 index 0；下拉为空时 selected_index 仍 < 0。
             if selected_index < 0 and self.combo_test_target.count():
@@ -755,8 +1478,11 @@ class SimSettingsDialog(QDialog):
         try:
             # 1) 同步 UI 状态到 config 副本（``clone_app_config`` 复制以免影响外部）。
             config = clone_app_config(self._sync_config_from_widgets())
-            # 2) 校验 DAQ 线位配置；失败立刻报错，不写盘。
+            # 2) 校验 DAQ 线位与整份配置；失败立刻报错，不写盘。
             validate_daq_line_config(config.daq)
+            validation_errors = validate_app_config(config)
+            if validation_errors:
+                raise ValueError("\n".join(validation_errors))
             # 3) 保存到 JSON：路径优先用 config_path，否则默认。
             save_app_config(config, config.config_path or DEFAULT_CONFIG_PATH)
             # 4) 信号回传新 config → 关闭对话框。
@@ -832,11 +1558,13 @@ class SimControlWindow(QMainWindow):
         self.config = load_app_config(config_path or DEFAULT_CONFIG_PATH)
         # 3) 创建采集控制器并接管所有硬件 adapter（真实/仿真由 backend 决定）。
         self.controller = SimAcquisitionController(self.config.backend, self)
+        self.controller.z_scan_config = self.config.z_scan
+        self.controller.reconstruction_config = self.config.reconstruction
         # 4) 占位决策器单实例就够；不需要独立 QThread。
         self.decision_engine = DecisionEngine()
         # 5) 重建 / 特征各起一个 QThread，让 CPU 重负载不阻塞 GUI。
         self.recon_thread = QThread(self)
-        self.recon_worker = ReconstructionWorker()
+        self.recon_worker = ReconstructionWorker(self.config.reconstruction)
         self.recon_worker.moveToThread(self.recon_thread)
         self.recon_thread.start()
         self.feature_thread = QThread(self)
@@ -852,6 +1580,7 @@ class SimControlWindow(QMainWindow):
         self.hardware_leds: dict[str, LedIndicator] = {}
         self.current_task_id = "-"
         self.current_laser_nm = self.config.selected_laser_nm
+        self.sim_last_reconstruction_result = None
 
         # 7) UI 构造 → 信号连接 → 控件初值填充 → 刷新线位下拉 → 日志记录。
         self._build_ui()
@@ -1124,7 +1853,7 @@ class SimControlWindow(QMainWindow):
         self.controller.signal_status_changed.connect(self._handle_status_changed)
         self.controller.signal_acquisition_failed.connect(self._handle_acquisition_failed)
         self.controller.signal_acquisition_cancelled.connect(self._handle_acquisition_cancelled)
-        self.controller.signal_acquisition_ready.connect(self._handle_acquisition_ready)
+        self.controller.signal_acquisition_summary_ready.connect(self._handle_acquisition_ready)
         # 3) Acquisition ready → 触发重建 worker；重建 ready → 触发特征 worker。
         self.controller.signal_acquisition_ready.connect(self.recon_worker.slot_reconstruct)
         self.recon_worker.signal_reconstruction_ready.connect(self._handle_reconstruction_ready)
@@ -1193,6 +1922,9 @@ class SimControlWindow(QMainWindow):
         self.config.timing = self._current_timing_config()
         self.config.pattern_files = self._current_pattern_files()
         self.config.selected_laser_nm = self._selected_laser_nm()
+        self.controller.z_scan_config = self.config.z_scan
+        self.controller.reconstruction_config = self.config.reconstruction
+        self.recon_worker.set_reconstruction_config(self.config.reconstruction)
 
     def _refresh_device_lines(self) -> None:
         """刷新 DAQ 线位下拉：用 controller 拉 lines，缺失时回落到默认 16 line 列表。"""
@@ -1233,6 +1965,7 @@ class SimControlWindow(QMainWindow):
         """Load Config 按钮：从磁盘重读配置 → 写回控件 → 刷新线位。"""
         self.config = load_app_config(self.config.config_path or DEFAULT_CONFIG_PATH)
         self._populate_widgets_from_config(self.config)
+        self.recon_worker.set_reconstruction_config(self.config.reconstruction)
         self._refresh_device_lines()
         self._log(f"Config loaded from {self.config.config_path}")
 
@@ -1324,6 +2057,7 @@ class SimControlWindow(QMainWindow):
             initialize_hardware=True,
             apply_daq_config=True,
             apply_camera_config=True,
+            z_scan_config=self.config.z_scan,
         )
         # 3) 把 task_id / 波长写到状态区，并把 pipeline 标签置成"排队中"。
         self.current_task_id = task_id
@@ -1344,6 +2078,7 @@ class SimControlWindow(QMainWindow):
     def _clear_result(self) -> None:
         """Clear Result 按钮：把状态/pipeline 标签恢复到初始空值。"""
         self.current_task_id = "-"
+        self.sim_last_reconstruction_result = None
         self.lbl_current_frame.setText("-")
         self.lbl_current_pattern.setText("-")
         self.lbl_current_task.setText("-")
@@ -1402,11 +2137,11 @@ class SimControlWindow(QMainWindow):
             for led in self.hardware_leds.values():
                 led.set_state("red")
 
-    def _handle_acquisition_ready(self, batch) -> None:
-        """采集完成槽：把 batch 信息写到 pipeline 标签上，等重建 worker 接管。"""
-        self.pipeline_labels["task_id"].setText(batch.task_id)
-        self.pipeline_labels["stack_shape"].setText(str(list(batch.stack.shape)))
-        self.pipeline_labels["stack_dtype"].setText(str(batch.stack.dtype))
+    def _handle_acquisition_ready(self, payload: dict) -> None:
+        """采集完成槽：只用轻量 summary 更新 GUI，不接收 raw stack。"""
+        self.pipeline_labels["task_id"].setText(str(payload.get("task_id", "")))
+        self.pipeline_labels["stack_shape"].setText(str(payload.get("stack_shape", "-")))
+        self.pipeline_labels["stack_dtype"].setText(str(payload.get("stack_dtype", "-")))
         self.pipeline_labels["reconstruction"].setText("Running")
 
     def _handle_acquisition_failed(self, task_id: str, message: str) -> None:
@@ -1425,12 +2160,14 @@ class SimControlWindow(QMainWindow):
 
     def _handle_reconstruction_ready(self, recon_result) -> None:
         """重建完成槽：把状态切到"重建 Ready / 特征 Running"。"""
+        self.sim_last_reconstruction_result = recon_result
         self.pipeline_labels["reconstruction"].setText("Ready")
         self.pipeline_labels["features"].setText("Running")
         self._log(f"Reconstruction ready for {recon_result.task_id}")
 
     def _handle_reconstruction_failed(self, task_id: str, message: str) -> None:
         """重建失败槽：标签置 Failed，并把消息塞到错误标签。"""
+        self.sim_last_reconstruction_result = None
         self.pipeline_labels["reconstruction"].setText("Failed")
         self._set_error(f"Reconstruction failed for {task_id}: {message}")
 

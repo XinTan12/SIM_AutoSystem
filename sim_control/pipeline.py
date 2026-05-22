@@ -33,17 +33,29 @@
 from __future__ import annotations
 
 import traceback
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+import tifffile
 
-from .models import AcquisitionBatch, DecisionResult, FeatureResult, ReconstructionResult
+from .models import AcquisitionBatch, DecisionResult, FeatureResult, ReconstructionConfig, ReconstructionResult
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # OpenCV 在部分部署中可能缺失；用 try/except 兜底，使本文件可在最小环境跑通。
 try:
     import cv2
 except Exception:  # pragma: no cover - exercised when OpenCV is absent in a deployment.
     cv2 = None
+
+
+def _resolve_reconstruction_output_dir(output_path: str) -> Path:
+    output_dir = Path(output_path)
+    if output_dir.is_absolute():
+        return output_dir
+    return PROJECT_ROOT / output_dir
 
 
 class ReconstructionWorker(QObject):
@@ -61,6 +73,13 @@ class ReconstructionWorker(QObject):
     signal_reconstruction_ready = pyqtSignal(object)
     signal_reconstruction_failed = pyqtSignal(str, str)
 
+    def __init__(self, reconstruction_config: ReconstructionConfig | None = None, parent: QObject | None = None):
+        super().__init__(parent)
+        self.reconstruction_config = reconstruction_config
+
+    def set_reconstruction_config(self, reconstruction_config: ReconstructionConfig | None) -> None:
+        self.reconstruction_config = reconstruction_config
+
     @pyqtSlot(object)
     def slot_reconstruct(self, batch: AcquisitionBatch) -> None:
         """从 9 帧 SIM stack 重建一张预览图。
@@ -76,6 +95,13 @@ class ReconstructionWorker(QObject):
             stack = np.asarray(batch.stack)
             if stack.ndim != 3 or stack.shape[0] != 9:
                 raise ValueError(f"Expected stack shape (9, H, W), got {stack.shape}")
+            if stack.dtype != np.uint16:
+                raise TypeError(f"Expected stack dtype uint16, got {stack.dtype}")
+            reconstruction_config = self.reconstruction_config
+            if reconstruction_config is not None and reconstruction_config.enabled:
+                result = self._run_gpu_wiener_reconstruction(batch, stack, reconstruction_config)
+                self.signal_reconstruction_ready.emit(result)
+                return
             # 2) 用 uint32 累加防止 9 帧叠加溢出，再整除帧数得到 uint16 平均图。
             #    真实算法接入时把这一行替换成 SIM 重建即可。
             preview = (np.add.reduce(stack, axis=0, dtype=np.uint32) // np.uint32(stack.shape[0])).astype(np.uint16)
@@ -94,6 +120,66 @@ class ReconstructionWorker(QObject):
         except Exception as exc:
             # 4) 任意异常打包成 (task_id, traceback) 字符串发回 GUI，方便用户复现。
             self.signal_reconstruction_failed.emit(batch.task_id, f"{exc}\n{traceback.format_exc()}")
+
+    def _run_gpu_wiener_reconstruction(
+        self,
+        batch: AcquisitionBatch,
+        stack: np.ndarray,
+        reconstruction_config: ReconstructionConfig,
+    ) -> ReconstructionResult:
+        from reconstruction.sim_wiener import reconstruct_sim9_stack
+
+        otf_path = reconstruction_config.otf_path_for_wavelength(batch.laser_wavelength_nm)
+        output = reconstruct_sim9_stack(
+            stack,
+            wavelength_nm=batch.laser_wavelength_nm,
+            otf_path=otf_path,
+            background_path=reconstruction_config.background_path,
+            device=reconstruction_config.device,
+            dtype=reconstruction_config.dtype,
+            wiener=reconstruction_config.wiener,
+            pixel_size_nm=reconstruction_config.pixel_size_nm,
+            excitation_na=reconstruction_config.excitation_na,
+            theta_ratio=tuple(reconstruction_config.theta_ratio),
+            recon_group_batch=reconstruction_config.recon_group_batch,
+        )
+        reconstruction = np.asarray(output["reconstruction"], dtype=np.float32)
+        if reconstruction.ndim == 3:
+            preview = reconstruction[0]
+        elif reconstruction.ndim == 2:
+            preview = reconstruction
+        else:
+            raise ValueError(f"Expected 2D or 3D reconstruction output, got {reconstruction.shape}")
+        metadata = dict(output.get("metadata", {}) or {})
+        if reconstruction_config.output_path.strip():
+            output_dir = _resolve_reconstruction_output_dir(reconstruction_config.output_path.strip())
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / datetime.now().strftime("sim_reconstruction_%Y%m%d_%H%M%S.tif")
+            tifffile.imwrite(
+                str(output_path),
+                reconstruction.astype(np.float32, copy=False),
+                photometric="minisblack",
+            )
+            metadata["output_dir"] = str(output_dir)
+            metadata["output_path"] = str(output_path)
+            metadata["output_saved"] = True
+        else:
+            metadata["output_path"] = ""
+            metadata["output_saved"] = False
+        metadata.update(
+            {
+                "task_id": batch.task_id,
+                "placeholder": False,
+                "stack_shape": list(stack.shape),
+                "preview_shape": list(preview.shape),
+            }
+        )
+        return ReconstructionResult(
+            task_id=batch.task_id,
+            preview_image=np.asarray(preview, dtype=np.float32),
+            metadata=metadata,
+            succeeded=True,
+        )
 
 
 class FeatureWorker(QObject):

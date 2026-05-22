@@ -5,6 +5,48 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-05-22
+
+### 决策：SIM9 正式采集 raw stack 与 GUI 状态信号分离
+- 原因：
+  正式 SIM9 采集得到的 `(9, H, W)` `numpy.uint16` 栈可能接近百 MB，GUI 状态更新只需要 task id、shape、dtype 和 metadata。继续让 GUI 状态槽接收 `AcquisitionBatch` 会让界面层接触并可能暂存大数组，边界不清，也增加后续误加拷贝、预览提取或同步写盘的风险。
+- 影响：
+  `signal_acquisition_ready(AcquisitionBatch)` 保留为 raw 数据通道，只连接重建、保存或分析 worker；新增 `signal_acquisition_summary_ready(dict)` 作为 GUI 状态通道，payload 固定为 `task_id`、`stack_shape`、`stack_dtype`、`metadata`。controller 的 stop_event 清理也挂到 summary 信号，避免 controller 清理回调接收 raw stack。后续 GUI 状态功能不得通过 raw batch 中转，也不得为了状态显示复制或序列化 stack。
+
+### 决策：SIM 重建配置改为默认启用，并由设置弹窗 Recon 页管理用户级参数与输出 TIFF
+- 原因：
+  GPU Wiener 重建已经接入 pipeline，后续真实采集流程需要操作者在 GUI 中配置当前波长 OTF、background、Wiener、NA、pixel size 和输出路径，避免继续手改 JSON 或依赖硬编码路径。`device`、`dtype`、`theta_ratio`、`recon_group_batch` 属于算法/运行时调试参数，日常采集暴露这些项容易误改，因此保持内部默认。
+- 影响：
+  `config/sim_control_config.json` schema 升到 v6，`ReconstructionConfig.enabled` 默认改为 `true`，新增 `output_path`。`SimSettingsDialog` 新增 `Recon` 页，波长与 Laser 页共用 `selected_laser_nm`，保存时要求当前波长 OTF 已配置。`ReconstructionWorker` 在 GPU Wiener 成功后若 `output_path` 非空，会保存 `float32` reconstruction TIFF；写盘失败视为重建失败，不回退占位均值。后续无 OTF 的仿真或 payload 测试需要显式关闭/补齐重建配置，真实使用前需要为各波长填写标定文件路径。
+
+### 决策：SIM 重建输出统一使用目录语义并默认保存到 `data/reconstruction`
+- 原因：
+  真实采集会重复产生重建 TIFF，固定单文件路径容易覆盖且与用户“保存路径为文件夹”的操作习惯不一致。将 `ReconstructionConfig.output_path` 统一解释为输出目录，可以让 Recon 页只选择文件夹，并由 worker 自动生成含日期时间的文件名，减少误操作。
+- 影响：
+  `config/sim_control_config.json` schema 升到 v7，`ReconstructionConfig.output_path` 字段名保留但语义改为输出目录，默认 `data/reconstruction`，相对目录统一按项目根目录解析而不是按进程当前工作目录解析。v6->v7 迁移会把空值补成默认目录、把旧 `.tif/.tiff` 文件路径迁移为父目录；新配置校验不接受 `.tif/.tiff` 作为输出路径。`ReconstructionWorker` 写盘文件名固定为 `sim_reconstruction_YYYYMMDD_HHMMSS.tif`。运行时重建 TIFF、测试采集数据等大文件放在 `data/` 下并默认不入版本管理。
+
+## 2026-05-21
+
+### 决策：SIM9 GPU Wiener 重建通过安全内存接口接入 pipeline，release/sort 暂不自动回传
+- 原因：
+  师兄完成的 GPU Wiener 重建算法原始入口是带硬编码路径和磁盘 I/O 的脚本，不适合由 GUI 或采集 pipeline 直接 import。当前主流程需要把 SIM 9 帧采集得到的 `(9, H, W)` `numpy.uint16` 栈从内存交给重建算法，同时保持 GUI 在未安装 `torch/scipy` 或未配置 OTF 时仍可启动，并避免真实采集路径回退到不可追踪的占位结果。
+- 影响：
+  对外稳定入口为 `reconstruction.sim_wiener.reconstruct_sim9_stack()`；`sim_wiener_gpu_emdapp_batchInGroup_batchBetGroup.py`、`emd.py`、`emd_fast_torch.py` 作为算法后端保持不改。`config/sim_control_config.json` schema 升到 v5，新增 `reconstruction` 段，默认关闭；启用时必须配置当前波长 OTF。`ReconstructionWorker` 在启用时调用 GPU Wiener，失败即标记重建失败且不回退占位均值；未启用时保留原占位均值以维持仿真和基础流程。独立 SIM GUI 与集成主界面保存 `sim_last_reconstruction_result`；当前不触发 `signal_isTarget(7, ...)`，后续 release/sort 需等目标细胞判据或分类模型明确后再接入。
+
+### 决策：Z-Scan 的 `num_steps` 表示 ZDrive 移动次数，界面层扫间隔以 nm 输入
+- 原因：
+  用户在真实操作语义中把“层扫步数”理解为位移台移动次数，而不是最终图像层数。因此 `num_steps=10`、`step_um=0.3` 应表示从起始层开始移动 10 次，总位移 `3.0 μm`，并采集起始层加移动后层共 11 张图。GUI 侧以 nm 设置 scan gap 更符合小步长调焦习惯，且 10 nm 单步调整比 0.001 μm/0.1 μm 混合显示更直观。
+- 影响：
+  内部配置字段继续保留 `step_um` 和 `num_steps` 以兼容 v4 配置，不新增 schema 版本；UI 读写时执行 `nm ↔ μm` 转换。`scan_positions()` 返回 `num_steps + 1` 个位置，Z-Scan 预览、Test B stack/focus curve 校验、主界面摘要和预计用时均按图像层数 `num_steps + 1` 计算。后续代码中看到 `ZScanConfig.num_steps` 时应按“移动次数”理解，而不是图像层数。
+
+## 2026-05-20
+
+### 决策：SIM9 正式采集前增加基于 Ti2 ZDrive 的单帧三相位 Z-Scan 自动对焦
+- 原因：
+  微流控捕获细胞后 Z 位置存在抖动，直接执行 SIM9 会出现失焦采集。SLM 路径无法提供传统宽场均匀照明，因此 Z-Scan 采用 488 nm 单方向三相位条纹在同一次相机曝光内依次播放，让三相位平均效应在相机积分期间形成近似均匀照明，同时每个 Z 位置只产生 1 张图以减少时延。
+- 影响：
+  `patterns/2d_3.5.repz11` 是正式 SIM9 与 Z-Scan 共享的 repertoire；新增 `488_3.5_2d_zscan3p_{5,8,14,20}ms` RO 后运行时不再为 Z-Scan 重新烧录单独 `.repz11`。Z-Scan RO 使用 `[HWA h]` 与 `t.wait(20)`，不使用 `{f ...}` FINISH 循环；对应 DAQ 波形不拉 `slm_finish_line`，只要求 `slm_enable_line` 先行 guard 后同步输出 `slm_trigger_line`、`camera_trigger_line` 和 `laser_488_line`，其中 camera/488 高电平持续时间使用 preset 对应实际执行时间 `4884/7884/13884/19884 us`。正式 SIM9 的 FINISH-controlled RO 与 9 帧波形逻辑保持不变。
+
 ## 2026-05-13
 
 ### 决策：每次项目修改后必须使用独立 subagent review

@@ -33,6 +33,37 @@
     "slm_sdk_path": "",
     "simulation_mode": false
   },
+  "z_scan": {
+    "enabled": true,
+    "start_um": 2674.74,
+    "direction": "positive_z",
+    "step_um": 0.3,
+    "num_steps": 10,
+    "exposure_preset_ms": 8,
+    "focus_metric": "sml",
+    "return_to_start_on_cancel": true
+  },
+  "reconstruction": {
+    "enabled": true,
+    "backend": "sim_wiener_gpu",
+    "device": "cuda",
+    "dtype": "single",
+    "otf_405_path": "",
+    "otf_488_path": "",
+    "otf_561_path": "",
+    "otf_647_path": "",
+    "background_path": "",
+    "output_path": "data/reconstruction",
+    "wiener": 2.0,
+    "pixel_size_nm": 65.0,
+    "excitation_na": 1.49,
+    "theta_ratio": [
+      1,
+      1,
+      1
+    ],
+    "recon_group_batch": 1
+  },
   "pattern_files": [
     "",
     "",
@@ -46,5 +77,5 @@
   ],
   "selected_running_order": "",
   "selected_laser_nm": 488,
-  "config_version": 3
+  "config_version": 7
 }

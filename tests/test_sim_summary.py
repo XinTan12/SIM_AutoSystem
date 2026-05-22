@@ -215,5 +215,38 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("Pattern RO: 488_3.5_2d_1ms", summary)
 
 
+    def test_build_sim_settings_summary_includes_enabled_z_scan_block(self):
+        """启用 z-scan 时摘要应显示 UI preset 和实际曝光时间。"""
+        from sim_control.models import AppConfig, ZScanConfig
+        from sim_control.summary import build_sim_settings_summary
+
+        config = AppConfig(
+            z_scan=ZScanConfig(
+                enabled=True,
+                start_um=12.5,
+                direction="negative_z",
+                step_um=0.4,
+                num_steps=12,
+                exposure_preset_ms=14,
+            )
+        )
+
+        summary = build_sim_settings_summary(config)
+
+        self.assertIn("Z-Scan:", summary)
+        self.assertIn("  enabled: True", summary)
+        self.assertIn("  start_um: 12.500", summary)
+        self.assertIn("  direction: negative_z", summary)
+        self.assertNotIn("  step_um:", summary)
+        self.assertNotIn("  num_steps:", summary)
+        self.assertIn("  scan_gap_nm: 400", summary)
+        self.assertIn("  scan_moves: 12", summary)
+        self.assertIn("  image_layers: 13", summary)
+        self.assertIn("  total_distance_um: 4.800", summary)
+        self.assertIn("  estimated_scan_time_ms: 506.792", summary)
+        self.assertIn("  exposure_preset_ms: 14", summary)
+        self.assertIn("  actual_exposure_us: 13884", summary)
+
+
 if __name__ == "__main__":
     unittest.main()

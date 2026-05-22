@@ -61,6 +61,12 @@ def _start_single_acquisition_for_payload_test(controller, task, **kwargs):
     except (TypeError, RuntimeError):
         pass
     controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+    if not controller.reconstruction_config.otf_path_for_wavelength(task.laser_wavelength_nm):
+        setattr(
+            controller.reconstruction_config,
+            f"otf_{int(task.laser_wavelength_nm)}_path",
+            __file__,
+        )
     task_id = controller.start_single_acquisition(task, **kwargs)
     return task_id, emitted_payloads
 
@@ -73,6 +79,12 @@ def _start_prepare_experiment_for_payload_test(controller, task, **kwargs):
     except (TypeError, RuntimeError):
         pass
     controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+    if not controller.reconstruction_config.otf_path_for_wavelength(task.laser_wavelength_nm):
+        setattr(
+            controller.reconstruction_config,
+            f"otf_{int(task.laser_wavelength_nm)}_path",
+            __file__,
+        )
     task_id = controller.start_prepare_experiment(task, **kwargs)
     return task_id, emitted_payloads
 
@@ -1158,6 +1170,113 @@ class SimAcquisitionControllerTests(unittest.TestCase):
         self.assertTrue(payload["initialize_hardware"])
         self.assertTrue(payload["apply_daq_config"])
         self.assertTrue(payload["apply_camera_config"])
+
+    def test_start_single_acquisition_payload_includes_z_scan_config_and_stage_adapter(self):
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import SimTaskConfig, ZScanConfig
+
+        controller = SimAcquisitionController()
+
+        try:
+            _, emitted_payloads = _start_single_acquisition_for_payload_test(
+                controller,
+                SimTaskConfig(),
+                prepare_running_order=True,
+                initialize_hardware=True,
+                apply_daq_config=True,
+                apply_camera_config=True,
+                z_scan_config=ZScanConfig(enabled=True, exposure_preset_ms=8),
+            )
+        finally:
+            controller._thread.quit()
+            controller._thread.wait(2000)
+
+        payload = emitted_payloads[-1]
+        self.assertTrue(payload["z_scan_enabled"])
+        self.assertEqual(payload["z_scan_config"].exposure_preset_ms, 8)
+        self.assertIs(payload["stage_adapter"], controller.stage_adapter)
+
+    def test_worker_runs_z_scan_then_restores_formal_running_order_before_sim9(self):
+        from sim_control.controller import SimAcquisitionWorker
+        from sim_control.models import CameraConfig, DaqLineConfig, PatternPreparationResult, SimTaskConfig, TimingConfig, ZScanConfig
+        from sim_control.sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
+        from sim_control.stage_adapter import SimulatedZStageAdapter
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        worker = SimAcquisitionWorker()
+        statuses = []
+        ready_batches = []
+        summaries = []
+        worker.signal_status_changed.connect(lambda status, payload: statuses.append((status, payload)))
+        worker.signal_acquisition_ready.connect(lambda batch: ready_batches.append(batch))
+        worker.signal_acquisition_summary_ready.connect(lambda payload: summaries.append(payload))
+
+        task = SimTaskConfig(
+            laser_wavelength_nm=488,
+            camera=CameraConfig(roi_width=32, roi_height=32, exposure_us=10_000),
+            timing=TimingConfig(inter_frame_gap_us=1_000),
+        )
+
+        worker.slot_start(
+            {
+                "task": task,
+                "task_id": "zscan-worker-test",
+                "daq_config": DaqLineConfig(),
+                "pattern_result": PatternPreparationResult(),
+                "waveform_builder": NIDaqWaveformBuilder(),
+                "daq_adapter": SimulatedDaqAdapter(),
+                "camera_adapter": SimulatedCameraAdapter(),
+                "slm_adapter": SimulatedSlmAdapter(),
+                "stage_adapter": SimulatedZStageAdapter(start_um=0.0, min_um=-5.0, max_um=5.0),
+                "z_scan_config": ZScanConfig(start_um=0.0, step_um=0.2, num_steps=2, exposure_preset_ms=8),
+                "z_scan_enabled": True,
+                "prepare_running_order": True,
+                "apply_daq_config": True,
+                "apply_camera_config": True,
+            }
+        )
+
+        status_names = [status for status, _payload in statuses]
+        self.assertIn("running_order_selected", status_names)
+        self.assertIn("z_scan_running_order_selected", status_names)
+        self.assertIn("z_scan_complete", status_names)
+        self.assertIn("running_order_restored", status_names)
+        self.assertEqual(status_names[-1], "acquisition_complete")
+        self.assertEqual(len(ready_batches), 1)
+        self.assertEqual(ready_batches[0].stack.shape, (9, 32, 32))
+        self.assertEqual(ready_batches[0].metadata["running_order_name"], "488_3.5_2d_10ms")
+        self.assertIn("z_scan", ready_batches[0].metadata)
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["task_id"], "zscan-worker-test")
+        self.assertEqual(summaries[0]["stack_shape"], [9, 32, 32])
+        self.assertEqual(summaries[0]["stack_dtype"], "uint16")
+        self.assertEqual(summaries[0]["metadata"]["running_order_name"], "488_3.5_2d_10ms")
+        self.assertIn("z_scan", summaries[0]["metadata"])
+        self.assertNotIn("stack", summaries[0])
+        self.assertNotIn("frames", summaries[0])
+
+    def test_controller_clears_stop_event_from_acquisition_summary(self):
+        from sim_control.controller import SimAcquisitionController
+
+        controller = SimAcquisitionController()
+        try:
+            stop_event = threading.Event()
+            controller._active_stop_events["summary-task"] = stop_event
+            controller._current_stop_event = stop_event
+
+            controller._clear_stop_event_for_summary(
+                {
+                    "task_id": "summary-task",
+                    "stack_shape": [9, 32, 32],
+                    "stack_dtype": "uint16",
+                    "metadata": {},
+                }
+            )
+
+            self.assertEqual(controller._active_stop_events, {})
+            self.assertIsNone(controller._current_stop_event)
+        finally:
+            controller.shutdown()
 
 
 if __name__ == "__main__":

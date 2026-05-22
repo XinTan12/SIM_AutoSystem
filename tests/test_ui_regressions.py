@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtTest, QtWidgets
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +113,22 @@ class UiRegressionTests(unittest.TestCase):
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_Y"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_imageSize"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_bitDepth"))
+        self.assertTrue(hasattr(ui, "led_simRuntimeReconstruction"))
+        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionName"))
+        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionStatus"))
+        self.assertEqual(ui.lbl_simRuntimeReconstructionName.text(), "Reconstruction")
+        self.assertEqual(ui.lbl_simRuntimeReconstructionStatus.text(), "Not initialized")
+        for led in (
+            ui.led_simRuntimeCamera,
+            ui.led_simRuntimeSlm,
+            ui.led_simRuntimeDaq,
+            ui.led_simRuntimeReconstruction,
+        ):
+            with self.subTest(runtime_led=led.objectName()):
+                self.assertIsInstance(led, QtWidgets.QLabel)
+                self.assertEqual(led.minimumSize(), QtCore.QSize(16, 16))
+                self.assertEqual(led.maximumSize(), QtCore.QSize(16, 16))
+                self.assertEqual(led.styleSheet(), "background-color: #8b949e; border-radius: 8px;")
         # 7) 已废弃的旧 sCMOS 字段不应存在。
         self.assertFalse(hasattr(ui, "spb_sCMOS_ringBufferCapacity"))
         self.assertFalse(hasattr(ui, "spb_sCMOS_delayTime"))
@@ -217,7 +233,7 @@ class UiRegressionTests(unittest.TestCase):
         )
 
     def test_sim_settings_ui_removes_camera_tab_and_timing_controls(self):
-        """SIM 设置弹窗只保留 Laser + DAQ 两页；Camera 页与 Timing 控件已迁移到主界面摘要。"""
+        """SIM 设置弹窗保留 Laser/DAQ/Z-Scan/Recon 页；Camera 页与 Timing 控件已迁移。"""
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
@@ -229,10 +245,17 @@ class UiRegressionTests(unittest.TestCase):
         self.assertFalse(hasattr(ui, "tab_camera"))
         self.assertFalse(hasattr(ui, "group_camera_main"))
 
-        # 2) 页签顺序必须严格为 ["Laser", "DAQ"]，避免误增加 Camera。
+        # 2) 页签顺序必须严格为 ["Laser", "DAQ", "Z-Scan", "Recon"]，避免误增加 Camera。
         tab_titles = [ui.tabs.tabText(index) for index in range(ui.tabs.count())]
         self.assertNotIn("Camera", tab_titles)
-        self.assertEqual(tab_titles, ["Laser", "DAQ"])
+        self.assertEqual(tab_titles, ["Laser", "DAQ", "Z-Scan", "Recon"])
+        self.assertTrue(hasattr(ui, "tab_zscan"))
+        self.assertTrue(hasattr(ui, "check_zscan_enabled"))
+        self.assertTrue(hasattr(ui, "combo_zscan_exposure_preset"))
+        self.assertTrue(hasattr(ui, "tab_recon"))
+        self.assertTrue(hasattr(ui, "spin_recon_wiener"))
+        self.assertTrue(hasattr(ui, "edit_recon_otf_path"))
+        self.assertTrue(hasattr(ui, "edit_recon_output_path"))
         # 3) Pattern 页 / SLM 设备下拉 / 加载 pattern 按钮：全部已废弃。
         self.assertFalse(hasattr(ui, "tab_patterns"))
         self.assertFalse(hasattr(ui, "combo_slm_device"))
@@ -303,8 +326,186 @@ class UiRegressionTests(unittest.TestCase):
             "SIM settings dialog should not apply invalid font point sizes.",
         )
 
-    def test_sim_settings_dialog_uses_compact_geometry_and_segoe_ui_fonts(self):
-        """设置弹窗最小尺寸 920×600；字体 ``Segoe UI``；title/error/laser 几何与字号锁定。"""
+    def test_recon_tab_uses_centered_daq_style_sections(self):
+        """Recon 页应使用 DAQ/Z-Scan 风格的居中分组、右对齐标签和稳定路径行。"""
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+        dialog.resize(980, 640)
+        dialog.show()
+        self.app.processEvents()
+
+        ui.tabs.setCurrentWidget(ui.tab_recon)
+        self.app.processEvents()
+
+        self.assertEqual(ui.label_recon_wiener.text(), "Wiener para")
+        self.assertEqual(ui.label_recon_na.text(), "Illumination NA")
+        self.assertEqual(ui.label_recon_wavelength.text(), "Ex Wavelength")
+        self.assertEqual(ui.label_recon_output_path.text(), "Output Folder")
+        self.assertEqual(ui.spin_recon_wiener.decimals(), 1)
+        self.assertEqual(ui.spin_recon_na.decimals(), 2)
+
+        for group_name in (
+            "group_recon_parameters",
+            "group_recon_files",
+            "group_recon_output",
+        ):
+            group = getattr(ui, group_name)
+            with self.subTest(group=group_name):
+                self.assertIsInstance(group.layout(), QtWidgets.QGridLayout)
+                tab_center = ui.tab_recon.geometry().center().x()
+                self.assertLessEqual(abs(group.geometry().center().x() - tab_center), 6)
+
+        labels = (
+            ui.label_recon_wiener,
+            ui.label_recon_na,
+            ui.label_recon_pixel_size,
+            ui.label_recon_wavelength,
+            ui.label_recon_otf_path,
+            ui.label_recon_background_path,
+            ui.label_recon_output_path,
+        )
+        for label in labels:
+            with self.subTest(label=label.objectName()):
+                self.assertEqual(label.minimumWidth(), 150)
+                self.assertEqual(label.maximumWidth(), 150)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignRight)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignVCenter)
+
+        numeric_fields = (
+            ui.spin_recon_wiener,
+            ui.spin_recon_na,
+            ui.spin_recon_pixel_size_nm,
+            ui.combo_recon_wavelength,
+        )
+        for field in numeric_fields:
+            with self.subTest(field=field.objectName()):
+                self.assertGreaterEqual(field.minimumWidth(), 160)
+                self.assertLessEqual(field.maximumWidth(), 220)
+                self.assertGreaterEqual(field.minimumHeight(), 36)
+
+        self.assertLessEqual(
+            abs(ui.spin_recon_wiener.geometry().center().y() - ui.spin_recon_na.geometry().center().y()),
+            2,
+        )
+        self.assertLessEqual(
+            abs(
+                ui.spin_recon_pixel_size_nm.geometry().center().y()
+                - ui.combo_recon_wavelength.geometry().center().y()
+            ),
+            2,
+        )
+        self.assertLess(ui.spin_recon_wiener.geometry().right(), ui.label_recon_na.geometry().left())
+        self.assertLess(
+            ui.spin_recon_pixel_size_nm.geometry().right(),
+            ui.label_recon_wavelength.geometry().left(),
+        )
+
+        for edit, button in (
+            (ui.edit_recon_otf_path, ui.btn_recon_browse_otf),
+            (ui.edit_recon_background_path, ui.btn_recon_browse_background),
+            (ui.edit_recon_output_path, ui.btn_recon_browse_output),
+        ):
+            with self.subTest(path_row=edit.objectName()):
+                self.assertGreaterEqual(edit.geometry().width(), 420)
+                self.assertLess(edit.geometry().right(), button.geometry().left())
+                self.assertEqual(button.minimumWidth(), 100)
+                self.assertEqual(button.maximumWidth(), 100)
+
+    def test_sim_settings_dialog_recon_controls_sync_config_by_wavelength(self):
+        """Recon 页应把当前波长 OTF 与重建参数同步回 ``ReconstructionConfig``。"""
+        import tempfile
+
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ReconstructionConfig, default_daq_line_name
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            otf_488 = base / "otf_488.tif"
+            otf_561 = base / "otf_561.tif"
+            background = base / "background.tif"
+            output = base / "reconstruction"
+            for path in (otf_488, otf_561, background):
+                path.write_bytes(b"placeholder")
+
+            dialog = SimSettingsDialog(
+                config=AppConfig(
+                    selected_laser_nm=488,
+                    reconstruction=ReconstructionConfig(
+                        enabled=True,
+                        otf_488_path=str(otf_488),
+                        background_path=str(background),
+                        output_path=str(output),
+                        wiener=2.0,
+                        pixel_size_nm=65.0,
+                        excitation_na=1.49,
+                    ),
+                )
+            )
+            try:
+                dialog.combo_daq_device.addItem("Dev2")
+                dialog.combo_daq_device.setCurrentText("Dev2")
+                for role, combo in dialog.line_combos.items():
+                    combo.addItem(default_daq_line_name("Dev2", role))
+                    combo.setCurrentText(default_daq_line_name("Dev2", role))
+                self.assertEqual(dialog.ui.combo_recon_wavelength.currentData(), 488)
+                dialog.ui.spin_recon_wiener.setValue(3.2)
+                dialog.ui.spin_recon_na.setValue(1.42)
+                dialog.ui.spin_recon_pixel_size_nm.setValue(70.0)
+                dialog.ui.edit_recon_otf_path.setText(str(otf_488))
+                dialog.ui.edit_recon_background_path.setText(str(background))
+                dialog.ui.edit_recon_output_path.setText(str(output))
+
+                dialog.ui.combo_recon_wavelength.setCurrentIndex(2)  # 561 nm
+                dialog.ui.edit_recon_otf_path.setText(str(otf_561))
+                config = dialog.get_config()
+            finally:
+                dialog.close()
+
+        self.assertEqual(config.selected_laser_nm, 561)
+        self.assertEqual(config.reconstruction.otf_488_path, str(otf_488))
+        self.assertEqual(config.reconstruction.otf_561_path, str(otf_561))
+        self.assertEqual(config.reconstruction.background_path, str(background))
+        self.assertEqual(config.reconstruction.output_path, str(output))
+        self.assertAlmostEqual(config.reconstruction.wiener, 3.2)
+        self.assertAlmostEqual(config.reconstruction.excitation_na, 1.42)
+        self.assertAlmostEqual(config.reconstruction.pixel_size_nm, 70.0)
+
+    def test_sim_test_capture_root_lives_under_data_directory(self):
+        from sim_control.gui import TEST_CAPTURE_ROOT
+
+        self.assertEqual(TEST_CAPTURE_ROOT, PROJECT_ROOT / "data" / "test_captures")
+
+    def test_sim_settings_dialog_keeps_initial_non_default_recon_otf_path(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        for wavelength in (405, 561, 647):
+            with self.subTest(wavelength=wavelength):
+                otf_path = f"E:/calibration/{wavelength}_otf.tif"
+                dialog = SimSettingsDialog(
+                    config=AppConfig(
+                        selected_laser_nm=wavelength,
+                        reconstruction=ReconstructionConfig(
+                            enabled=True,
+                            **{f"otf_{wavelength}_path": otf_path},
+                        ),
+                    )
+                )
+                try:
+                    self.assertEqual(dialog.ui.combo_recon_wavelength.currentData(), wavelength)
+                    self.assertEqual(dialog.ui.edit_recon_otf_path.text(), otf_path)
+                    self.assertEqual(
+                        getattr(dialog.config.reconstruction, f"otf_{wavelength}_path"),
+                        otf_path,
+                    )
+                finally:
+                    dialog.close()
+
+    def test_sim_settings_dialog_uses_compact_geometry_and_expected_bold_fonts(self):
+        """SIM settings dialog keeps compact geometry and expected bold typography."""
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
@@ -317,14 +518,396 @@ class UiRegressionTests(unittest.TestCase):
         # 最小尺寸 / 高度 / 字体族 / 各组件几何与字号都锁定，避免 .ui 修改后视觉退化。
         self.assertEqual(dialog.minimumSize().width(), 920)
         self.assertEqual(dialog.minimumSize().height(), 600)
-        self.assertEqual(dialog.height(), 640)
-        self.assertEqual(dialog.font().family(), "Segoe UI")
+        self.assertGreaterEqual(dialog.height(), 640)
+        self.assertLessEqual(dialog.height(), 660)
+        self.assertEqual(dialog.font().family(), "Arial")
+        self.assertTrue(dialog.font().bold())
         self.assertLessEqual(ui.dialogHeader.geometry().height(), 64)
-        self.assertLessEqual(ui.tabs.geometry().y(), 80)
+        self.assertLessEqual(ui.tabs.geometry().y(), 96)
         self.assertEqual(ui.lbl_error.font().pointSize(), 11)
         self.assertGreaterEqual(ui.lbl_error.maximumHeight(), 28)
         self.assertEqual(ui.radio_laser_405.font().pointSize(), 13)
         self.assertEqual(ui.radio_laser_405.minimumSize().height(), 56)
+
+        zscan_chinese_widgets = {
+            "label_zscan_preview_start",
+            "label_zscan_preview_end",
+            "label_zscan_preview_distance",
+            "label_zscan_preview_eta",
+            "combo_zscan_test_target",
+            "btn_zscan_test",
+            "label_zscan_test_status",
+        }
+
+        def assert_bold_font(widget, expected_family):
+            family = widget.font().family()
+            if expected_family == "Microsoft YaHei":
+                self.assertIn(family, {"Microsoft YaHei", "Microsoft YaHei UI", "微软雅黑"})
+            else:
+                self.assertEqual(family, expected_family)
+            self.assertTrue(widget.font().bold())
+
+        named_widgets = [dialog] + [
+            widget
+            for widget in dialog.findChildren(QtWidgets.QWidget)
+            if widget.objectName()
+            and not widget.objectName().startswith("qt_")
+            and not widget.objectName().startswith("tab_")
+        ]
+        for widget in named_widgets:
+            with self.subTest(widget=widget.objectName() or "SimSettingsDialog"):
+                expected_family = (
+                    "Microsoft YaHei"
+                    if widget.objectName() in zscan_chinese_widgets
+                    else "Arial"
+                )
+                assert_bold_font(widget, expected_family)
+
+    def test_zscan_parameter_sections_use_daq_style_grids(self):
+        """Z-Scan parameter sections use grid rows with fixed right-aligned labels."""
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+        dialog.resize(980, 640)
+        dialog.show()
+        self.app.processEvents()
+
+        ui.tabs.setCurrentWidget(ui.tab_zscan)
+        self.app.processEvents()
+
+        for group in (
+            ui.group_zscan_start_section,
+            ui.group_zscan_range_section,
+            ui.group_zscan_capture_section,
+        ):
+            self.assertIsInstance(group.layout(), QtWidgets.QGridLayout)
+
+        labels = (
+            ui.label_zscan_enabled,
+            ui.label_zscan_start_um,
+            ui.label_zscan_direction,
+            ui.label_zscan_step_um,
+            ui.label_zscan_num_steps,
+            ui.label_zscan_exposure_preset,
+            ui.label_zscan_cancel,
+        )
+        for label in labels:
+            with self.subTest(label=label.objectName()):
+                self.assertEqual(label.minimumWidth(), 120)
+                self.assertEqual(label.maximumWidth(), 120)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignRight)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignVCenter)
+
+        section_layout_labels = (
+            (ui.gridLayout_zscan_start_section, 0, ui.label_zscan_enabled),
+            (ui.gridLayout_zscan_start_section, 1, ui.label_zscan_start_um),
+            (ui.gridLayout_zscan_range_section, 0, ui.label_zscan_direction),
+            (ui.gridLayout_zscan_range_section, 1, ui.label_zscan_step_um),
+            (ui.gridLayout_zscan_range_section, 2, ui.label_zscan_num_steps),
+            (ui.gridLayout_zscan_capture_section, 0, ui.label_zscan_exposure_preset),
+            (ui.gridLayout_zscan_capture_section, 1, ui.label_zscan_cancel),
+        )
+        for layout, row, label in section_layout_labels:
+            with self.subTest(layout_item=label.objectName()):
+                item = layout.itemAtPosition(row, 1)
+                self.assertIsNotNone(item)
+                self.assertIs(item.widget(), label)
+                self.assertTrue(item.alignment() & QtCore.Qt.AlignRight)
+                self.assertTrue(item.alignment() & QtCore.Qt.AlignVCenter)
+
+        def layout_item_rect(layout, row, column):
+            item = layout.itemAtPosition(row, column)
+            self.assertIsNotNone(item)
+            return item.geometry()
+
+        target_gap = 24
+        section_rows = (
+            (
+                "start",
+                ui.group_zscan_start_section,
+                ui.gridLayout_zscan_start_section,
+                (
+                    (0, ui.label_zscan_enabled),
+                    (1, ui.label_zscan_start_um),
+                ),
+            ),
+            (
+                "range",
+                ui.group_zscan_range_section,
+                ui.gridLayout_zscan_range_section,
+                (
+                    (0, ui.label_zscan_direction),
+                    (1, ui.label_zscan_step_um),
+                    (2, ui.label_zscan_num_steps),
+                ),
+            ),
+            (
+                "capture",
+                ui.group_zscan_capture_section,
+                ui.gridLayout_zscan_capture_section,
+                (
+                    (0, ui.label_zscan_exposure_preset),
+                    (1, ui.label_zscan_cancel),
+                ),
+            ),
+        )
+        for section_name, group, layout, rows in section_rows:
+            section_label_rights = []
+            section_field_lefts = []
+            for row, label in rows:
+                with self.subTest(section=section_name, gap=label.objectName()):
+                    field_rect = layout_item_rect(layout, row, 2)
+                    gap = field_rect.left() - label.geometry().right() - 1
+                    section_label_rights.append(label.geometry().right())
+                    section_field_lefts.append(field_rect.left())
+                    self.assertLessEqual(abs(gap - target_gap), 4)
+            self.assertLessEqual(max(section_label_rights) - min(section_label_rights), 1)
+            self.assertLessEqual(max(section_field_lefts) - min(section_field_lefts), 1)
+
+        label_rights = [
+            ui.label_zscan_enabled.geometry().right(),
+            ui.label_zscan_direction.geometry().right(),
+            ui.label_zscan_exposure_preset.geometry().right(),
+        ]
+        field_lefts = [
+            ui.gridLayout_zscan_start_section.itemAtPosition(0, 2).geometry().left(),
+            ui.gridLayout_zscan_range_section.itemAtPosition(0, 2).geometry().left(),
+            ui.gridLayout_zscan_capture_section.itemAtPosition(0, 2).geometry().left(),
+        ]
+        self.assertLessEqual(max(label_rights) - min(label_rights), 2)
+        self.assertLessEqual(max(field_lefts) - min(field_lefts), 2)
+
+        compact_fields = (
+            ui.combo_zscan_direction,
+            ui.spin_zscan_step_um,
+            ui.spin_zscan_num_steps,
+            ui.combo_zscan_exposure_preset,
+        )
+        for field in compact_fields:
+            with self.subTest(field=field.objectName()):
+                self.assertGreaterEqual(field.minimumWidth(), 120)
+                self.assertLessEqual(field.maximumWidth(), 200)
+                self.assertGreaterEqual(field.minimumHeight(), 36)
+
+        range_fields = (
+            ui.combo_zscan_direction,
+            ui.spin_zscan_step_um,
+            ui.spin_zscan_num_steps,
+        )
+        for field in range_fields:
+            with self.subTest(range_field_width=field.objectName()):
+                self.assertEqual(field.minimumWidth(), 200)
+                self.assertEqual(field.maximumWidth(), 200)
+
+        wide_fields = (
+            ui.check_zscan_enabled,
+            ui.check_zscan_return_to_start,
+        )
+        for field in wide_fields:
+            with self.subTest(field=field.objectName()):
+                self.assertGreaterEqual(field.minimumWidth(), 240)
+                self.assertLessEqual(field.maximumWidth(), 320)
+                self.assertGreaterEqual(field.minimumHeight(), 36)
+
+    def test_sim_settings_comboboxes_use_centered_readonly_text(self):
+        """Runtime settings dialog centers combo text without making entries user-editable."""
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        dialog = SimSettingsDialog(config=AppConfig())
+        try:
+            combos = [combo for combo in dialog.findChildren(QtWidgets.QComboBox) if combo.objectName()]
+            self.assertGreater(len(combos), 0)
+            for combo in combos:
+                with self.subTest(combo=combo.objectName()):
+                    self.assertTrue(combo.isEditable())
+                    self.assertIsNotNone(combo.lineEdit())
+                    self.assertTrue(combo.lineEdit().isReadOnly())
+                    horizontal_alignment = combo.lineEdit().alignment() & QtCore.Qt.AlignHorizontal_Mask
+                    self.assertEqual(horizontal_alignment, QtCore.Qt.AlignHCenter)
+                    self.assertEqual(combo.lineEdit().font().family(), combo.font().family())
+                    self.assertEqual(combo.lineEdit().font().bold(), combo.font().bold())
+        finally:
+            dialog.close()
+
+    def test_centered_combobox_text_area_click_opens_popup(self):
+        """Clicking the read-only centered text area should toggle the combo popup."""
+        from sim_control.gui import configure_centered_combobox
+
+        class PopupStateView:
+            def __init__(self, combo):
+                self._combo = combo
+
+            def isVisible(self):
+                return self._combo.popup_visible
+
+        class PopupTrackingCombo(QtWidgets.QComboBox):
+            def __init__(self):
+                super().__init__()
+                self.popup_count = 0
+                self.hide_count = 0
+                self.popup_visible = False
+                self._popup_state_view = PopupStateView(self)
+
+            def view(self):
+                return self._popup_state_view
+
+            def showPopup(self):
+                self.popup_count += 1
+                self.popup_visible = True
+
+            def hidePopup(self):
+                self.hide_count += 1
+                self.popup_visible = False
+
+        combo = PopupTrackingCombo()
+        try:
+            combo.addItems(["A", "B"])
+            configure_centered_combobox(combo)
+            combo.resize(200, 36)
+            combo.show()
+            self.app.processEvents()
+
+            line_edit = combo.lineEdit()
+            self.assertIsNotNone(line_edit)
+            QtTest.QTest.mousePress(
+                line_edit,
+                QtCore.Qt.LeftButton,
+                pos=line_edit.rect().center(),
+            )
+            self.app.processEvents()
+            self.assertEqual(combo.popup_count, 0)
+
+            QtTest.QTest.mouseRelease(
+                line_edit,
+                QtCore.Qt.LeftButton,
+                pos=line_edit.rect().center(),
+            )
+            self.app.processEvents()
+
+            self.assertEqual(combo.popup_count, 1)
+            self.assertEqual(combo.hide_count, 0)
+            self.assertTrue(combo.popup_visible)
+
+            QtTest.QTest.mousePress(
+                line_edit,
+                QtCore.Qt.LeftButton,
+                pos=line_edit.rect().center(),
+            )
+            self.app.processEvents()
+
+            QtTest.QTest.mouseRelease(
+                line_edit,
+                QtCore.Qt.LeftButton,
+                pos=line_edit.rect().center(),
+            )
+            self.app.processEvents()
+
+            self.assertEqual(combo.popup_count, 1)
+            self.assertEqual(combo.hide_count, 1)
+            self.assertFalse(combo.popup_visible)
+        finally:
+            combo.close()
+
+    def test_centered_combobox_configuration_is_idempotent(self):
+        """Reconfiguring centered combos must not accumulate popup filters."""
+        from sim_control.gui import _ComboLineEditPopupFilter, configure_centered_combobox
+
+        combo = QtWidgets.QComboBox()
+        try:
+            combo.addItems(["A", "B"])
+            configure_centered_combobox(combo)
+            configure_centered_combobox(combo)
+
+            self.assertEqual(len(combo.findChildren(_ComboLineEditPopupFilter)), 1)
+        finally:
+            combo.close()
+
+    def test_settings_dialog_daq_and_zscan_combo_text_area_clicks_open_popup(self):
+        """Real DAQ and Z-Scan settings combos should open from their text area."""
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        dialog = SimSettingsDialog(config=AppConfig())
+        try:
+            cases = (
+                (dialog.ui.tab_daq, dialog.ui.combo_daq_device),
+                (dialog.ui.tab_daq, dialog.ui.combo_slm_enable_line),
+                (dialog.ui.tab_daq, dialog.ui.combo_test_target),
+                (dialog.ui.tab_zscan, dialog.ui.combo_zscan_direction),
+                (dialog.ui.tab_zscan, dialog.ui.combo_zscan_exposure_preset),
+                (dialog.ui.tab_zscan, dialog.ui.combo_zscan_test_target),
+            )
+            dialog.resize(980, 640)
+            dialog.show()
+            self.app.processEvents()
+
+            for tab, combo in cases:
+                with self.subTest(combo=combo.objectName()):
+                    popup_state = {"show": 0, "hide": 0, "visible": False}
+
+                    class PopupStateView:
+                        def isVisible(self):
+                            return popup_state["visible"]
+
+                    def show_popup():
+                        popup_state["show"] += 1
+                        popup_state["visible"] = True
+
+                    def hide_popup():
+                        popup_state["hide"] += 1
+                        popup_state["visible"] = False
+
+                    popup_state_view = PopupStateView()
+                    combo.view = lambda popup_state_view=popup_state_view: popup_state_view
+                    combo.showPopup = show_popup
+                    combo.hidePopup = hide_popup
+                    dialog.ui.tabs.setCurrentWidget(tab)
+                    self.app.processEvents()
+                    line_edit = combo.lineEdit()
+                    self.assertIsNotNone(line_edit)
+                    popup_state.update({"show": 0, "hide": 0, "visible": False})
+
+                    QtTest.QTest.mouseClick(
+                        line_edit,
+                        QtCore.Qt.LeftButton,
+                        pos=line_edit.rect().center(),
+                    )
+                    self.app.processEvents()
+
+                    self.assertEqual(popup_state["show"], 1)
+                    self.assertEqual(popup_state["hide"], 0)
+                    self.assertTrue(popup_state["visible"])
+
+                    QtTest.QTest.mouseClick(
+                        line_edit,
+                        QtCore.Qt.LeftButton,
+                        pos=line_edit.rect().center(),
+                    )
+                    self.app.processEvents()
+
+                    self.assertEqual(popup_state["show"], 1)
+                    self.assertEqual(popup_state["hide"], 1)
+                    self.assertFalse(popup_state["visible"])
+        finally:
+            dialog.close()
+
+    def test_centered_combobox_text_selection_keeps_index_and_data_in_sync(self):
+        """Index-based combo selection prevents stale currentData on centered combos."""
+        from sim_control.gui import configure_centered_combobox, set_combobox_current_text
+
+        combo = QtWidgets.QComboBox()
+        combo.addItem("A", "data-a")
+        combo.addItem("B", "data-b")
+        configure_centered_combobox(combo)
+
+        self.assertTrue(set_combobox_current_text(combo, "B"))
+
+        self.assertEqual(combo.currentText(), "B")
+        self.assertEqual(combo.currentIndex(), 1)
+        self.assertEqual(combo.currentData(), "data-b")
 
     def test_sim_settings_daq_channel_controls_do_not_overlap_at_minimum_size(self):
         """DAQ 页 8 个线位下拉在最小尺寸下不应有相互重叠。"""
@@ -422,6 +1005,152 @@ class UiRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(lines_top - device_bottom, 35)
         self.assertGreaterEqual(test_top - lines_bottom, 35)
         self.assertLessEqual(group_bottom - test_bottom, 100)
+
+    def test_zscan_tab_uses_two_column_preview_and_test_layout(self):
+        """Z-Scan 页应使用左参数、右预览/测试两栏布局，且新增测试控件存在。"""
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        for width, height in ((920, 600), (1200, 800)):
+            with self.subTest(size=(width, height)):
+                dialog = QtWidgets.QDialog()
+                ui = Ui_SimSettingsDialog()
+                ui.setupUi(dialog)
+                dialog.resize(width, height)
+                dialog.show()
+                self.app.processEvents()
+
+                ui.tabs.setCurrentWidget(ui.tab_zscan)
+                self.app.processEvents()
+
+                for name in (
+                    "group_zscan",
+                    "group_zscan_start_section",
+                    "group_zscan_range_section",
+                    "group_zscan_capture_section",
+                    "group_zscan_preview",
+                    "group_zscan_test",
+                    "combo_zscan_test_target",
+                    "btn_zscan_test",
+                    "label_zscan_test_status",
+                    "label_zscan_preview_start_value",
+                    "label_zscan_preview_end_value",
+                    "label_zscan_preview_distance_value",
+                    "label_zscan_preview_eta_value",
+                ):
+                    self.assertTrue(hasattr(ui, name), name)
+                self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown"))
+                self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown_value"))
+
+                params_rect = ui.group_zscan.geometry()
+                preview_rect = ui.group_zscan_preview.geometry()
+                test_rect = ui.group_zscan_test.geometry()
+                self.assertFalse(params_rect.intersects(preview_rect))
+                self.assertFalse(params_rect.intersects(test_rect))
+                self.assertLess(params_rect.right(), preview_rect.left())
+                self.assertLess(preview_rect.bottom(), test_rect.top())
+                section_rects = [
+                    ui.group_zscan_start_section.geometry(),
+                    ui.group_zscan_range_section.geometry(),
+                    ui.group_zscan_capture_section.geometry(),
+                ]
+                self.assertLess(section_rects[0].bottom(), section_rects[1].top())
+                self.assertLess(section_rects[1].bottom(), section_rects[2].top())
+                for index, rect in enumerate(section_rects):
+                    for later_rect in section_rects[index + 1 :]:
+                        self.assertFalse(rect.intersects(later_rect))
+                self.assertGreaterEqual(
+                    section_rects[-1].bottom(),
+                    int(ui.group_zscan.geometry().height() * 0.70),
+                )
+                self.assertIn("不能中途取消", ui.label_zscan_test_status.text())
+                dialog.close()
+
+    def test_zscan_display_uses_four_centered_rows_and_language_fonts(self):
+        """Display should omit the breakdown row and use compact left-aligned values."""
+        from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
+
+        dialog = QtWidgets.QDialog()
+        ui = Ui_SimSettingsDialog()
+        ui.setupUi(dialog)
+        dialog.resize(980, 640)
+        dialog.show()
+        self.app.processEvents()
+
+        ui.tabs.setCurrentWidget(ui.tab_zscan)
+        self.app.processEvents()
+
+        self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown"))
+        self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown_value"))
+        self.assertEqual(ui.formLayout_zscan_preview.rowCount(), 4)
+
+        static_labels = (
+            ui.label_zscan_preview_start,
+            ui.label_zscan_preview_end,
+            ui.label_zscan_preview_distance,
+            ui.label_zscan_preview_eta,
+        )
+        value_labels = (
+            ui.label_zscan_preview_start_value,
+            ui.label_zscan_preview_end_value,
+            ui.label_zscan_preview_distance_value,
+            ui.label_zscan_preview_eta_value,
+        )
+        expected_static_text = {
+            ui.label_zscan_preview_start: "起始 Z：",
+            ui.label_zscan_preview_end: "终止 Z：",
+            ui.label_zscan_preview_distance: "总位移：",
+            ui.label_zscan_preview_eta: "估算总用时：",
+        }
+        self.assertEqual(ui.formLayout_zscan_preview.horizontalSpacing(), 12)
+        for label in static_labels:
+            with self.subTest(static_label=label.objectName()):
+                self.assertEqual(label.text(), expected_static_text[label])
+                self.assertIn(label.font().family(), {"Microsoft YaHei", "Microsoft YaHei UI", "微软雅黑"})
+                self.assertEqual(label.font().pointSize(), 10)
+                self.assertTrue(label.font().bold())
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignRight)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignVCenter)
+        for label in value_labels:
+            with self.subTest(value_label=label.objectName()):
+                self.assertEqual(label.font().family(), "Arial")
+                self.assertEqual(label.font().pointSize(), 10)
+                self.assertTrue(label.font().bold())
+                self.assertEqual(label.alignment() & QtCore.Qt.AlignHorizontal_Mask, QtCore.Qt.AlignLeft)
+                self.assertTrue(label.alignment() & QtCore.Qt.AlignVCenter)
+
+        widgets = static_labels + value_labels
+        left = min(widget.geometry().left() for widget in widgets)
+        right = max(widget.geometry().right() for widget in widgets)
+        top = min(widget.geometry().top() for widget in widgets)
+        bottom = max(widget.geometry().bottom() for widget in widgets)
+        content_rect = ui.group_zscan_preview.contentsRect()
+        self.assertLessEqual(abs(((left + right) / 2.0) - content_rect.center().x()), 4)
+        self.assertLessEqual(abs(((top + bottom) / 2.0) - content_rect.center().y()), 8)
+        dialog.close()
+
+    def test_zscan_preview_dynamic_text_uses_language_specific_font(self):
+        """Dynamic preview values switch fonts based on CJK content."""
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        def has_cjk(text: str) -> bool:
+            return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+        dialog = SimSettingsDialog(config=AppConfig())
+        try:
+            start_value = dialog.label_zscan_preview_start_value
+            self.assertTrue(has_cjk(start_value.text()))
+            self.assertIn(start_value.font().family(), {"Microsoft YaHei", "Microsoft YaHei UI", "微软雅黑"})
+            self.assertTrue(start_value.font().bold())
+
+            dialog.spin_zscan_start_um.setProperty("zscan_auto_start", False)
+            dialog._refresh_zscan_preview()
+
+            self.assertFalse(has_cjk(start_value.text()))
+            self.assertEqual(start_value.font().family(), "Arial")
+            self.assertTrue(start_value.font().bold())
+        finally:
+            dialog.close()
 
     def test_sim_control_window_limits_runtime_log_blocks(self):
         """``SimControlWindow.log_output`` 必须把 maximumBlockCount 锁定为 1000，避免日志吞内存。"""
@@ -551,6 +1280,35 @@ class UiRegressionTests(unittest.TestCase):
 
         # start_single_acquisition 不应被调用：SLM 未连接已经在前置检查时抛错。
         controller.start_single_acquisition.assert_not_called()
+
+    def test_sim_control_window_handles_acquisition_summary_without_raw_stack(self):
+        """GUI 状态槽只消费轻量 summary，不要求拿到 ``AcquisitionBatch.stack``。"""
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            try:
+                summary = {
+                    "task_id": "summary-task",
+                    "stack_shape": [9, 16, 20],
+                    "stack_dtype": "uint16",
+                    "metadata": {"running_order_name": "488_3.5_2d_10ms"},
+                }
+
+                window._handle_acquisition_ready(summary)
+
+                self.assertEqual(window.pipeline_labels["task_id"].text(), "summary-task")
+                self.assertEqual(window.pipeline_labels["stack_shape"].text(), "[9, 16, 20]")
+                self.assertEqual(window.pipeline_labels["stack_dtype"].text(), "uint16")
+                self.assertEqual(window.pipeline_labels["reconstruction"].text(), "Running")
+            finally:
+                window.close()
 
     def test_sim_control_window_syncs_running_order_selected_from_worker_status(self):
         """worker 广播 ``running_order_selected`` 状态时，GUI 应把 RO 名同步到 ``self.config``。"""

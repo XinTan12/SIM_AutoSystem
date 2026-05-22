@@ -39,7 +39,19 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 
-from .models import AppConfig, BackendConfig, CameraConfig, DaqLineConfig, SUPPORTED_LASERS, TimingConfig
+from .models import (
+    AppConfig,
+    BackendConfig,
+    CameraConfig,
+    DaqLineConfig,
+    ReconstructionConfig,
+    SUPPORTED_LASERS,
+    TimingConfig,
+    Z_SCAN_DIRECTIONS,
+    Z_SCAN_EXPOSURE_PRESETS_MS,
+    Z_SCAN_FOCUS_METRICS,
+    ZScanConfig,
+)
 
 
 # 仓库根目录（``sim_control/`` 的上一级）。其它路径常量都以它为基准。
@@ -50,7 +62,8 @@ DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "sim_control_config.json"
 LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
-CURRENT_CONFIG_VERSION = 3
+CURRENT_CONFIG_VERSION = 7
+DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 
 
 def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
@@ -118,11 +131,63 @@ def _migrate_v2_to_v3(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v3_to_v4(payload: dict) -> dict:
+    """v3 → v4 migration: add pre-SIM z-scan autofocus settings."""
+    payload.setdefault("z_scan", asdict(ZScanConfig()))
+    payload["config_version"] = 4
+    return payload
+
+
+def _migrate_v4_to_v5(payload: dict) -> dict:
+    """v4 -> v5 migration: add SIM9 reconstruction settings."""
+    payload.setdefault("reconstruction", asdict(ReconstructionConfig()))
+    payload["config_version"] = 5
+    return payload
+
+
+def _migrate_v5_to_v6(payload: dict) -> dict:
+    """v5 -> v6 migration: add reconstruction output path and enable recon by default."""
+    reconstruction = dict(payload.get("reconstruction") or {})
+    reconstruction["enabled"] = True
+    reconstruction.setdefault("output_path", "")
+    payload["reconstruction"] = reconstruction
+    payload["config_version"] = 6
+    return payload
+
+
+def _reconstruction_output_dir_from_legacy_value(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return DEFAULT_RECONSTRUCTION_OUTPUT_DIR
+    trimmed = raw.rstrip("/\\")
+    if trimmed.lower().endswith((".tif", ".tiff")):
+        separator_index = max(trimmed.rfind("/"), trimmed.rfind("\\"))
+        if separator_index > 0:
+            return trimmed[:separator_index]
+        return DEFAULT_RECONSTRUCTION_OUTPUT_DIR
+    return raw
+
+
+def _migrate_v6_to_v7(payload: dict) -> dict:
+    """v6 -> v7 migration: treat reconstruction output_path as an output directory."""
+    reconstruction = dict(payload.get("reconstruction") or {})
+    reconstruction["output_path"] = _reconstruction_output_dir_from_legacy_value(
+        reconstruction.get("output_path", "")
+    )
+    payload["reconstruction"] = reconstruction
+    payload["config_version"] = 7
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
     (1, _migrate_v1_to_v2),
     (2, _migrate_v2_to_v3),
+    (3, _migrate_v3_to_v4),
+    (4, _migrate_v4_to_v5),
+    (5, _migrate_v5_to_v6),
+    (6, _migrate_v6_to_v7),
 ]
 
 
@@ -188,6 +253,42 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         slm_sdk_path=str(backend_payload.get("slm_sdk_path", "")),
         simulation_mode=bool(backend_payload.get("simulation_mode", False)),
     )
+    z_scan_payload = payload.get("z_scan") or {}
+    z_scan = ZScanConfig(
+        enabled=bool(z_scan_payload.get("enabled", True)),
+        start_um=(
+            None
+            if z_scan_payload.get("start_um", None) in (None, "")
+            else float(z_scan_payload.get("start_um"))
+        ),
+        direction=str(z_scan_payload.get("direction", "positive_z")),
+        step_um=float(z_scan_payload.get("step_um", 0.3)),
+        num_steps=int(z_scan_payload.get("num_steps", 10)),
+        exposure_preset_ms=int(z_scan_payload.get("exposure_preset_ms", 8)),
+        focus_metric=str(z_scan_payload.get("focus_metric", "sml")),
+        return_to_start_on_cancel=bool(z_scan_payload.get("return_to_start_on_cancel", True)),
+    )
+    reconstruction_payload = payload.get("reconstruction") or {}
+    theta_values = tuple(int(value) for value in reconstruction_payload.get("theta_ratio", (1, 1, 1)))
+    if len(theta_values) != 3:
+        theta_values = (1, 1, 1)
+    reconstruction = ReconstructionConfig(
+        enabled=bool(reconstruction_payload.get("enabled", True)),
+        backend=str(reconstruction_payload.get("backend", "sim_wiener_gpu")),
+        device=str(reconstruction_payload.get("device", "cuda")),
+        dtype=str(reconstruction_payload.get("dtype", "single")),
+        otf_405_path=str(reconstruction_payload.get("otf_405_path", "")),
+        otf_488_path=str(reconstruction_payload.get("otf_488_path", "")),
+        otf_561_path=str(reconstruction_payload.get("otf_561_path", "")),
+        otf_647_path=str(reconstruction_payload.get("otf_647_path", "")),
+        background_path=str(reconstruction_payload.get("background_path", "")),
+        output_path=str(reconstruction_payload.get("output_path", DEFAULT_RECONSTRUCTION_OUTPUT_DIR)),
+        wiener=float(reconstruction_payload.get("wiener", 2.0)),
+        pixel_size_nm=float(reconstruction_payload.get("pixel_size_nm", 65.0)),
+        excitation_na=float(reconstruction_payload.get("excitation_na", 1.49)),
+        theta_ratio=theta_values,
+        recon_group_batch=int(reconstruction_payload.get("recon_group_batch", 1)),
+    )
     # 4) pattern_files 对齐到 9，并提取顶层用户选择字段。
     pattern_files = _merge_list(payload.get("pattern_files", []))
     selected_running_order = str(payload.get("selected_running_order", ""))
@@ -199,6 +300,8 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         camera=camera,
         timing=timing,
         backend=backend,
+        z_scan=z_scan,
+        reconstruction=reconstruction,
         pattern_files=pattern_files,
         selected_running_order=selected_running_order,
         selected_laser_nm=selected_laser_nm,
@@ -250,6 +353,40 @@ def validate_app_config(config: AppConfig) -> list[str]:
         errors.append("timing.slm_enable_guard_us must be greater than 0.")
     if timing.inter_frame_gap_us < 0:
         errors.append("timing.inter_frame_gap_us must be >= 0.")
+
+    z_scan = config.z_scan
+    if z_scan.direction not in Z_SCAN_DIRECTIONS:
+        errors.append(f"z_scan.direction must be one of {Z_SCAN_DIRECTIONS}.")
+    if z_scan.step_um <= 0:
+        errors.append("z_scan.step_um must be greater than 0.")
+    if z_scan.num_steps < 1:
+        errors.append("z_scan.num_steps must be >= 1.")
+    if int(z_scan.exposure_preset_ms) not in Z_SCAN_EXPOSURE_PRESETS_MS:
+        errors.append(f"z_scan.exposure_preset_ms must be one of {Z_SCAN_EXPOSURE_PRESETS_MS}.")
+    if z_scan.focus_metric not in Z_SCAN_FOCUS_METRICS:
+        errors.append(f"z_scan.focus_metric must be one of {Z_SCAN_FOCUS_METRICS}.")
+
+    reconstruction = config.reconstruction
+    if reconstruction.backend != "sim_wiener_gpu":
+        errors.append("reconstruction.backend must be 'sim_wiener_gpu'.")
+    if reconstruction.dtype not in {"single", "float32", "fp32", "double", "float64", "fp64"}:
+        errors.append("reconstruction.dtype must be single/float32/fp32 or double/float64/fp64.")
+    if reconstruction.wiener <= 0:
+        errors.append("reconstruction.wiener must be greater than 0.")
+    if reconstruction.pixel_size_nm <= 0:
+        errors.append("reconstruction.pixel_size_nm must be greater than 0.")
+    if reconstruction.excitation_na <= 0:
+        errors.append("reconstruction.excitation_na must be greater than 0.")
+    if reconstruction.recon_group_batch < 1:
+        errors.append("reconstruction.recon_group_batch must be >= 1.")
+    if reconstruction.output_path.strip().lower().endswith((".tif", ".tiff")):
+        errors.append("reconstruction.output_path must be an output directory, not a TIFF file.")
+    if tuple(reconstruction.theta_ratio) == () or any(int(value) <= 0 for value in reconstruction.theta_ratio):
+        errors.append("reconstruction.theta_ratio values must be positive.")
+    if reconstruction.enabled:
+        otf_field = f"otf_{int(config.selected_laser_nm)}_path"
+        if not reconstruction.otf_path_for_wavelength(config.selected_laser_nm).strip():
+            errors.append(f"reconstruction.{otf_field} must be set when reconstruction is enabled.")
 
     # 5) 顶层用户选择：波长必须在 SUPPORTED_LASERS 中；非 RO 模式下 pattern 必须 9 项。
     if config.selected_laser_nm not in SUPPORTED_LASERS:

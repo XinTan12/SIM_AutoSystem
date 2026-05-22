@@ -412,6 +412,252 @@ class EfficiencyOptimizationTests(unittest.TestCase):
         self.assertEqual(len(ready), 1)
         self.assertTrue(np.array_equal(ready[0].preview_image, expected))
 
+    def test_reconstruction_worker_calls_gpu_wiener_when_enabled(self):
+        """启用重建配置时，worker 应调用 GPU Wiener 包装接口而不是占位均值。"""
+        from sim_control.models import AcquisitionBatch, ReconstructionConfig
+        from sim_control.pipeline import ReconstructionWorker
+
+        stack = np.arange(9 * 2 * 3, dtype=np.uint16).reshape(9, 2, 3)
+        ready = []
+        failed = []
+        worker = ReconstructionWorker(
+            ReconstructionConfig(
+                enabled=True,
+                device="cpu",
+                otf_488_path=__file__,
+                output_path="",
+            )
+        )
+        worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+        worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        with mock.patch(
+            "reconstruction.sim_wiener.reconstruct_sim9_stack",
+            return_value={
+                "reconstruction": np.ones((1, 4, 6), dtype=np.float32),
+                "metadata": {
+                    "algorithm": "sim_wiener_gpu",
+                    "c6": [0.2, 0.3, 0.4],
+                    "angle6": [0.1, 0.2, 0.3],
+                    "R2_angles": [0.9, 0.8, 0.7],
+                    "timings_ms": {"total_pipeline_ms": 1.0},
+                },
+            },
+        ) as reconstruct_mock:
+            worker.slot_reconstruct(
+                AcquisitionBatch(
+                    task_id="gpu-test",
+                    stack=stack,
+                    timestamps=[],
+                    laser_wavelength_nm=488,
+                    exposure_us=1000,
+                    pattern_files=[""] * 9,
+                )
+            )
+
+        self.assertEqual(failed, [])
+        self.assertEqual(len(ready), 1)
+        reconstruct_mock.assert_called_once()
+        self.assertEqual(ready[0].preview_image.dtype, np.float32)
+        self.assertEqual(ready[0].preview_image.shape, (4, 6))
+        self.assertFalse(ready[0].metadata["placeholder"])
+        self.assertEqual(ready[0].metadata["algorithm"], "sim_wiener_gpu")
+
+    def test_reconstruction_worker_saves_float32_tiff_in_output_directory(self):
+        """配置 output_path 目录时，worker 应按时间戳文件名保存 float32 TIFF。"""
+        import tempfile
+
+        import tifffile
+
+        from sim_control.models import AcquisitionBatch, ReconstructionConfig
+        from sim_control.pipeline import ReconstructionWorker
+
+        stack = np.arange(9 * 2 * 3, dtype=np.uint16).reshape(9, 2, 3)
+        reconstruction = np.arange(1 * 4 * 6, dtype=np.float32).reshape(1, 4, 6)
+        ready = []
+        failed = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "reconstruction"
+            worker = ReconstructionWorker(
+                ReconstructionConfig(
+                    enabled=True,
+                    device="cpu",
+                    otf_488_path=__file__,
+                    output_path=str(output_dir),
+                )
+            )
+            worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+            worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            with mock.patch(
+                "reconstruction.sim_wiener.reconstruct_sim9_stack",
+                return_value={
+                    "reconstruction": reconstruction,
+                    "metadata": {"algorithm": "sim_wiener_gpu"},
+                },
+            ):
+                worker.slot_reconstruct(
+                    AcquisitionBatch(
+                        task_id="gpu-save",
+                        stack=stack,
+                        timestamps=[],
+                        laser_wavelength_nm=488,
+                        exposure_us=1000,
+                        pattern_files=[""] * 9,
+                    )
+                )
+
+            saved_paths = sorted(output_dir.glob("sim_reconstruction_*.tif"))
+            self.assertEqual(len(saved_paths), 1)
+            output_path = saved_paths[0]
+            self.assertRegex(output_path.name, r"^sim_reconstruction_\d{8}_\d{6}\.tif$")
+            saved = tifffile.imread(output_path)
+
+        self.assertEqual(failed, [])
+        self.assertEqual(len(ready), 1)
+        self.assertEqual(saved.dtype, np.float32)
+        self.assertTrue(np.array_equal(saved, reconstruction))
+        self.assertEqual(ready[0].metadata["output_path"], str(output_path))
+        self.assertTrue(ready[0].metadata["output_saved"])
+
+    def test_reconstruction_worker_resolves_relative_output_directory_from_project_root(self):
+        import os
+        import tempfile
+
+        from sim_control.models import AcquisitionBatch, ReconstructionConfig
+        from sim_control.pipeline import ReconstructionWorker
+
+        stack = np.ones((9, 2, 3), dtype=np.uint16)
+        ready = []
+        failed = []
+        worker = ReconstructionWorker(
+            ReconstructionConfig(
+                enabled=True,
+                device="cpu",
+                otf_488_path=__file__,
+                output_path="data/reconstruction",
+            )
+        )
+        worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+        worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch(
+            "reconstruction.sim_wiener.reconstruct_sim9_stack",
+            return_value={
+                "reconstruction": np.ones((1, 4, 6), dtype=np.float32),
+                "metadata": {"algorithm": "sim_wiener_gpu"},
+            },
+        ), mock.patch("sim_control.pipeline.tifffile.imwrite") as imwrite_mock:
+            try:
+                os.chdir(temp_dir)
+                worker.slot_reconstruct(
+                    AcquisitionBatch(
+                        task_id="gpu-relative-output",
+                        stack=stack,
+                        timestamps=[],
+                        laser_wavelength_nm=488,
+                        exposure_us=1000,
+                        pattern_files=[""] * 9,
+                    )
+                )
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(failed, [])
+        self.assertEqual(len(ready), 1)
+        saved_path = Path(imwrite_mock.call_args.args[0])
+        self.assertEqual(saved_path.parent, PROJECT_ROOT / "data" / "reconstruction")
+        self.assertEqual(ready[0].metadata["output_dir"], str(PROJECT_ROOT / "data" / "reconstruction"))
+
+    def test_reconstruction_worker_reports_tiff_save_failure_without_placeholder_fallback(self):
+        """重建结果写盘失败时应发失败信号，不回退占位均值图。"""
+        import tempfile
+
+        from sim_control.models import AcquisitionBatch, ReconstructionConfig
+        from sim_control.pipeline import ReconstructionWorker
+
+        stack = np.ones((9, 2, 3), dtype=np.uint16)
+        ready = []
+        failed = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = ReconstructionWorker(
+                ReconstructionConfig(
+                    enabled=True,
+                    device="cpu",
+                    otf_488_path=__file__,
+                    output_path=str(Path(temp_dir) / "reconstruction"),
+                )
+            )
+            worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+            worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            with mock.patch(
+                "reconstruction.sim_wiener.reconstruct_sim9_stack",
+                return_value={
+                    "reconstruction": np.ones((1, 4, 6), dtype=np.float32),
+                    "metadata": {"algorithm": "sim_wiener_gpu"},
+                },
+            ), mock.patch(
+                "sim_control.pipeline.tifffile.imwrite",
+                side_effect=OSError("cannot save reconstruction"),
+            ):
+                worker.slot_reconstruct(
+                    AcquisitionBatch(
+                        task_id="gpu-save-fail",
+                        stack=stack,
+                        timestamps=[],
+                        laser_wavelength_nm=488,
+                        exposure_us=1000,
+                        pattern_files=[""] * 9,
+                    )
+                )
+
+        self.assertEqual(ready, [])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0][0], "gpu-save-fail")
+        self.assertIn("cannot save reconstruction", failed[0][1])
+
+    def test_reconstruction_worker_reports_gpu_wiener_failure_without_placeholder_fallback(self):
+        """GPU Wiener 失败时应发失败信号，不回退到占位均值图。"""
+        from sim_control.models import AcquisitionBatch, ReconstructionConfig
+        from sim_control.pipeline import ReconstructionWorker
+
+        stack = np.ones((9, 2, 3), dtype=np.uint16)
+        ready = []
+        failed = []
+        worker = ReconstructionWorker(
+            ReconstructionConfig(
+                enabled=True,
+                device="cpu",
+                otf_488_path=__file__,
+            )
+        )
+        worker.signal_reconstruction_ready.connect(lambda result: ready.append(result))
+        worker.signal_reconstruction_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+        with mock.patch(
+            "reconstruction.sim_wiener.reconstruct_sim9_stack",
+            side_effect=RuntimeError("missing torch"),
+        ):
+            worker.slot_reconstruct(
+                AcquisitionBatch(
+                    task_id="gpu-fail",
+                    stack=stack,
+                    timestamps=[],
+                    laser_wavelength_nm=488,
+                    exposure_us=1000,
+                    pattern_files=[""] * 9,
+                )
+            )
+
+        self.assertEqual(ready, [])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0][0], "gpu-fail")
+        self.assertIn("missing torch", failed[0][1])
+
     def test_feature_worker_uses_opencv_statistics_when_available(self):
         """OpenCV 可用时，``FeatureWorker`` 应走 ``cv2.meanStdDev``，不走 numpy 回退。"""
         from sim_control.models import ReconstructionResult

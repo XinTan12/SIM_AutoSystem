@@ -23,6 +23,7 @@
 import sys
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,151 @@ if str(PROJECT_ROOT) not in sys.path:
 
 class AcquisitionCoreTests(unittest.TestCase):
     """验证单次采集核心在正常、异常和取消路径下都能保持硬件清理顺序。"""
+
+    def test_z_scan_failure_restores_formal_running_order_before_reraising(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.models import (
+            DaqLineConfig,
+            PatternPreparationResult,
+            SimTaskConfig,
+            ZScanConfig,
+        )
+
+        class FakeSlm:
+            def __init__(self):
+                self.selected = []
+
+            def select_running_order(self, index):
+                self.selected.append(index)
+
+            def activate_prepared_patterns(self):
+                return None
+
+        statuses = []
+        slm = FakeSlm()
+        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=RuntimeError("z scan failed")):
+            with self.assertRaisesRegex(RuntimeError, "z scan failed"):
+                run_single_acquisition(
+                    task=SimTaskConfig(),
+                    daq_config=DaqLineConfig(),
+                    pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={
+                            "mode": "running_order",
+                            "running_order_index": 3,
+                            "running_order_name": "488_3.5_2d_10ms",
+                        },
+                    ),
+                    camera=mock.Mock(),
+                    slm=slm,
+                    daq=mock.Mock(),
+                    task_id="zscan-restore-success",
+                    on_status=lambda state, payload: statuses.append((state, payload)),
+                    stage_adapter=mock.Mock(),
+                    z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
+                    z_scan_pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_zscan3p_8ms"},
+                    ),
+                )
+
+        self.assertEqual(slm.selected, [3])
+        self.assertIn("running_order_restored_after_z_scan_failure", [state for state, _payload in statuses])
+
+    def test_z_scan_failure_reports_warning_when_formal_running_order_restore_fails(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.adapters import HardwareError
+        from sim_control.models import (
+            DaqLineConfig,
+            PatternPreparationResult,
+            SimTaskConfig,
+            ZScanConfig,
+        )
+
+        class FakeSlm:
+            def select_running_order(self, index):
+                raise RuntimeError(f"cannot select {index}")
+
+            def activate_prepared_patterns(self):
+                return None
+
+        statuses = []
+        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=RuntimeError("z scan failed")):
+            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO"):
+                run_single_acquisition(
+                    task=SimTaskConfig(),
+                    daq_config=DaqLineConfig(),
+                    pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={
+                            "mode": "running_order",
+                            "running_order_index": 3,
+                            "running_order_name": "488_3.5_2d_10ms",
+                        },
+                    ),
+                    camera=mock.Mock(),
+                    slm=FakeSlm(),
+                    daq=mock.Mock(),
+                    task_id="zscan-restore-fail",
+                    on_status=lambda state, payload: statuses.append((state, payload)),
+                    stage_adapter=mock.Mock(),
+                    z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
+                    z_scan_pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_zscan3p_8ms"},
+                    ),
+                )
+
+        warning_payloads = [payload for state, payload in statuses if state == "running_order_restore_warning"]
+        self.assertEqual(len(warning_payloads), 1)
+        self.assertIn("SLM may still be on z-scan RO", warning_payloads[0]["message"])
+
+    def test_z_scan_cancel_restore_failure_is_reported_as_hardware_error(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.adapters import HardwareError
+        from sim_control.z_scan_core import ZScanCancelled
+        from sim_control.models import (
+            DaqLineConfig,
+            PatternPreparationResult,
+            SimTaskConfig,
+            ZScanConfig,
+        )
+
+        class FakeSlm:
+            def select_running_order(self, index):
+                raise RuntimeError(f"cannot select {index}")
+
+            def activate_prepared_patterns(self):
+                return None
+
+        statuses = []
+        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=ZScanCancelled("cancelled")):
+            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO"):
+                run_single_acquisition(
+                    task=SimTaskConfig(),
+                    daq_config=DaqLineConfig(),
+                    pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={
+                            "mode": "running_order",
+                            "running_order_index": 3,
+                            "running_order_name": "488_3.5_2d_10ms",
+                        },
+                    ),
+                    camera=mock.Mock(),
+                    slm=FakeSlm(),
+                    daq=mock.Mock(),
+                    task_id="zscan-cancel-restore-fail",
+                    on_status=lambda state, payload: statuses.append((state, payload)),
+                    stage_adapter=mock.Mock(),
+                    z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
+                    z_scan_pattern_result=PatternPreparationResult(
+                        handles=[-1],
+                        metadata={"mode": "running_order", "running_order_name": "488_3.5_2d_zscan3p_8ms"},
+                    ),
+                )
+
+        self.assertIn("running_order_restore_warning", [state for state, _payload in statuses])
 
     def test_run_single_acquisition_relays_frame_progress_from_camera_read(self):
         """正常路径：9 个 frame_captured 事件按顺序广播，disarm/set_all_low 各调一次。"""

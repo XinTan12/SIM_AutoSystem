@@ -125,17 +125,18 @@ class SimulationModeTests(unittest.TestCase):
         self.assertEqual(config.bit_depth, 16)
 
     def test_simulated_slm_lists_and_selects_running_orders(self):
-        """仿真 SLM 必须暴露 24 个 RO，且 ``select_running_order(7)`` 命中预期名字。"""
+        """仿真 SLM 必须暴露正式 SIM 与 z-scan RO，且 ``select_running_order(7)`` 命中预期名字。"""
         from sim_control.sim_adapters import SimulatedSlmAdapter
 
         slm = SimulatedSlmAdapter()
 
-        # 1) 列表长度由 ``SIMULATED_RUNNING_ORDERS`` 决定；24 = 4 波长 × 3 曝光 × 2 angle 标记。
+        # 1) 列表长度由 ``SIMULATED_RUNNING_ORDERS`` 决定；24 个正式 SIM RO + 4 个 z-scan RO。
         running_orders = slm.list_running_orders()
         result = slm.select_running_order(7)
 
-        self.assertEqual(len(running_orders), 24)
+        self.assertEqual(len(running_orders), 28)
         self.assertEqual(running_orders[7][1], "488_3.5_2d_10ms_ang0")
+        self.assertIn((25, "488_3.5_2d_zscan3p_8ms"), running_orders)
         self.assertEqual(result["running_order_name"], "488_3.5_2d_10ms_ang0")
         # 2) RO 模式下 handles=[-1] 是协议；下游 acquisition_core 据此识别。
         self.assertEqual(result["pattern_result"].handles, [-1])
