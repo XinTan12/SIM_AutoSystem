@@ -108,6 +108,15 @@ from .led_indicator import LedIndicator
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
 from .z_scan_core import run_z_scan, scan_positions
+from .z_scan_timing_history import (
+    DEFAULT_Z_SCAN_TIMING_HISTORY_PATH,
+    append_z_scan_timing_records,
+    build_z_scan_run_timing_record,
+    build_z_scan_timing_records,
+    estimate_z_scan_capture_test_total_time_ms,
+    estimate_z_scan_move_only_total_time_ms,
+    load_z_scan_timing_records,
+)
 
 
 # GUI 槽函数统一捕获异常并显示到状态区，避免 PyQt 回调静默失败。
@@ -219,7 +228,6 @@ def write_z_scan_config_to_widgets(config: ZScanConfig, dialog: object) -> None:
     dialog.spin_zscan_step_um.setValue(float(config.step_um) * 1000.0)
     dialog.spin_zscan_num_steps.setValue(int(config.num_steps))
     dialog.combo_zscan_exposure_preset.setCurrentIndex(_zscan_preset_to_index(config.exposure_preset_ms))
-    dialog.check_zscan_return_to_start.setChecked(bool(config.return_to_start_on_cancel))
 
 
 def read_z_scan_config_from_widgets(dialog: object) -> ZScanConfig:
@@ -232,7 +240,6 @@ def read_z_scan_config_from_widgets(dialog: object) -> ZScanConfig:
         num_steps=int(dialog.spin_zscan_num_steps.value()),
         exposure_preset_ms=_zscan_index_to_preset(dialog.combo_zscan_exposure_preset.currentIndex()),
         focus_metric="sml",
-        return_to_start_on_cancel=bool(dialog.check_zscan_return_to_start.isChecked()),
     )
 
 
@@ -514,6 +521,13 @@ class ZScanTestResult:
     best_layer_index: int = -1
     best_z_um: float = float("nan")
     focus_scores: list[float] = field(default_factory=list)
+    position_move_latencies_ms: list[float] = field(default_factory=list)
+    capture_nonmove_latencies_ms: list[float] = field(default_factory=list)
+    initial_position_ms: float = 0.0
+    restore_ms: float = 0.0
+    fixed_overhead_ms: float = 0.0
+    best_focus_move_ms: float = 0.0
+    tiff_write_ms: float = 0.0
 
 
 def build_zscan_test_target_items() -> list[tuple[str, str]]:
@@ -620,6 +634,8 @@ class SimSettingsDialog(QDialog):
         self._loaded_pattern_result = None
         self._pending_zscan_restore_warning = None
         self._pending_zscan_slm_warning = None
+        self._zscan_timing_history_path = DEFAULT_Z_SCAN_TIMING_HISTORY_PATH
+        self._zscan_timing_records = load_z_scan_timing_records(self._zscan_timing_history_path)
         self._current_recon_wavelength_nm = int(self.config.selected_laser_nm)
         self._populating_widgets = False
         # 6) 延迟硬件刷新：``showEvent`` 后再做，避免对话框未显示就阻塞 UI。
@@ -650,7 +666,6 @@ class SimSettingsDialog(QDialog):
         self.spin_zscan_step_um = self.ui.spin_zscan_step_um
         self.spin_zscan_num_steps = self.ui.spin_zscan_num_steps
         self.combo_zscan_exposure_preset = self.ui.combo_zscan_exposure_preset
-        self.check_zscan_return_to_start = self.ui.check_zscan_return_to_start
         self.combo_zscan_test_target = self.ui.combo_zscan_test_target
         self.btn_zscan_test = self.ui.btn_zscan_test
         self.label_zscan_test_status = self.ui.label_zscan_test_status
@@ -658,6 +673,7 @@ class SimSettingsDialog(QDialog):
         self.label_zscan_preview_end_value = self.ui.label_zscan_preview_end_value
         self.label_zscan_preview_distance_value = self.ui.label_zscan_preview_distance_value
         self.label_zscan_preview_eta_value = self.ui.label_zscan_preview_eta_value
+        self.label_zscan_preview_capture_eta_value = self.ui.label_zscan_preview_capture_eta_value
         self.spin_recon_wiener = self.ui.spin_recon_wiener
         self.spin_recon_na = self.ui.spin_recon_na
         self.spin_recon_pixel_size_nm = self.ui.spin_recon_pixel_size_nm
@@ -880,7 +896,6 @@ class SimSettingsDialog(QDialog):
             self.spin_zscan_step_um,
             self.spin_zscan_num_steps,
             self.combo_zscan_exposure_preset,
-            self.check_zscan_return_to_start,
         ):
             widget.setEnabled(bool(enabled))
         for widget in (
@@ -898,6 +913,7 @@ class SimSettingsDialog(QDialog):
             self.label_zscan_preview_end_value,
             self.label_zscan_preview_distance_value,
             self.label_zscan_preview_eta_value,
+            self.label_zscan_preview_capture_eta_value,
         )
         try:
             cfg = read_z_scan_config_from_widgets(self)
@@ -924,7 +940,6 @@ class SimSettingsDialog(QDialog):
 
             direction_sign = 1.0 if cfg.direction == "positive_z" else -1.0
             move_count = int(cfg.num_steps)
-            image_layers = move_count + 1
             total_um = abs(float(cfg.step_um) * move_count)
             if start_um is None:
                 end_text = "--"
@@ -936,21 +951,35 @@ class SimSettingsDialog(QDialog):
                 daq_config = self._current_daq_config()
             except Exception:
                 daq_config = self.config.daq
-            plan = NIDaqWaveformBuilder().build_z_scan(
+            move_only_eta_ms = estimate_z_scan_move_only_total_time_ms(
+                cfg,
+                records=self._zscan_timing_records,
+            )
+            capture_eta_ms = estimate_z_scan_capture_test_total_time_ms(
+                cfg,
                 daq_config=daq_config,
                 timing=self.config.timing,
-                exposure_us=cfg.actual_exposure_us,
-                include_role_matrix=False,
+                records=self._zscan_timing_records,
             )
-            total_eta_s = (float(plan.duration_s) + 0.025) * image_layers
 
             _set_language_specific_label_text(self.label_zscan_preview_start_value, start_text)
             _set_language_specific_label_text(self.label_zscan_preview_end_value, end_text)
             _set_language_specific_label_text(self.label_zscan_preview_distance_value, f"{total_um:.3f} um")
-            _set_language_specific_label_text(self.label_zscan_preview_eta_value, f"{total_eta_s * 1000.0:.1f} ms")
+            _set_language_specific_label_text(self.label_zscan_preview_eta_value, f"{move_only_eta_ms:.1f} ms")
+            _set_language_specific_label_text(
+                self.label_zscan_preview_capture_eta_value,
+                f"{capture_eta_ms:.1f} ms",
+            )
         except Exception:
             for label in preview_value_labels:
                 _set_language_specific_label_text(label, "--")
+
+    def _append_zscan_timing_history(self, records: list[object]) -> None:
+        if not records:
+            return
+        append_z_scan_timing_records(records, self._zscan_timing_history_path)
+        self._zscan_timing_records.extend(records)
+        self._refresh_zscan_preview()
 
     def _handle_zscan_test_error(self, err_msg: str) -> None:
         warning = getattr(self, "_pending_zscan_restore_warning", None)
@@ -983,18 +1012,18 @@ class SimSettingsDialog(QDialog):
                 result = self._run_zscan_stage_only_test(started_at_s)
                 message_lines = [
                     "位移台测试完成。",
-                    f"访问 Z 位置数: {len(result.positions_visited)}",
+                    f"步数: {int(self.config.z_scan.num_steps)}",
                     f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
                 ]
                 if result.move_latencies_ms:
                     message_lines.append(
-                        "移动延迟 (min/med/max): "
+                        "每步移动耗时(min/mean/max): "
                         f"{min(result.move_latencies_ms):.2f} / "
-                        f"{statistics.median(result.move_latencies_ms):.2f} / "
+                        f"{statistics.mean(result.move_latencies_ms):.2f} / "
                         f"{max(result.move_latencies_ms):.2f} ms"
                     )
                 else:
-                    message_lines.append("移动延迟: 无 (没有任何一次移动成功)")
+                    message_lines.append("每步移动耗时: 无 (没有任何一次层间移动成功)")
             elif target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
                 result = self._run_zscan_stage_plus_capture_test(started_at_s)
                 score_min = min(result.focus_scores) if result.focus_scores else float("nan")
@@ -1051,29 +1080,66 @@ class SimSettingsDialog(QDialog):
     def _run_zscan_stage_only_test(self, started_at_s: float) -> ZScanTestResult:
         cfg = self.config.z_scan
         positions = self._zscan_positions_checked(cfg)
+        started_from_um = float(self.stage_adapter.get_position_um())
         started_movement = False
-        latencies_ms: list[float] = []
+        position_latencies_ms: list[float] = []
+        scan_move_latencies_ms: list[float] = []
+        initial_position_ms = 0.0
+        restore_ms = 0.0
         try:
-            for z_um in positions:
+            for index, z_um in enumerate(positions):
                 t0 = time.perf_counter()
                 self.stage_adapter.move_z_um(z_um)
                 started_movement = True
-                latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+                move_ms = (time.perf_counter() - t0) * 1000.0
+                position_latencies_ms.append(move_ms)
+                if index == 0:
+                    initial_position_ms = move_ms
+                else:
+                    scan_move_latencies_ms.append(move_ms)
         finally:
             if started_movement:
+                restore_started_s = time.perf_counter()
                 try:
                     self.stage_adapter.move_z_um(positions[0])
                 except Exception as restore_exc:
                     self._pending_zscan_restore_warning = (
                         f"回到起始层失败: {restore_exc}（位移台可能停在中间位置，请人工确认 Z）"
                     )
+                finally:
+                    restore_ms = (time.perf_counter() - restore_started_s) * 1000.0
+        total_duration_s = max(0.0, time.perf_counter() - float(started_at_s))
+        self._append_zscan_timing_history(
+            [
+                *build_z_scan_timing_records(
+                    cfg,
+                    mode=Z_SCAN_TEST_STAGE_ONLY,
+                    positions=positions,
+                    move_latencies_ms=position_latencies_ms,
+                    started_from_um=started_from_um,
+                    success=True,
+                ),
+                build_z_scan_run_timing_record(
+                    cfg,
+                    mode=Z_SCAN_TEST_STAGE_ONLY,
+                    total_duration_ms=total_duration_s * 1000.0,
+                    initial_position_ms=initial_position_ms,
+                    scan_move_latencies_ms=scan_move_latencies_ms,
+                    restore_ms=restore_ms,
+                    success=True,
+                ),
+            ]
+        )
         return ZScanTestResult(
             mode=Z_SCAN_TEST_STAGE_ONLY,
             positions_visited=positions,
-            total_duration_s=max(0.0, time.perf_counter() - float(started_at_s)),
-            move_latencies_ms=latencies_ms,
+            total_duration_s=total_duration_s,
+            move_latencies_ms=scan_move_latencies_ms,
             output_path=None,
             frame_count=0,
+            position_move_latencies_ms=position_latencies_ms,
+            initial_position_ms=initial_position_ms,
+            restore_ms=restore_ms,
         )
 
     def _run_zscan_stage_plus_capture_test(self, started_at_s: float) -> ZScanTestResult:
@@ -1116,11 +1182,22 @@ class SimSettingsDialog(QDialog):
             self._pending_zscan_slm_warning = "SLM 当前 RO 可能仍为 z-scan RO。"
             was_camera_connected = self._camera_connected_for_test_cleanup()
             camera_cleanup_needed = True
+            timing_payloads: dict[int, dict[str, float]] = {}
+            best_focus_move_ms = 0.0
 
             def _on_zscan_status(event: str, payload: dict[str, object]) -> None:
-                nonlocal stage_may_have_moved
+                nonlocal stage_may_have_moved, best_focus_move_ms
+                step_index = int(payload.get("step_index", 0) or 0)
                 if event == "z_scan_stage_positioned":
                     stage_may_have_moved = True
+                    if step_index > 0 and "move_ms" in payload:
+                        timing_payloads.setdefault(step_index, {})["move_ms"] = float(payload["move_ms"])
+                        timing_payloads[step_index]["from_z_um"] = float(payload.get("from_z_um", payload.get("z_um", 0.0)))
+                elif event == "z_scan_progress" and step_index > 0:
+                    if "cycle_ms" in payload:
+                        timing_payloads.setdefault(step_index, {})["cycle_ms"] = float(payload["cycle_ms"])
+                elif event == "z_scan_best_focus_positioned":
+                    best_focus_move_ms = float(payload.get("move_ms", 0.0) or 0.0)
 
             z_result = run_z_scan(
                 stage_adapter=self.stage_adapter,
@@ -1152,6 +1229,32 @@ class SimSettingsDialog(QDialog):
                 )
 
             focus_scores = [float(point.focus_score) for point in z_result.focus_curve]
+            position_move_latencies_ms = [
+                float(timing_payloads[index + 1]["move_ms"])
+                for index in range(len(z_result.focus_curve))
+                if "move_ms" in timing_payloads.get(index + 1, {})
+            ]
+            move_latencies_ms = position_move_latencies_ms[1:]
+            cycle_latencies_ms = [
+                float(timing_payloads[index + 1]["cycle_ms"])
+                for index in range(len(z_result.focus_curve))
+                if "cycle_ms" in timing_payloads.get(index + 1, {})
+            ]
+            capture_nonmove_latencies_ms = [
+                max(
+                    0.0,
+                    float(timing_payloads[index + 1]["cycle_ms"])
+                    - float(timing_payloads[index + 1]["move_ms"]),
+                )
+                for index in range(len(z_result.focus_curve))
+                if "move_ms" in timing_payloads.get(index + 1, {})
+                and "cycle_ms" in timing_payloads.get(index + 1, {})
+            ]
+            started_from_um = (
+                float(timing_payloads[1]["from_z_um"])
+                if 1 in timing_payloads and "from_z_um" in timing_payloads[1]
+                else None
+            )
             best_layer_index = max(
                 range(len(z_result.focus_curve)),
                 key=lambda index: z_result.focus_curve[index].focus_score,
@@ -1161,18 +1264,62 @@ class SimSettingsDialog(QDialog):
                 "zscan_capture",
                 f"zscan_{exposure_ms}ms_{int(cfg.num_steps)}moves",
             )
+            tiff_started_s = time.perf_counter()
             self._write_uint16_tiff(output_path, stack)
+            tiff_write_ms = (time.perf_counter() - tiff_started_s) * 1000.0
+            restore_ms = 0.0
+            try:
+                restore_started_s = time.perf_counter()
+                self.stage_adapter.move_z_um(positions[0])
+            except Exception as restore_exc:
+                self._pending_zscan_restore_warning = (
+                    f"回到起始层失败: {restore_exc}（位移台可能停在中间位置，请人工确认 Z）"
+                )
+            finally:
+                restore_ms = (time.perf_counter() - restore_started_s) * 1000.0
+            total_duration_s = max(0.0, time.perf_counter() - float(started_at_s))
+            self._append_zscan_timing_history(
+                [
+                    *build_z_scan_timing_records(
+                        cfg,
+                        mode=Z_SCAN_TEST_STAGE_PLUS_CAPTURE,
+                        positions=[float(point.z_um) for point in z_result.focus_curve],
+                        move_latencies_ms=position_move_latencies_ms,
+                        cycle_latencies_ms=cycle_latencies_ms,
+                        started_from_um=started_from_um,
+                        success=True,
+                    ),
+                    build_z_scan_run_timing_record(
+                        cfg,
+                        mode=Z_SCAN_TEST_STAGE_PLUS_CAPTURE,
+                        total_duration_ms=total_duration_s * 1000.0,
+                        initial_position_ms=position_move_latencies_ms[0] if position_move_latencies_ms else 0.0,
+                        scan_move_latencies_ms=move_latencies_ms,
+                        restore_ms=restore_ms,
+                        capture_nonmove_latencies_ms=capture_nonmove_latencies_ms,
+                        best_focus_move_ms=best_focus_move_ms,
+                        tiff_write_ms=tiff_write_ms,
+                        success=True,
+                    ),
+                ]
+            )
             self._pending_zscan_slm_warning = None
             return ZScanTestResult(
                 mode=Z_SCAN_TEST_STAGE_PLUS_CAPTURE,
                 positions_visited=[float(point.z_um) for point in z_result.focus_curve],
-                total_duration_s=max(0.0, time.perf_counter() - float(started_at_s)),
-                move_latencies_ms=[],
+                total_duration_s=total_duration_s,
+                move_latencies_ms=move_latencies_ms,
                 output_path=output_path,
                 frame_count=int(stack.shape[0]),
                 best_layer_index=int(best_layer_index),
                 best_z_um=float(z_result.best_z_um),
                 focus_scores=focus_scores,
+                position_move_latencies_ms=position_move_latencies_ms,
+                capture_nonmove_latencies_ms=capture_nonmove_latencies_ms,
+                initial_position_ms=position_move_latencies_ms[0] if position_move_latencies_ms else 0.0,
+                restore_ms=restore_ms,
+                best_focus_move_ms=best_focus_move_ms,
+                tiff_write_ms=tiff_write_ms,
             )
         except Exception:
             if stage_may_have_moved and positions and self.stage_adapter is not None:

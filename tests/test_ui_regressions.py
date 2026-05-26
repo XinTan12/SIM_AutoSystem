@@ -534,6 +534,7 @@ class UiRegressionTests(unittest.TestCase):
             "label_zscan_preview_end",
             "label_zscan_preview_distance",
             "label_zscan_preview_eta",
+            "label_zscan_preview_capture_eta",
             "combo_zscan_test_target",
             "btn_zscan_test",
             "label_zscan_test_status",
@@ -577,6 +578,9 @@ class UiRegressionTests(unittest.TestCase):
         ui.tabs.setCurrentWidget(ui.tab_zscan)
         self.app.processEvents()
 
+        self.assertFalse(hasattr(ui, "label_zscan_cancel"))
+        self.assertFalse(hasattr(ui, "check_zscan_return_to_start"))
+
         for group in (
             ui.group_zscan_start_section,
             ui.group_zscan_range_section,
@@ -591,7 +595,6 @@ class UiRegressionTests(unittest.TestCase):
             ui.label_zscan_step_um,
             ui.label_zscan_num_steps,
             ui.label_zscan_exposure_preset,
-            ui.label_zscan_cancel,
         )
         for label in labels:
             with self.subTest(label=label.objectName()):
@@ -607,7 +610,6 @@ class UiRegressionTests(unittest.TestCase):
             (ui.gridLayout_zscan_range_section, 1, ui.label_zscan_step_um),
             (ui.gridLayout_zscan_range_section, 2, ui.label_zscan_num_steps),
             (ui.gridLayout_zscan_capture_section, 0, ui.label_zscan_exposure_preset),
-            (ui.gridLayout_zscan_capture_section, 1, ui.label_zscan_cancel),
         )
         for layout, row, label in section_layout_labels:
             with self.subTest(layout_item=label.objectName()):
@@ -649,7 +651,6 @@ class UiRegressionTests(unittest.TestCase):
                 ui.gridLayout_zscan_capture_section,
                 (
                     (0, ui.label_zscan_exposure_preset),
-                    (1, ui.label_zscan_cancel),
                 ),
             ),
         )
@@ -703,7 +704,6 @@ class UiRegressionTests(unittest.TestCase):
 
         wide_fields = (
             ui.check_zscan_enabled,
-            ui.check_zscan_return_to_start,
         )
         for field in wide_fields:
             with self.subTest(field=field.objectName()):
@@ -1036,6 +1036,7 @@ class UiRegressionTests(unittest.TestCase):
                     "label_zscan_preview_end_value",
                     "label_zscan_preview_distance_value",
                     "label_zscan_preview_eta_value",
+                    "label_zscan_preview_capture_eta_value",
                 ):
                     self.assertTrue(hasattr(ui, name), name)
                 self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown"))
@@ -1065,8 +1066,8 @@ class UiRegressionTests(unittest.TestCase):
                 self.assertIn("不能中途取消", ui.label_zscan_test_status.text())
                 dialog.close()
 
-    def test_zscan_display_uses_four_centered_rows_and_language_fonts(self):
-        """Display should omit the breakdown row and use compact left-aligned values."""
+    def test_zscan_display_uses_five_centered_rows_and_language_fonts(self):
+        """Display should show separate move-only and capture ETA rows."""
         from sim_control.ui_sim_settings_dialog import Ui_SimSettingsDialog
 
         dialog = QtWidgets.QDialog()
@@ -1081,25 +1082,28 @@ class UiRegressionTests(unittest.TestCase):
 
         self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown"))
         self.assertFalse(hasattr(ui, "label_zscan_preview_breakdown_value"))
-        self.assertEqual(ui.formLayout_zscan_preview.rowCount(), 4)
+        self.assertEqual(ui.formLayout_zscan_preview.rowCount(), 5)
 
         static_labels = (
             ui.label_zscan_preview_start,
             ui.label_zscan_preview_end,
             ui.label_zscan_preview_distance,
             ui.label_zscan_preview_eta,
+            ui.label_zscan_preview_capture_eta,
         )
         value_labels = (
             ui.label_zscan_preview_start_value,
             ui.label_zscan_preview_end_value,
             ui.label_zscan_preview_distance_value,
             ui.label_zscan_preview_eta_value,
+            ui.label_zscan_preview_capture_eta_value,
         )
         expected_static_text = {
             ui.label_zscan_preview_start: "起始 Z：",
             ui.label_zscan_preview_end: "终止 Z：",
             ui.label_zscan_preview_distance: "总位移：",
-            ui.label_zscan_preview_eta: "估算总用时：",
+            ui.label_zscan_preview_eta: "预估总用时(仅位移)：",
+            ui.label_zscan_preview_capture_eta: "预估总用时(位移+采图)：",
         }
         self.assertEqual(ui.formLayout_zscan_preview.horizontalSpacing(), 12)
         for label in static_labels:

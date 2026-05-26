@@ -15,7 +15,7 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         config = app_config_from_dict({"config_version": 3})
         payload = app_config_to_dict(config)
 
-        self.assertEqual(config.config_version, 7)
+        self.assertEqual(config.config_version, 8)
         self.assertTrue(config.z_scan.enabled)
         self.assertIsNone(config.z_scan.start_um)
         self.assertEqual(config.z_scan.direction, "positive_z")
@@ -23,12 +23,37 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         self.assertEqual(config.z_scan.num_steps, 10)
         self.assertEqual(config.z_scan.exposure_preset_ms, 8)
         self.assertEqual(config.z_scan.focus_metric, "sml")
-        self.assertTrue(config.z_scan.return_to_start_on_cancel)
-        self.assertEqual(payload["config_version"], 7)
+        self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
+        self.assertEqual(payload["config_version"], 8)
         self.assertIn("z_scan", payload)
+        self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
         self.assertIn("reconstruction", payload)
         self.assertIn("output_path", payload["reconstruction"])
         self.assertEqual(payload["reconstruction"]["output_path"], "data/reconstruction")
+
+    def test_v7_return_to_start_on_cancel_is_dropped_in_v8(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 7,
+                "z_scan": {
+                    "enabled": True,
+                    "start_um": None,
+                    "direction": "positive_z",
+                    "step_um": 0.5,
+                    "num_steps": 3,
+                    "exposure_preset_ms": 8,
+                    "focus_metric": "sml",
+                    "return_to_start_on_cancel": True,
+                },
+            }
+        )
+        payload = app_config_to_dict(config)
+
+        self.assertEqual(config.config_version, 8)
+        self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
+        self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
 
     def test_z_scan_validation_reports_invalid_fields(self):
         from sim_control.config_store import validate_app_config

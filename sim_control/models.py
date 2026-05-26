@@ -385,7 +385,6 @@ class ZScanConfig:
     num_steps: int = 10
     exposure_preset_ms: int = 8
     focus_metric: str = "sml"
-    return_to_start_on_cancel: bool = True
 
     @property
     def actual_exposure_us(self) -> int:
@@ -440,7 +439,7 @@ class AppConfig:
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     selected_running_order: str = ""
     selected_laser_nm: int = 488
-    config_version: int = 7
+    config_version: int = 8
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

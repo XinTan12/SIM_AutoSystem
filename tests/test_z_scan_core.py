@@ -134,9 +134,15 @@ class ZScanCoreTests(unittest.TestCase):
         self.assertTrue(all(plan.metadata["z_scan"] for plan in daq.plans))
         self.assertEqual(stage.get_position_um(), 2.0)
         self.assertEqual([event for event, _ in statuses].count("z_scan_progress"), 6)
+        best_focus_events = [
+            payload for event, payload in statuses if event == "z_scan_best_focus_positioned"
+        ]
+        self.assertEqual(len(best_focus_events), 1)
+        self.assertEqual(best_focus_events[0]["z_um"], 2.0)
+        self.assertIn("move_ms", best_focus_events[0])
         self.assertEqual(statuses[-1][0], "z_scan_complete")
 
-    def test_run_z_scan_returns_to_start_when_cancelled(self):
+    def test_run_z_scan_cancel_keeps_current_z_and_cleans_up(self):
         import threading
 
         from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
@@ -147,12 +153,15 @@ class ZScanCoreTests(unittest.TestCase):
         stage.connect()
         camera = _SyntheticFocusCamera(stage, best_z=4.0)
         slm = _FakeSlm()
-        daq = _FakeDaq()
         stop_event = threading.Event()
 
-        def _stop_after_first_step(event, payload):
-            if event == "z_scan_progress":
-                stop_event.set()
+        class _CancelAfterSecondWaveformDaq(_FakeDaq):
+            def play_waveform(self, device_name, plan, stop_event=None) -> None:
+                super().play_waveform(device_name, plan, stop_event=stop_event)
+                if len(self.plans) == 2:
+                    stop_event.set()
+
+        daq = _CancelAfterSecondWaveformDaq()
 
         with self.assertRaises(ZScanCancelled):
             run_z_scan(
@@ -168,13 +177,45 @@ class ZScanCoreTests(unittest.TestCase):
                     direction="positive_z",
                     step_um=1.0,
                     num_steps=4,
-                    return_to_start_on_cancel=True,
                 ),
                 stop_event=stop_event,
-                on_status=_stop_after_first_step,
+            )
+
+        self.assertEqual(stage.get_position_um(), 4.0)
+        self.assertEqual(camera.disarm_count, 2)
+        self.assertGreaterEqual(daq.set_low_count, 2)
+
+    def test_run_z_scan_early_cancel_sets_daq_low_without_stage_motion(self):
+        import threading
+
+        from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
+        from sim_control.stage_adapter import SimulatedZStageAdapter
+        from sim_control.z_scan_core import ZScanCancelled, run_z_scan
+
+        stage = SimulatedZStageAdapter(start_um=3.0, min_um=0.0, max_um=10.0)
+        stage.connect()
+        camera = _SyntheticFocusCamera(stage, best_z=4.0)
+        slm = _FakeSlm()
+        daq = _FakeDaq()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with self.assertRaises(ZScanCancelled):
+            run_z_scan(
+                stage_adapter=stage,
+                camera_adapter=camera,
+                slm_adapter=slm,
+                daq_adapter=daq,
+                daq_config=DaqLineConfig(),
+                camera_config=CameraConfig(),
+                timing=TimingConfig(),
+                z_scan_config=ZScanConfig(start_um=3.0, step_um=1.0, num_steps=4),
+                stop_event=stop_event,
             )
 
         self.assertEqual(stage.get_position_um(), 3.0)
+        self.assertEqual(camera.arm_counts, [])
+        self.assertGreaterEqual(daq.set_low_count, 1)
 
     def test_run_z_scan_keep_captured_stack_true_returns_full_stack_and_still_picks_best_z(self):
         from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig

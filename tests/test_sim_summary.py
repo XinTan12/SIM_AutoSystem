@@ -231,7 +231,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
             )
         )
 
-        summary = build_sim_settings_summary(config)
+        summary = build_sim_settings_summary(config, z_scan_timing_records=())
 
         self.assertIn("Z-Scan:", summary)
         self.assertIn("  enabled: True", summary)
@@ -243,9 +243,79 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("  scan_moves: 12", summary)
         self.assertIn("  image_layers: 13", summary)
         self.assertIn("  total_distance_um: 4.800", summary)
-        self.assertIn("  estimated_scan_time_ms: 506.792", summary)
+        self.assertIn("  estimated_move_only_time_ms: 325.000", summary)
+        self.assertIn("  estimated_move_capture_time_ms: 506.792", summary)
+        self.assertNotIn("  estimated_scan_time_ms:", summary)
         self.assertIn("  exposure_preset_ms: 14", summary)
         self.assertIn("  actual_exposure_us: 13884", summary)
+
+    def test_build_sim_settings_summary_uses_z_scan_history_records(self):
+        """Z-scan summary ETA should use provided timing history when available."""
+        from sim_control.models import AppConfig, ZScanConfig
+        from sim_control.summary import build_sim_settings_summary
+        from sim_control.z_scan_timing_history import (
+            ZScanTimingRunRecord,
+            estimate_z_scan_capture_test_total_time_ms,
+            estimate_z_scan_move_only_total_time_ms,
+        )
+
+        config = AppConfig(
+            z_scan=ZScanConfig(
+                enabled=True,
+                start_um=12.5,
+                direction="positive_z",
+                step_um=0.4,
+                num_steps=2,
+                exposure_preset_ms=14,
+            )
+        )
+        records = [
+            ZScanTimingRunRecord.for_test(
+                mode="zscan_stage_only",
+                scan_gap_nm=400.0,
+                num_steps=2,
+                exposure_preset_ms=14,
+                total_duration_ms=200.0,
+                initial_position_ms=1.0,
+                scan_move_ms_sum=160.0,
+                scan_move_ms_mean=80.0,
+                scan_move_count=2,
+                restore_ms=30.0,
+                fixed_overhead_ms=9.0,
+            ),
+            ZScanTimingRunRecord.for_test(
+                mode="zscan_stage_plus_capture",
+                scan_gap_nm=400.0,
+                num_steps=2,
+                exposure_preset_ms=14,
+                total_duration_ms=320.0,
+                initial_position_ms=1.0,
+                scan_move_ms_sum=160.0,
+                scan_move_ms_mean=80.0,
+                scan_move_count=2,
+                capture_nonmove_ms_sum=90.0,
+                capture_nonmove_ms_mean=30.0,
+                best_focus_move_ms=5.0,
+                tiff_write_ms=7.0,
+                restore_ms=30.0,
+                fixed_overhead_ms=27.0,
+            ),
+        ]
+
+        summary = build_sim_settings_summary(config, z_scan_timing_records=records)
+        expected_move_ms = estimate_z_scan_move_only_total_time_ms(
+            config.z_scan,
+            records=records,
+        )
+        expected_capture_ms = estimate_z_scan_capture_test_total_time_ms(
+            config.z_scan,
+            daq_config=config.daq,
+            timing=config.timing,
+            records=records,
+        )
+
+        self.assertIn(f"  estimated_move_only_time_ms: {expected_move_ms:.3f}", summary)
+        self.assertIn(f"  estimated_move_capture_time_ms: {expected_capture_ms:.3f}", summary)
 
 
 if __name__ == "__main__":

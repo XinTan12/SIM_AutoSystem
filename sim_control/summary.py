@@ -31,17 +31,21 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Sequence
 
 from .models import AppConfig, Z_SCAN_EXPOSURE_PRESETS_US, effective_inter_frame_gap_us
-from .waveform import NIDaqWaveformBuilder
+from .z_scan_timing_history import (
+    ZScanTimingEntry,
+    estimate_z_scan_capture_test_total_time_ms,
+    estimate_z_scan_move_only_total_time_ms,
+    load_z_scan_timing_records,
+)
 
 # SIM9 固定 9 帧：与 ``acquisition_core.run_single_acquisition`` 内的 ``frame_count`` 对齐。
 SIM9_FRAME_COUNT = 9
 # 从波形结束到 9 帧 stack 可读出额外预留的 stack 整理开销（微秒）。
 # 经验值，覆盖 DCAM transfer + numpy 重整 + 控制器信号传递的累计开销。
 SIM9_STACK_TRANSFER_OVERHEAD_US = 10_000
-Z_SCAN_STAGE_MOVE_OVERHEAD_S = 0.025
 
 
 def _sim_exposure_us_to_ms(exposure_us: int) -> int:
@@ -128,20 +132,30 @@ def _format_sim9_estimated_total_time_ms(
     return f"{duration_ms:.3f} ms"
 
 
-def _format_z_scan_estimated_total_time_ms(sim_config: AppConfig, actual_exposure_us: int) -> str:
-    """估算前置 Z-Scan 从第一层触发到最后一层采完的总用时（毫秒）。"""
-    image_layers = int(sim_config.z_scan.num_steps) + 1
-    plan = NIDaqWaveformBuilder().build_z_scan(
+def _format_z_scan_estimated_times_ms(
+    sim_config: AppConfig,
+    records: Sequence[ZScanTimingEntry] | None = None,
+) -> tuple[str, str]:
+    """估算前置 Z-Scan 的仅位移与位移+采图测试口径总用时（毫秒）。"""
+    timing_records = load_z_scan_timing_records() if records is None else records
+    move_only_ms = estimate_z_scan_move_only_total_time_ms(
+        sim_config.z_scan,
+        records=timing_records,
+    )
+    capture_ms = estimate_z_scan_capture_test_total_time_ms(
+        sim_config.z_scan,
         daq_config=sim_config.daq,
         timing=sim_config.timing,
-        exposure_us=int(actual_exposure_us),
-        include_role_matrix=False,
+        records=timing_records,
     )
-    duration_ms = (float(plan.duration_s) + Z_SCAN_STAGE_MOVE_OVERHEAD_S) * image_layers * 1000.0
-    return f"{duration_ms:.3f}"
+    return f"{move_only_ms:.3f}", f"{capture_ms:.3f}"
 
 
-def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, Any] | None = None) -> str:
+def build_sim_settings_summary(
+    sim_config: AppConfig,
+    runtime_timing: dict[str, Any] | None = None,
+    z_scan_timing_records: Sequence[ZScanTimingEntry] | None = None,
+) -> str:
     """把当前 SIM 配置和运行时相机 timing 信息格式化为主界面摘要文本。
 
     返回：
@@ -178,7 +192,10 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
         image_layers = scan_moves + 1
         scan_gap_nm = float(sim_config.z_scan.step_um) * 1000.0
         total_distance_um = abs(float(sim_config.z_scan.step_um) * scan_moves)
-        estimated_scan_time_ms = _format_z_scan_estimated_total_time_ms(sim_config, actual_exposure_us)
+        estimated_move_only_time_ms, estimated_move_capture_time_ms = _format_z_scan_estimated_times_ms(
+            sim_config,
+            z_scan_timing_records,
+        )
         summary_lines.extend(
             [
                 "",
@@ -190,7 +207,8 @@ def build_sim_settings_summary(sim_config: AppConfig, runtime_timing: dict[str, 
                 f"  scan_moves: {scan_moves}",
                 f"  image_layers: {image_layers}",
                 f"  total_distance_um: {total_distance_um:.3f}",
-                f"  estimated_scan_time_ms: {estimated_scan_time_ms}",
+                f"  estimated_move_only_time_ms: {estimated_move_only_time_ms}",
+                f"  estimated_move_capture_time_ms: {estimated_move_capture_time_ms}",
                 f"  exposure_preset_ms: {int(sim_config.z_scan.exposure_preset_ms)}",
                 f"  actual_exposure_us: {actual_exposure_us}",
             ]

@@ -30,6 +30,9 @@ test_captures/
 **/*_image/
 crash_frames/
 **/crash_frames/
+data/z_scan_timing_history.jsonl
+patterns/*.repz11.bak
+wiener_reconstruction_fast/
 
 SDK/*
 !SDK/README.md

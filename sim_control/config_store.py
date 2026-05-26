@@ -62,7 +62,7 @@ DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "sim_control_config.json"
 LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
-CURRENT_CONFIG_VERSION = 7
+CURRENT_CONFIG_VERSION = 8
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 
 
@@ -179,6 +179,15 @@ def _migrate_v6_to_v7(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v7_to_v8(payload: dict) -> dict:
+    """v7 -> v8 migration: drop formal Z-scan cancel return-to-start setting."""
+    z_scan = dict(payload.get("z_scan") or {})
+    z_scan.pop("return_to_start_on_cancel", None)
+    payload["z_scan"] = z_scan
+    payload["config_version"] = 8
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
@@ -188,6 +197,7 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (4, _migrate_v4_to_v5),
     (5, _migrate_v5_to_v6),
     (6, _migrate_v6_to_v7),
+    (7, _migrate_v7_to_v8),
 ]
 
 
@@ -266,7 +276,6 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         num_steps=int(z_scan_payload.get("num_steps", 10)),
         exposure_preset_ms=int(z_scan_payload.get("exposure_preset_ms", 8)),
         focus_metric=str(z_scan_payload.get("focus_metric", "sml")),
-        return_to_start_on_cancel=bool(z_scan_payload.get("return_to_start_on_cancel", True)),
     )
     reconstruction_payload = payload.get("reconstruction") or {}
     theta_values = tuple(int(value) for value in reconstruction_payload.get("theta_ratio", (1, 1, 1)))

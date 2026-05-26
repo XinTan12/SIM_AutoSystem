@@ -1,0 +1,4 @@
+interface:
+  display_name: "SIM Change Closure"
+  short_description: "Review, verify, and record SIM_AutoSystem changes."
+  default_prompt: "Use $sim-autosystem-change-closure after changing SIM_AutoSystem code, config, docs, or workflow files."

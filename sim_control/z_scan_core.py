@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import time
 from typing import Any, Callable
 
 import numpy as np
@@ -80,21 +81,27 @@ def run_z_scan(
 
     actual_exposure_us = int(z_scan_config.actual_exposure_us)
     z_camera_config = replace(camera_config, exposure_us=actual_exposure_us)
-    camera_adapter.apply_config(z_camera_config)
     focus_curve: list[ZFocusPoint] = []
     captured_frames: list[np.ndarray] | None = [] if keep_captured_stack else None
-    cancel_return_z_um = positions[0]
 
     try:
+        camera_adapter.apply_config(z_camera_config)
         for index, z_um in enumerate(positions, start=1):
             _raise_if_cancelled(stop_event)
+            cycle_started_s = time.perf_counter()
+            from_z_um = float(stage_adapter.get_position_um())
+            move_started_s = time.perf_counter()
             stage_adapter.move_z_um(z_um)
+            move_ms = (time.perf_counter() - move_started_s) * 1000.0
             callback(
                 "z_scan_stage_positioned",
                 {
                     "step_index": index,
                     "total_steps": len(positions),
+                    "from_z_um": from_z_um,
                     "z_um": float(z_um),
+                    "distance_um": abs(float(z_um) - from_z_um),
+                    "move_ms": float(move_ms),
                 },
             )
             _raise_if_cancelled(stop_event)
@@ -141,11 +148,25 @@ def run_z_scan(
                     "total_steps": len(positions),
                     "z_um": float(z_um),
                     "focus_score": float(score),
+                    "move_ms": float(move_ms),
+                    "cycle_ms": float((time.perf_counter() - cycle_started_s) * 1000.0),
                 },
             )
 
         best_point = max(focus_curve, key=lambda point: point.focus_score)
+        best_from_z_um = float(stage_adapter.get_position_um())
+        best_move_started_s = time.perf_counter()
         stage_adapter.move_z_um(best_point.z_um)
+        best_move_ms = (time.perf_counter() - best_move_started_s) * 1000.0
+        callback(
+            "z_scan_best_focus_positioned",
+            {
+                "from_z_um": best_from_z_um,
+                "z_um": float(best_point.z_um),
+                "distance_um": abs(float(best_point.z_um) - best_from_z_um),
+                "move_ms": float(best_move_ms),
+            },
+        )
         captured_stack = (
             np.stack(captured_frames, axis=0).astype(np.uint16, copy=False)
             if captured_frames is not None
@@ -166,14 +187,11 @@ def run_z_scan(
             },
         )
         return result
-    except ZScanCancelled:
-        if z_scan_config.return_to_start_on_cancel:
-            stage_adapter.move_z_um(cancel_return_z_um)
-        raise
-    except Exception:
-        if stop_event is not None and stop_event.is_set() and z_scan_config.return_to_start_on_cancel:
-            stage_adapter.move_z_um(cancel_return_z_um)
-        raise
+    finally:
+        try:
+            daq_adapter.set_all_low(daq_config.device_name)
+        except Exception:
+            pass
 
 
 __all__ = ["ZFocusPoint", "ZScanResult", "ZScanCancelled", "scan_positions", "run_z_scan"]

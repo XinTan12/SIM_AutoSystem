@@ -37,6 +37,7 @@ import sys
 import time
 import types
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -2075,6 +2076,7 @@ class SimSettingsDialogTests(unittest.TestCase):
         self.assertEqual(dialog.label_zscan_preview_end_value.text(), "--")
         self.assertFalse(hasattr(dialog, "label_zscan_preview_breakdown_value"))
         self.assertTrue(dialog.label_zscan_preview_eta_value.text().endswith(" ms"))
+        self.assertTrue(dialog.label_zscan_preview_capture_eta_value.text().endswith(" ms"))
         self.assertAlmostEqual(dialog.spin_zscan_step_um.value(), 300.0)
         self.assertAlmostEqual(dialog.spin_zscan_step_um.singleStep(), 10.0)
         self.assertEqual(dialog.spin_zscan_step_um.suffix(), " nm")
@@ -2171,7 +2173,7 @@ class SimSettingsDialogTests(unittest.TestCase):
             return_value=mock.Mock(
                 positions_visited=[1.0, 1.5, 2.0, 2.5],
                 total_duration_s=0.1,
-                move_latencies_ms=[1.0],
+                move_latencies_ms=[1.0, 2.0, 9.0],
                 frame_count=0,
             )
         )
@@ -2181,6 +2183,11 @@ class SimSettingsDialogTests(unittest.TestCase):
             self.app.processEvents()
 
         information.assert_called_once()
+        message = information.call_args.args[2]
+        self.assertIn("步数: 3", message)
+        self.assertIn("每步移动耗时(min/mean/max): 1.00 / 4.00 / 9.00 ms", message)
+        self.assertNotIn("访问 Z 位置数", message)
+        self.assertNotIn("移动延迟", message)
         dialog._run_zscan_stage_only_test.assert_called_once()
         self.assertNotIn("positional argument", dialog.lbl_error.text())
         dialog.close()
@@ -2188,12 +2195,19 @@ class SimSettingsDialogTests(unittest.TestCase):
     def test_zscan_stage_only_test_moves_positions_and_returns_to_start(self):
         from sim_control.gui import SimSettingsDialog
         from sim_control.models import AppConfig, ZScanConfig
+        from sim_control.z_scan_timing_history import load_z_scan_timing_records
 
         stage_adapter = mock.Mock()
         stage_adapter.is_connected = True
         stage_adapter.get_position_um.return_value = 1.0
         stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
-        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+        tmp_root = PROJECT_ROOT / ".codex_tmp_pyc"
+        tmp_root.mkdir(exist_ok=True)
+        history_path = tmp_root / f"z_scan_timing_history_{uuid.uuid4().hex}.jsonl"
+        with mock.patch("sim_control.gui.DEFAULT_Z_SCAN_TIMING_HISTORY_PATH", history_path), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_devices",
+            return_value=[],
+        ), mock.patch(
             "sim_control.gui.NIDaqAdapter.list_port0_lines",
             return_value=[],
         ):
@@ -2202,15 +2216,43 @@ class SimSettingsDialogTests(unittest.TestCase):
                 stage_adapter=stage_adapter,
             )
 
+        fallback_eta = dialog.label_zscan_preview_eta_value.text()
+        fallback_capture_eta = dialog.label_zscan_preview_capture_eta_value.text()
         with mock.patch(
             "sim_control.gui.time.perf_counter",
-            side_effect=[10.0, 10.01, 10.02, 10.03, 10.04, 10.05, 10.06, 10.07, 10.08],
+            side_effect=[
+                10.0,
+                10.001,
+                10.01,
+                10.02,
+                10.04,
+                10.06,
+                10.06,
+                10.09,
+                10.10,
+                10.14,
+                10.20,
+            ],
         ):
             result = dialog._run_zscan_stage_only_test(started_at_s=10.0)
 
         self.assertEqual(result.positions_visited, [1.0, 1.5, 2.0, 2.5])
-        self.assertEqual([call.args[0] for call in stage_adapter.move_z_um.call_args_list], [1.0, 1.5, 2.0, 2.5, 1.0])
+        self.assertEqual(
+            [call.args[0] for call in stage_adapter.move_z_um.call_args_list],
+            [1.0, 1.5, 2.0, 2.5, 1.0],
+        )
         self.assertEqual(result.frame_count, 0)
+        records = load_z_scan_timing_records(history_path)
+        self.assertEqual(len(records), 5)
+        step_records = [record for record in records if getattr(record, "record_type", "step") == "step"]
+        run_records = [record for record in records if getattr(record, "record_type", "step") == "run"]
+        self.assertEqual(len(step_records), 4)
+        self.assertEqual(len(run_records), 1)
+        self.assertTrue(all(record.scan_gap_nm == 500.0 for record in records))
+        self.assertEqual(run_records[0].scan_move_count, 3)
+        self.assertGreater(run_records[0].restore_ms, 0.0)
+        self.assertNotEqual(dialog.label_zscan_preview_eta_value.text(), fallback_eta)
+        self.assertNotEqual(dialog.label_zscan_preview_capture_eta_value.text(), fallback_capture_eta)
         self.assertIsNone(getattr(dialog, "_pending_zscan_restore_warning", None))
         dialog.close()
 
@@ -2401,6 +2443,7 @@ class SimSettingsDialogTests(unittest.TestCase):
         capture_path.assert_called_once_with("zscan_capture", "zscan_8ms_3moves")
         write_tiff.assert_called_once()
         self.assertIs(write_tiff.call_args.args[1], stack)
+        stage_adapter.move_z_um.assert_called_once_with(1.0)
         dialog.daq_adapter.set_all_low.assert_called_once_with("Dev1")
         camera_adapter.disarm.assert_called_once()
         camera_adapter.disconnect.assert_not_called()

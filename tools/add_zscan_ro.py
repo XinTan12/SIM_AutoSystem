@@ -8,9 +8,9 @@ up before the zip archive is rewritten.
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import shutil
-import tempfile
 import zipfile
 from pathlib import Path
 
@@ -28,23 +28,29 @@ SDK_SEQUENCE_ROOT = (
 )
 
 SEQUENCE_ALIASES = {
+    "D+": "48039 3ms 1-bit Lit Pair +.seq11",
+    "D-": "48039 3ms 1-bit Lit Pair -.seq11",
     "F+": "48037 1ms 1-bit Lit Pair +.seq11",
     "F-": "48037 1ms 1-bit Lit Pair -.seq11",
     "G+": "48038 2ms 1-bit Lit Pair +.seq11",
     "G-": "48038 2ms 1-bit Lit Pair -.seq11",
-    "H+": "48039 3ms 1-bit Lit Pair +.seq11",
-    "H-": "48039 3ms 1-bit Lit Pair -.seq11",
 }
 
 PRESETS = {
     5: "A",
     8: "F",
     14: "G",
-    20: "H",
+    20: "D",
 }
 
 FORMAL_RO_RE = re.compile(r"^\d+_3\.5_2d_\d+ms(?:_ang0)?$")
 QUOTED_LINE_RE = re.compile(r'^\s*"(?P<name>[^"]+)"\s*$')
+LEGACY_UNUSED_SEQUENCE_ALIASES = {
+    "D": '"48088 100us 1-bit Lit Balanced.seq11"',
+    "E": '"48042 300us 1-bit Balanced.seq11"',
+    "H+": '"48039 3ms 1-bit Lit Pair +.seq11"',
+    "H-": '"48039 3ms 1-bit Lit Pair -.seq11"',
+}
 
 
 def _ro_names(rep_text: str) -> set[str]:
@@ -63,11 +69,20 @@ def _ensure_sequence_aliases(rep_text: str) -> str:
     except ValueError as exc:
         raise RuntimeError("SEQUENCES_END not found in .rep text.") from exc
 
+    referenced_aliases = set(re.findall(r"\(([A-Z][+-]?),\d+\)", rep_text))
     existing = {}
+    cleaned_lines = []
     for line in lines:
         parts = line.strip().split(maxsplit=1)
         if len(parts) == 2 and parts[0] in SEQUENCE_ALIASES:
             existing[parts[0]] = parts[1].strip()
+        if len(parts) == 2 and parts[0] in LEGACY_UNUSED_SEQUENCE_ALIASES:
+            alias = parts[0]
+            if parts[1].strip() == LEGACY_UNUSED_SEQUENCE_ALIASES[alias] and alias not in referenced_aliases:
+                continue
+        cleaned_lines.append(line)
+    lines = cleaned_lines
+    end_index = lines.index("SEQUENCES_END")
 
     additions = []
     for alias, filename in SEQUENCE_ALIASES.items():
@@ -106,6 +121,20 @@ def _ensure_zscan_blocks(rep_text: str) -> str:
     return rep_text
 
 
+def _rewrite_legacy_zscan_aliases(rep_text: str) -> str:
+    marker = '"488_3.5_2d_zscan3p_20ms"'
+    start = rep_text.find(marker)
+    if start < 0:
+        return rep_text
+    end = rep_text.find("\n]", start)
+    if end < 0:
+        raise RuntimeError(f"Malformed z-scan Running Order block: {marker}")
+    end += len("\n]")
+    block = rep_text[start:end]
+    block = block.replace("(H+,", "(D+,").replace("(H-,", "(D-,")
+    return rep_text[:start] + block + rep_text[end:]
+
+
 def _sequence_source(filename: str) -> Path:
     if filename.startswith("48037 "):
         return DEFAULT_REPZ
@@ -130,7 +159,8 @@ def patch_repertoire(repz_path: Path) -> None:
     original_text = entries[rep_name].decode("utf-8")
     original_formal_names = _ro_names(original_text)
 
-    updated_text = _ensure_sequence_aliases(original_text)
+    updated_text = _rewrite_legacy_zscan_aliases(original_text)
+    updated_text = _ensure_sequence_aliases(updated_text)
     updated_text = _ensure_zscan_blocks(updated_text)
     entries[rep_name] = updated_text.encode("utf-8")
 
@@ -142,30 +172,28 @@ def patch_repertoire(repz_path: Path) -> None:
             continue
         entries[filename] = source.read_bytes()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".repz11", dir=repz_path.parent) as temp_file:
-        temp_path = Path(temp_file.name)
-    try:
-        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
-            for name, data in entries.items():
-                dst.writestr(name, data)
-        with zipfile.ZipFile(temp_path, "r") as check:
-            check_entries = set(check.namelist())
-            check_text = check.read(rep_name).decode("utf-8")
-        new_formal_names = _ro_names(check_text)
-        missing_formal = original_formal_names - new_formal_names
-        if missing_formal:
-            raise RuntimeError(f"Formal SIM RO names were removed: {sorted(missing_formal)}")
-        for preset in PRESETS:
-            name = f"488_3.5_2d_zscan3p_{preset}ms"
-            if name not in check_text:
-                raise RuntimeError(f"Missing z-scan RO after patch: {name}")
-        for filename in SEQUENCE_ALIASES.values():
-            if filename not in check_entries:
-                raise RuntimeError(f"Missing sequence file after patch: {filename}")
-        shutil.move(str(temp_path), repz_path)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for name, data in entries.items():
+            dst.writestr(name, data)
+    archive_bytes = archive_buffer.getvalue()
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as check:
+        check_entries = set(check.namelist())
+        check_text = check.read(rep_name).decode("utf-8")
+    new_formal_names = _ro_names(check_text)
+    missing_formal = original_formal_names - new_formal_names
+    if missing_formal:
+        raise RuntimeError(f"Formal SIM RO names were removed: {sorted(missing_formal)}")
+    for preset in PRESETS:
+        name = f"488_3.5_2d_zscan3p_{preset}ms"
+        if name not in check_text:
+            raise RuntimeError(f"Missing z-scan RO after patch: {name}")
+    for filename in SEQUENCE_ALIASES.values():
+        if filename not in check_entries:
+            raise RuntimeError(f"Missing sequence file after patch: {filename}")
+
+    repz_path.write_bytes(archive_bytes)
 
 
 def main() -> None:

@@ -182,6 +182,39 @@ class AcquisitionCoreTests(unittest.TestCase):
 
         self.assertIn("running_order_restore_warning", [state for state, _payload in statuses])
 
+    def test_z_scan_disabled_runs_sim9_at_current_z_without_stage_motion(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig, ZScanConfig
+
+        camera = mock.Mock()
+        camera.read_frame_sequence.return_value = (
+            np.ones((9, 2, 3), dtype=np.uint16),
+            [float(index) for index in range(9)],
+        )
+        stage = mock.Mock()
+        daq = mock.Mock()
+        statuses = []
+
+        with mock.patch("sim_control.acquisition_core.run_z_scan") as run_z_scan_mock:
+            batch = run_single_acquisition(
+                task=SimTaskConfig(),
+                daq_config=DaqLineConfig(),
+                pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                camera=camera,
+                slm=mock.Mock(),
+                daq=daq,
+                task_id="zscan-disabled",
+                on_status=lambda state, payload: statuses.append((state, payload)),
+                stage_adapter=stage,
+                z_scan_config=ZScanConfig(enabled=False),
+                z_scan_pattern_result=None,
+            )
+
+        run_z_scan_mock.assert_not_called()
+        stage.move_z_um.assert_not_called()
+        self.assertEqual(batch.stack.shape, (9, 2, 3))
+        self.assertNotIn("z_scan", batch.metadata)
+
     def test_run_single_acquisition_relays_frame_progress_from_camera_read(self):
         """正常路径：9 个 frame_captured 事件按顺序广播，disarm/set_all_low 各调一次。"""
         from sim_control.acquisition_core import run_single_acquisition

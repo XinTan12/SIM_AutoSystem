@@ -1822,51 +1822,7 @@
                  </item>
                 </widget>
                </item>
-               <item row="1" column="1" alignment="Qt::AlignRight|Qt::AlignVCenter">
-                <widget class="QLabel" name="label_zscan_cancel">
-                 <property name="minimumSize">
-                  <size>
-                   <width>120</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>120</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="text">
-                  <string>Cancel</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="2">
-                <widget class="QCheckBox" name="check_zscan_return_to_start">
-                 <property name="minimumSize">
-                  <size>
-                   <width>240</width>
-                   <height>36</height>
-                  </size>
-                 </property>
-                 <property name="maximumSize">
-                  <size>
-                   <width>320</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="text">
-                  <string>Return to start on cancel</string>
-                 </property>
-                 <property name="checked">
-                  <bool>true</bool>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="0" rowspan="2">
+               <item row="0" column="0">
                 <spacer name="horizontalSpacer_zscan_capture_left">
                  <property name="orientation">
                   <enum>Qt::Horizontal</enum>
@@ -1882,7 +1838,7 @@
                  </property>
                 </spacer>
                </item>
-               <item row="0" column="3" rowspan="2">
+               <item row="0" column="3">
                 <spacer name="horizontalSpacer_zscan_capture_right">
                  <property name="orientation">
                   <enum>Qt::Horizontal</enum>
@@ -2070,12 +2026,12 @@
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>120</width>
+                  <width>190</width>
                   <height>0</height>
                  </size>
                 </property>
                 <property name="text">
-                 <string>估算总用时：</string>
+                 <string>预估总用时(仅位移)：</string>
                 </property>
                 <property name="alignment">
                  <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -2084,6 +2040,48 @@
               </item>
               <item row="3" column="1">
                <widget class="QLabel" name="label_zscan_preview_eta_value">
+                <property name="font">
+                 <font>
+                  <family>Arial</family>
+                  <pointsize>10</pointsize>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>-- ms</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_zscan_preview_capture_eta">
+                <property name="font">
+                 <font>
+                  <family>Microsoft YaHei</family>
+                  <pointsize>10</pointsize>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>190</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>预估总用时(位移+采图)：</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QLabel" name="label_zscan_preview_capture_eta_value">
                 <property name="font">
                  <font>
                   <family>Arial</family>

@@ -5,6 +5,20 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-05-25
+
+### 决策：Z-Scan Display ETA 拆分为仅位移与位移+采图两种测试口径
+- 原因：
+  单一 `estimated_scan_time_ms` 容易把“仅位移台移动”测试和“位移台 + 每层采图”测试混为一谈；真实 stage-only 测试总耗时不包含每层 DAQ/曝光/相机采图，因此用采图口径估算会明显高估。用户要求 Display 同时展示两个明确口径，并让各自与对应测试弹窗的真实总耗时校准。
+- 影响：
+  Z-Scan 历史记录在兼容旧 step 记录的基础上新增 `record_type="run"` 的分模块 run-summary，记录固定开销、起始定位、按 scan gap 的层间移动、回第一层、采图非移动耗时、最佳焦面移动和 TIFF 写盘耗时。Display 显示 `预估总用时(仅位移)` 与 `预估总用时(位移+采图)`；主界面摘要字段改为 `estimated_move_only_time_ms` 和 `estimated_move_capture_time_ms`。仅位移 ETA 对齐“位移台移动”测试弹窗总耗时；位移+采图 ETA 对齐“位移台 + 每层采图”测试弹窗总耗时。
+
+### 决策：Z-Scan ETA 使用持久化测试历史，正式取消不再回起始层
+- 原因：
+  固定 25 ms/层的 Z-Scan ETA 只随层数变化，无法反映不同 scan gap 对 Ti2 ZDrive 实际移动耗时的影响；用户需要在测试某组层扫间隔和步数后，把每步耗时沉淀为后续估算依据。同时，正式 SIM 采集取消时自动回起点会引入额外 Z 轴移动和不确定状态，用户要求删除该配置项，并在不开启 Z-Scan 时直接使用当前 Z 轴位置采集 SIM9。
+- 影响：
+  Z-Scan 测试耗时持久化到 `data/z_scan_timing_history.jsonl`，该运行数据不入 Git；Display ETA 优先使用相同 `scan_gap_nm` 且曝光 preset 匹配的完整 cycle 历史，其次使用相同 gap 的移动中位数，再用已有 gap 做距离模型，无历史时回退默认模型。配置 schema 升到 v8，并删除 `ZScanConfig.return_to_start_on_cancel` 与设置 GUI 中的 `Return to start on cancel`。正式 `run_z_scan()` 遇到取消只传播取消并依赖清理路径保持 DAQ 全低，不再移动回起点；测试模式完成后仍可保留回第一层的安全行为。`z_scan.enabled=False` 时正式 SIM9 不调用 Z-stage 或 `run_z_scan()`，直接在当前 Z 轴位置执行 9 帧采集。
+
 ## 2026-05-22
 
 ### 决策：SIM9 正式采集 raw stack 与 GUI 状态信号分离
@@ -45,7 +59,7 @@
 - 原因：
   微流控捕获细胞后 Z 位置存在抖动，直接执行 SIM9 会出现失焦采集。SLM 路径无法提供传统宽场均匀照明，因此 Z-Scan 采用 488 nm 单方向三相位条纹在同一次相机曝光内依次播放，让三相位平均效应在相机积分期间形成近似均匀照明，同时每个 Z 位置只产生 1 张图以减少时延。
 - 影响：
-  `patterns/2d_3.5.repz11` 是正式 SIM9 与 Z-Scan 共享的 repertoire；新增 `488_3.5_2d_zscan3p_{5,8,14,20}ms` RO 后运行时不再为 Z-Scan 重新烧录单独 `.repz11`。Z-Scan RO 使用 `[HWA h]` 与 `t.wait(20)`，不使用 `{f ...}` FINISH 循环；对应 DAQ 波形不拉 `slm_finish_line`，只要求 `slm_enable_line` 先行 guard 后同步输出 `slm_trigger_line`、`camera_trigger_line` 和 `laser_488_line`，其中 camera/488 高电平持续时间使用 preset 对应实际执行时间 `4884/7884/13884/19884 us`。正式 SIM9 的 FINISH-controlled RO 与 9 帧波形逻辑保持不变。
+  `patterns/2d_3.5.repz11` 是正式 SIM9 与 Z-Scan 共享的 repertoire；新增 `488_3.5_2d_zscan3p_{5,8,14,20}ms` RO 后运行时不再为 Z-Scan 重新烧录单独 `.repz11`。Z-Scan RO 使用 `[HWA h]` 与 `t.wait(20)`，不使用 `{f ...}` FINISH 循环；对应 DAQ 波形不拉 `slm_finish_line`，只要求 `slm_enable_line` 先行 guard 后同步输出 `slm_trigger_line`、`camera_trigger_line` 和 `laser_488_line`，其中 camera/488 高电平持续时间使用 preset 对应实际执行时间 `4884/7884/13884/19884 us`。Z-Scan sequence alias 固定为 5ms=`A±/48030 500us`、8ms=`F±/48037 1ms`、14ms=`G±/48038 2ms`、20ms=`D±/48039 3ms`；不要把 3ms sequence 放到 `H±`，否则 R11 编译/烧录会报 `sequence number (16) out of range`。正式 SIM9 的 FINISH-controlled RO 与 9 帧波形逻辑保持不变。
 
 ## 2026-05-13
 
