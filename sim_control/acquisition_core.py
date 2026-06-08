@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 import numpy as np
@@ -55,6 +56,8 @@ from .z_scan_core import ZScanCancelled, ZScanResult, run_z_scan
 StatusCallback = Callable[[str, dict[str, Any]], None]
 # 帧捕获回调签名：``(frame_index, timestamp) -> None``；通常由 worker 转发到 GUI。
 FrameCallback = Callable[[int, float], None]
+
+logger = logging.getLogger(__name__)
 
 
 class AcquisitionCancelled(RuntimeError):
@@ -298,11 +301,11 @@ def run_single_acquisition(
         try:
             camera.disarm()
         except Exception:
-            pass
+            logger.warning("Failed to disarm camera during acquisition cleanup.", exc_info=True)
         try:
             daq.set_all_low(daq_config.device_name)
         except Exception:
-            pass
+            logger.warning("Failed to set DAQ outputs low during acquisition cleanup.", exc_info=True)
 
     # 8) stack/timestamps 必须满足项目协议；任意不符立即抛 HardwareError。
     stack = _validate_acquisition_result(stack, timestamps, expected_frames=9)

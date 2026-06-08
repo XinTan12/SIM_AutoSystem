@@ -340,6 +340,57 @@ class AcquisitionCoreTests(unittest.TestCase):
         self.assertEqual(camera.disarm_calls, 1)
         self.assertEqual(daq.reset_calls, 1)
 
+    def test_run_single_acquisition_logs_cleanup_failures_without_changing_result(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig
+
+        class FakeCamera:
+            def apply_config(self, config):
+                return {}
+
+            def arm(self, frame_count):
+                return None
+
+            def disarm(self):
+                raise RuntimeError("disarm failed")
+
+            def read_frame_sequence(
+                self,
+                frame_count,
+                pattern_files,
+                laser_wavelength_nm,
+                frame_callback,
+                stop_event=None,
+            ):
+                return np.ones((frame_count, 2, 3), dtype=np.uint16), [float(i) for i in range(frame_count)]
+
+        class FakeSlm:
+            def activate_prepared_patterns(self):
+                return None
+
+        class FakeDaq:
+            def play_waveform(self, device_name, plan, stop_event=None):
+                return None
+
+            def set_all_low(self, device_name):
+                raise RuntimeError("set low failed")
+
+        with self.assertLogs("sim_control.acquisition_core", level="WARNING") as logs:
+            batch = run_single_acquisition(
+                task=SimTaskConfig(),
+                daq_config=DaqLineConfig(),
+                pattern_result=PatternPreparationResult(pattern_files=["p"] * 9, handles=list(range(9))),
+                camera=FakeCamera(),
+                slm=FakeSlm(),
+                daq=FakeDaq(),
+                task_id="cleanup-log-test",
+            )
+
+        self.assertEqual(batch.stack.shape, (9, 2, 3))
+        joined = "\n".join(logs.output)
+        self.assertIn("disarm", joined)
+        self.assertIn("DAQ", joined)
+
     def test_run_single_acquisition_rejects_invalid_stack_or_timestamps_before_completion(self):
         """4 种非法 stack/timestamps 都应抛 HardwareError，且不发 acquisition_complete。"""
         from sim_control.acquisition_core import run_single_acquisition

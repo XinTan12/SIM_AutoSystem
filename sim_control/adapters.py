@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import logging
 import math
 import os
 import re
@@ -57,6 +58,8 @@ import numpy as np
 from .models import CameraConfig, PatternPreparationResult, Z_SCAN_EXPOSURE_PRESETS_MS
 from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE, SIM_CAMERA_ROI_STEP_PX, build_sim_camera_size_presets
 from .waveform import WaveformPlan
+
+logger = logging.getLogger(__name__)
 
 # nidaqmx 在没有 NI runtime 的开发机器上可能 import 失败；用 try/except 兜底，让本模块仍可加载。
 # 真正调用 NI 时会通过 ``self._available`` 显式拒绝并抛 HardwareError。
@@ -721,7 +724,7 @@ class NIDaqAdapter:
                         try:
                             task.stop()
                         except Exception:
-                            pass
+                            logger.warning("Failed to stop NI task after stop_event was set.", exc_info=True)
                         return
                     # 5b) 任务正常结束 → 直接 return。
                     if task.is_task_done():
@@ -857,16 +860,16 @@ class FusionBtCameraAdapter:
         try:
             self.stop_preview()
         except Exception:
-            pass
+            logger.warning("Failed to stop DCAM preview while closing camera.", exc_info=True)
         try:
             self.disarm()
         except Exception:
-            pass
+            logger.warning("Failed to disarm DCAM camera while closing camera.", exc_info=True)
         # 2) 调 SDK ``dev_close``；finally 中无条件清运行时字段，让下次 connect 走全新流程。
         try:
             self._dcam_camera.dev_close()
         except Exception:
-            pass
+            logger.warning("Failed to close DCAM camera device.", exc_info=True)
         finally:
             self._dcam_camera = None
             self._device_open = False
@@ -1298,7 +1301,7 @@ class FusionBtCameraAdapter:
                 try:
                     camera.dev_close()
                 except Exception:
-                    pass
+                    logger.warning("Failed to close DCAM camera while listing devices.", exc_info=True)
         return devices
 
     def is_connected(self) -> bool:
@@ -1426,7 +1429,7 @@ class FusionBtCameraAdapter:
             try:
                 self._dcam_camera.buf_release()
             except Exception:
-                pass
+                logger.warning("Failed to release DCAM preview buffer after cap_start failure.", exc_info=True)
             raise HardwareError(f"Failed to start DCAM preview capture: {self._dcam_camera.lasterr().name}")
         self._preview_active = True
 
@@ -1455,11 +1458,11 @@ class FusionBtCameraAdapter:
         try:
             self._dcam_camera.cap_stop()
         except Exception:
-            pass
+            logger.warning("Failed to stop DCAM preview capture.", exc_info=True)
         try:
             self._dcam_camera.buf_release()
         except Exception:
-            pass
+            logger.warning("Failed to release DCAM preview buffer.", exc_info=True)
 
     def arm(self, frame_count: int) -> None:
         """让相机进入 snapshot 模式等待外部触发；分配 ``frame_count`` 大小的 buffer。"""
@@ -1492,11 +1495,11 @@ class FusionBtCameraAdapter:
         try:
             self._dcam_camera.cap_stop()
         except Exception:
-            pass
+            logger.warning("Failed to stop DCAM snapshot capture during disarm.", exc_info=True)
         try:
             self._dcam_camera.buf_release()
         except Exception:
-            pass
+            logger.warning("Failed to release DCAM snapshot buffer during disarm.", exc_info=True)
 
     def read_frame_sequence(
         self,

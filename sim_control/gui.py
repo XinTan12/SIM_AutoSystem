@@ -72,10 +72,13 @@ from PyQt5.QtWidgets import (
 )
 import tifffile
 
+from .adapter_factory import (
+    create_camera_adapter_for_backend,
+    create_daq_adapter_for_backend,
+    create_slm_adapter_for_backend,
+)
 from .adapters import (
-    FusionBtCameraAdapter,
     HardwareError,
-    KopinSlmAdapter,
     NIDaqAdapter,
     find_best_running_order,
     find_z_scan_running_order,
@@ -103,7 +106,6 @@ from .models import (
 )
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
 from .protocols import CameraAdapter, SlmAdapter
-from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
 from .led_indicator import LedIndicator
 from .ui_sim_settings_dialog import Ui_SimSettingsDialog
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
@@ -534,27 +536,6 @@ def build_zscan_test_target_items() -> list[tuple[str, str]]:
     return list(Z_SCAN_TEST_TARGET_ITEMS)
 
 
-def create_camera_adapter_for_backend(backend):
-    """按 ``backend.simulation_mode`` 选择真实或仿真相机 adapter。"""
-    if backend.simulation_mode:
-        return SimulatedCameraAdapter()
-    return FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path)
-
-
-def create_slm_adapter_for_backend(backend):
-    """按 ``backend.simulation_mode`` 选择真实或仿真 SLM adapter。"""
-    if backend.simulation_mode:
-        return SimulatedSlmAdapter()
-    return KopinSlmAdapter(sdk_path=backend.slm_sdk_path)
-
-
-def create_daq_adapter_for_backend(backend):
-    """按 ``backend.simulation_mode`` 选择真实或仿真 DAQ adapter。"""
-    if backend.simulation_mode:
-        return SimulatedDaqAdapter()
-    return NIDaqAdapter()
-
-
 def clone_app_config(config: AppConfig) -> AppConfig:
     """通过 dict 中转的方式深拷贝 ``AppConfig``。
 
@@ -609,6 +590,7 @@ class SimSettingsDialog(QDialog):
         parent: QWidget | None = None,
         slm_adapter: SlmAdapter | None = None,
         camera_adapter: CameraAdapter | None = None,
+        daq_adapter: object | None = None,
         stage_adapter: object | None = None,
     ):
         # 1) 调父类构造让 Qt 接管对话框生命周期。
@@ -622,8 +604,8 @@ class SimSettingsDialog(QDialog):
 
         # 3) 加载 pyuic5 生成的 Ui 类；后续 ``setupUi`` 把控件挂到 self 上。
         self.ui = Ui_SimSettingsDialog()
-        # 4) 创建/接受 3 个 adapter。DAQ 总是新建；SLM/相机若外部传入则共享。
-        self.daq_adapter = create_daq_adapter_for_backend(self.config.backend)
+        # 4) 创建/接受 3 个 adapter。DAQ 默认新建；SLM/相机若外部传入则共享。
+        self.daq_adapter = daq_adapter or create_daq_adapter_for_backend(self.config.backend)
         self.slm_adapter = slm_adapter or create_slm_adapter_for_backend(self.config.backend)
         self.camera_adapter = camera_adapter or create_camera_adapter_for_backend(self.config.backend)
         self.stage_adapter = stage_adapter

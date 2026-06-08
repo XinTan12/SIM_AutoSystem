@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import traceback
 from typing import Any
@@ -44,11 +45,9 @@ from typing import Any
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from .acquisition_core import AcquisitionCancelled, run_single_acquisition
+from .adapter_factory import create_adapter_bundle
 from .adapters import (
-    FusionBtCameraAdapter,
     HardwareError,
-    KopinSlmAdapter,
-    NIDaqAdapter,
     find_best_running_order,
     find_z_scan_running_order,
 )
@@ -65,9 +64,10 @@ from .models import (
     effective_inter_frame_gap_us,
     new_task_id,
 )
-from .sim_adapters import SimulatedCameraAdapter, SimulatedDaqAdapter, SimulatedSlmAdapter
-from .stage_adapter import SimulatedZStageAdapter, Ti2ZStageAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
+
+
+logger = logging.getLogger(__name__)
 
 
 def _acquisition_summary_payload(batch: Any) -> dict[str, Any]:
@@ -407,21 +407,13 @@ class SimAcquisitionController(QObject):
 
     @staticmethod
     def _create_adapters(backend: BackendConfig):
-        """根据 ``backend.simulation_mode`` 创建真实或仿真 adapter 三件套。
+        """根据 ``backend.simulation_mode`` 创建真实或仿真 adapter 四件套。
 
         返回：
-            ``(camera_adapter, slm_adapter, daq_adapter)`` 元组。
+            ``(camera_adapter, slm_adapter, daq_adapter, stage_adapter)`` 元组。
         """
-        # 仿真模式 → 立刻返回 Simulated*Adapter；不引入任何真实 SDK 依赖。
-        if backend.simulation_mode:
-            return SimulatedCameraAdapter(), SimulatedSlmAdapter(), SimulatedDaqAdapter(), SimulatedZStageAdapter()
-        # 真实模式 → 把 SDK 路径透传给相机和 SLM adapter；DAQ adapter 无路径需求。
-        return (
-            FusionBtCameraAdapter(sdk_path=backend.fusion_bt_sdk_path),
-            KopinSlmAdapter(sdk_path=backend.slm_sdk_path),
-            NIDaqAdapter(),
-            Ti2ZStageAdapter(),
-        )
+        bundle = create_adapter_bundle(backend)
+        return bundle.camera, bundle.slm, bundle.daq, bundle.stage
 
     def shutdown(self) -> None:
         """停止后台 worker、按 Qt 生命周期顺序断开相机、SLM 与 DAQ。"""
@@ -431,7 +423,7 @@ class SimAcquisitionController(QObject):
         try:
             self.stop()
         except Exception:
-            pass
+            logger.warning("Failed to request stop during controller shutdown.", exc_info=True)
         # 3) 退出 QThread。``wait(2000)`` 给 worker 2 秒优雅退出窗口。
         self._thread.quit()
         if not self._thread.wait(2000):
@@ -441,15 +433,15 @@ class SimAcquisitionController(QObject):
         try:
             self.camera_adapter.disconnect()
         except Exception:
-            pass
+            logger.warning("Failed to disconnect camera during controller shutdown.", exc_info=True)
         try:
             self.slm_adapter.disconnect()
         except Exception:
-            pass
+            logger.warning("Failed to disconnect SLM during controller shutdown.", exc_info=True)
         try:
             self.stage_adapter.disconnect()
         except Exception:
-            pass
+            logger.warning("Failed to disconnect stage during controller shutdown.", exc_info=True)
 
     def initialize_hardware(self) -> None:
         """同步初始化相机和 SLM，并广播状态。注：真实硬件可能阻塞数秒。"""

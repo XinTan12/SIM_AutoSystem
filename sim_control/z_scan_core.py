@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import logging
 import time
 from typing import Any, Callable
 
@@ -32,6 +33,8 @@ class ZScanResult:
 
 
 StatusCallback = Callable[[str, dict[str, Any]], None]
+
+logger = logging.getLogger(__name__)
 
 
 def _noop_status(event: str, payload: dict[str, Any]) -> None:
@@ -83,6 +86,8 @@ def run_z_scan(
     z_camera_config = replace(camera_config, exposure_us=actual_exposure_us)
     focus_curve: list[ZFocusPoint] = []
     captured_frames: list[np.ndarray] | None = [] if keep_captured_stack else None
+    waveform_plan = None
+    waveform_warnings: list[str] = []
 
     try:
         camera_adapter.apply_config(z_camera_config)
@@ -111,15 +116,17 @@ def run_z_scan(
                 camera_adapter.arm(1)
                 armed = True
                 slm_adapter.activate_prepared_patterns()
-                plan = builder.build_z_scan(
-                    daq_config=daq_config,
-                    timing=timing,
-                    exposure_us=actual_exposure_us,
-                    include_role_matrix=False,
-                )
-                if plan.warnings:
-                    callback("z_scan_waveform_warning", {"warnings": plan.warnings})
-                daq_adapter.play_waveform(daq_config.device_name, plan, stop_event=stop_event)
+                if waveform_plan is None:
+                    waveform_plan = builder.build_z_scan(
+                        daq_config=daq_config,
+                        timing=timing,
+                        exposure_us=actual_exposure_us,
+                        include_role_matrix=False,
+                    )
+                    waveform_warnings = list(getattr(waveform_plan, "warnings", []))
+                if waveform_warnings:
+                    callback("z_scan_waveform_warning", {"warnings": list(waveform_warnings)})
+                daq_adapter.play_waveform(daq_config.device_name, waveform_plan, stop_event=stop_event)
                 stack, _timestamps = camera_adapter.read_frame_sequence(
                     1,
                     pattern_files=["zscan3p"],
@@ -191,7 +198,7 @@ def run_z_scan(
         try:
             daq_adapter.set_all_low(daq_config.device_name)
         except Exception:
-            pass
+            logger.warning("Failed to set DAQ outputs low during z-scan cleanup.", exc_info=True)
 
 
 __all__ = ["ZFocusPoint", "ZScanResult", "ZScanCancelled", "scan_positions", "run_z_scan"]

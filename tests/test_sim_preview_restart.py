@@ -2006,6 +2006,36 @@ class SimSettingsDialogTests(unittest.TestCase):
         dialog.close()
         camera_adapter.disconnect.assert_not_called()
 
+    def test_dialog_uses_injected_daq_adapter_when_provided(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, BackendConfig
+
+        daq_adapter = mock.Mock()
+        with mock.patch(
+            "sim_control.gui.create_daq_adapter_for_backend",
+            side_effect=AssertionError("injected DAQ adapter should be used"),
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(backend=BackendConfig(simulation_mode=True)),
+                daq_adapter=daq_adapter,
+            )
+
+        self.assertIs(dialog.daq_adapter, daq_adapter)
+        dialog.close()
+
+    def test_dialog_still_creates_default_daq_adapter_when_not_injected(self):
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, BackendConfig
+
+        daq_adapter = mock.Mock()
+        with mock.patch("sim_control.gui.create_daq_adapter_for_backend", return_value=daq_adapter) as factory:
+            dialog = SimSettingsDialog(config=AppConfig(backend=BackendConfig(simulation_mode=True)))
+
+        self.assertIs(dialog.daq_adapter, daq_adapter)
+        self.assertEqual(factory.call_count, 1)
+        self.assertTrue(factory.call_args.args[0].simulation_mode)
+        dialog.close()
+
     def test_dialog_keeps_auto_z_start_when_displaying_connected_stage_position(self):
         from sim_control.gui import SimSettingsDialog, read_z_scan_config_from_widgets
         from sim_control.models import AppConfig, ZScanConfig

@@ -2,6 +2,7 @@ import sys
 import unittest
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -253,6 +254,55 @@ class ZScanCoreTests(unittest.TestCase):
         self.assertAlmostEqual(stage.get_position_um(), 2.0)
         for point in result.focus_curve:
             self.assertFalse(math.isnan(point.focus_score))
+
+    def test_run_z_scan_reuses_waveform_plan_but_keeps_warning_event_per_step(self):
+        from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
+        from sim_control.stage_adapter import SimulatedZStageAdapter
+        from sim_control.z_scan_core import run_z_scan
+
+        class CountingBuilder:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.plan = SimpleNamespace(metadata={"z_scan": True}, warnings=["cached warning"])
+
+            def build_z_scan(self, **_kwargs):
+                self.calls += 1
+                return self.plan
+
+        stage = SimulatedZStageAdapter(start_um=0.0, min_um=-5.0, max_um=10.0)
+        stage.connect()
+        camera = _SyntheticFocusCamera(stage, best_z=1.0)
+        slm = _FakeSlm()
+        daq = _FakeDaq()
+        builder = CountingBuilder()
+        statuses = []
+
+        result = run_z_scan(
+            stage_adapter=stage,
+            camera_adapter=camera,
+            slm_adapter=slm,
+            daq_adapter=daq,
+            daq_config=DaqLineConfig(),
+            camera_config=CameraConfig(exposure_us=10_000),
+            timing=TimingConfig(sample_rate_hz=1_000_000, slm_enable_guard_us=50),
+            z_scan_config=ZScanConfig(
+                start_um=0.0,
+                direction="positive_z",
+                step_um=1.0,
+                num_steps=3,
+                exposure_preset_ms=8,
+            ),
+            waveform_builder=builder,
+            on_status=lambda event, payload: statuses.append((event, payload)),
+        )
+
+        self.assertEqual(builder.calls, 1)
+        self.assertEqual(len(daq.plans), 4)
+        self.assertTrue(all(plan is builder.plan for plan in daq.plans))
+        self.assertEqual(result.best_z_um, 1.0)
+        warning_payloads = [payload for event, payload in statuses if event == "z_scan_waveform_warning"]
+        self.assertEqual(len(warning_payloads), 4)
+        self.assertEqual([payload["warnings"] for payload in warning_payloads], [["cached warning"]] * 4)
 
     def test_run_z_scan_default_keep_captured_stack_false_preserves_legacy_memory_behavior(self):
         from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig

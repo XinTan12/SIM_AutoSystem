@@ -29,10 +29,6 @@
 
 # 配置读写函数：外部加载/保存 ``AppConfig`` JSON 时直接调用这两个函数。
 from .config_store import DEFAULT_CONFIG_PATH, load_app_config, save_app_config
-# SIM 采集控制器：集成主界面和独立 GUI 共享同一个控制器实例。
-from .controller import SimAcquisitionController
-# SIM 顶层窗口：独立 SIM 采集 GUI 与集成主界面的弹窗都基于它。
-from .gui import SimControlWindow
 # 全套配置/结果数据类：覆盖配置（AppConfig）、子配置（Camera/DaqLine/Timing）
 # 与采集后产物（Acquisition/Reconstruction/Feature/Decision Result）。
 from .models import (
@@ -49,6 +45,29 @@ from .models import (
 )
 # 硬件 adapter 协议：测试与外部实现可以基于这三个 Protocol 自定义 mock/真实绑定。
 from .protocols import CameraAdapter, DaqAdapter, SlmAdapter
+
+_LAZY_EXPORTS = {
+    "SimAcquisitionController": (".controller", "SimAcquisitionController"),
+    "SimControlWindow": (".gui", "SimControlWindow"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute_name = _LAZY_EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    from importlib import import_module
+
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__) | set(_LAZY_EXPORTS))
+
 
 # ``__all__`` 决定 ``from sim_control import *`` 与外部静态分析工具看到的导出面。
 # 排序保持字母序，便于 review 时一眼比对是否漏导出。
