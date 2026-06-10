@@ -159,8 +159,8 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
         self.assertIn("Bit Depth: 16-bit", summary)
         self.assertIn("TIMING_READOUTTIME: -", summary)
-        # 2) 总时长 = 2 × 50 µs guard + 9 × (10 ms exposure + 50 ms gap) + 10 ms 整理 = 550.100 ms。
-        self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 550.100 ms", summary)
+        # 2) 总时长 = 2 × 1000 µs 默认 guard + 9 × (10 ms exposure + 50 ms gap) + 10 ms 整理 = 552.000 ms。
+        self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 552.000 ms", summary)
         # 3) 默认间隔显示为 50000 µs；用户在 timing 字段填的 15000 不生效。
         self.assertIn("  inter_frame_gap_us: 50000", summary)
 
@@ -244,7 +244,8 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("  image_layers: 13", summary)
         self.assertIn("  total_distance_um: 4.800", summary)
         self.assertIn("  estimated_move_only_time_ms: 325.000", summary)
-        self.assertIn("  estimated_move_capture_time_ms: 506.792", summary)
+        # 默认 capture 模型每层波形含 2×1000 µs guard；guard 默认值改动会同步影响该值。
+        self.assertIn("  estimated_move_capture_time_ms: 531.492", summary)
         self.assertNotIn("  estimated_scan_time_ms:", summary)
         self.assertIn("  exposure_preset_ms: 14", summary)
         self.assertIn("  actual_exposure_us: 13884", summary)

@@ -5,6 +5,14 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-06-10
+
+### 决策：slm_enable guard 以 R11 tHWAT 规格为准固定为 ≥1 ms，首帧黑帧归因于 [HWA h] RO 的 EXT_RUN 硬件激活窗口
+- 原因：
+  DAQ 页 SIM 采集测试出现第一帧黑帧、九图案错位一帧（3+3+2）。SDK 文档闭环显示：repertoire 内全部 RO 声明 `[HWA h]`，只在 EXT_RUN（`slm_enable_line`/SPI_0）拉高后激活（PD0011CA p.16）；软件 `R11_RpcRoActivate` 后 EXT_RUN 未拉高时系统仍在 Maintenance 黑屏（AN0027AD §3.26，状态 0x54 MHW）；EXT_RUN 拉高到 Active Mode 需要 tHWAT=5~500 µs（PD0011CA Table 7-1）。旧 `slm_enable_guard_us=50` 使首个 slm_trigger 落在激活窗口内被丢弃。另据 sequence timing report，TRIGGER 后 tTSS≈3.5 µs 启动 sequence、1-bit Lit Pair 的 `illumStart≈270.19 µs` 图案才点亮，FINISH-loop 架构下无需额外 trigger lead。
+- 影响：
+  `TimingConfig.slm_enable_guard_us` 默认与推荐值定为 1000 µs（tHWAT 上限 2 倍）；配置 schema 升到 v9，迁移把 <1000 的旧值抬到 1000（用户可事后手动调低）；`waveform.build()/build_z_scan()` 对 guard≤500 µs 发告警而不硬拦截。`R11_RpcRoGetActivationState` 纳入 `_R11CommLib` 绑定与 `KopinSlmAdapter`，采集链路 activate 后上报 `slm_activation_state` 事件，DAQ 页新增「SLM激活时序」诊断测试；R11CommLib 无逐帧时间戳/计数查询，逐帧真实时序验证依赖 sequence timing report、READY/SPO_0 + 示波器与相机 DCAM 时间戳。后续调整 SIM/z-scan 波形时序时不得把 guard 降回 ≤500 µs，除非重新做硬件时序决策。
+
 ## 2026-05-25
 
 ### 决策：Z-Scan Display ETA 拆分为仅位移与位移+采图两种测试口径

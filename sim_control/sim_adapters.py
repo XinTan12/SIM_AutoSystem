@@ -243,6 +243,8 @@ class SimulatedSlmAdapter:
         # 默认空 pattern 准备结果：``activate_prepared_patterns`` 会拒绝它。
         self._prepared = PatternPreparationResult()
         self._connection_info: dict[str, Any] = {}
+        # 仿真激活状态：False 时报告 MHW（硬件未激活），True 时报告 ACT。
+        self._activated = False
 
     def initialize(self) -> None:
         self._initialized = True
@@ -275,6 +277,7 @@ class SimulatedSlmAdapter:
     def disconnect(self) -> None:
         self._connected = False
         self._connection_info = {}
+        self._activated = False
 
     def list_running_orders(self) -> list[tuple[int, str]]:
         # 返回 (index, name) 元组列表；命名与真实 R11 repertoire 同模式，可被 find_best_running_order 解析。
@@ -335,6 +338,21 @@ class SimulatedSlmAdapter:
         # 2) 自动连接；真实 adapter 不允许这样做，但仿真路径优先减少测试样板代码。
         if not self._connected:
             self.connect()
+        # 3) 仿真路径把软件激活直接视为 ACT；真实 [HWA h] RO 还需 EXT_RUN 拉高。
+        self._activated = True
+
+    def get_running_order_activation_state(self) -> dict[str, Any]:
+        """仿真激活状态：未激活报告 0x54 MHW，激活后报告 0x56 ACT。
+
+        与真实 ``KopinSlmAdapter`` 的差异：真实 [HWA h] RO 在软件 activate 后
+        仍是 MHW，需要 EXT_RUN（slm_enable）拉高才会变 ACT；仿真 SLM 看不到
+        DAQ 线电平，因此把软件激活直接等价为 ACT，让诊断流程可离线跑通。
+        """
+        if not self._connected:
+            raise RuntimeError("Connect to the simulated SLM before querying activation state.")
+        if self._activated:
+            return {"code": 0x56, "name": "ACT(active)"}
+        return {"code": 0x54, "name": "MHW(maintenance, hardware deactivated)"}
 
     def prepared_summary(self) -> dict[str, Any]:
         # ``asdict`` 把 dataclass 展平，让 GUI 摘要可以直接 json.dumps 查看。
@@ -348,8 +366,15 @@ class SimulatedDaqAdapter:
     维护要点：
         - ``play_waveform`` 故意短暂阻塞，模拟真实 DAQ 播放无法立即返回，方便
           stop_event 测试观察取消语义。
-        - ``pulse_line`` 仍调 ``parse_line_name``，以便在仿真路径下也能尽早发现非法线名。
+        - ``pulse_line`` / ``set_line`` 仍调 ``parse_line_name``，以便在仿真路径下
+          也能尽早发现非法线名；``set_line_calls`` 记录调用供测试断言。
     """
+    def __init__(self):
+        # 记录 set_line 调用 (device, line_index, high)，供 GUI/诊断测试断言时序。
+        self.set_line_calls: list[tuple[str, int, bool]] = []
+        # 记录 set_all_low 调用次数，供清理路径断言。
+        self.set_all_low_calls = 0
+
     def list_devices(self, default_device: str = "Dev1") -> list[str]:
         # 仿真模式下永远返回一个默认设备名，GUI 下拉据此渲染。
         return [default_device or "Dev1"]
@@ -370,8 +395,14 @@ class SimulatedDaqAdapter:
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
     def set_all_low(self, device_name: str) -> None:
-        # 仿真路径无副作用；保留方法签名与真实 adapter 对齐。
+        # 仿真路径无硬件副作用；记录调用次数供清理路径断言。
+        self.set_all_low_calls += 1
         return None
+
+    def set_line(self, device_name: str, line_index: int, high: bool) -> None:
+        # 1) 复用真实解析器尽早发现非法线名；2) 记录调用供测试断言。
+        parse_line_name(f"{device_name}/port0/line{int(line_index)}")
+        self.set_line_calls.append((device_name, int(line_index), bool(high)))
 
     def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None:
         # 1) 把虚构线名喂给真实解析器，让上层在仿真路径下也能发现非法 line index。

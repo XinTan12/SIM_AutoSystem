@@ -12,7 +12,7 @@
   },
   "camera": {
     "device_index": 0,
-    "device_label": "0: C15440-20UP [S/N: 501679]",
+    "device_label": "",
     "roi_x": 0,
     "roi_y": 0,
     "roi_width": 2304,
@@ -26,7 +26,7 @@
     "sample_rate_hz": 1000000,
     "edge_pulse_us": 50,
     "inter_frame_gap_us": 50000,
-    "slm_enable_guard_us": 50
+    "slm_enable_guard_us": 1000
   },
   "backend": {
     "fusion_bt_sdk_path": "",
@@ -76,5 +76,5 @@
   ],
   "selected_running_order": "",
   "selected_laser_nm": 488,
-  "config_version": 8
+  "config_version": 9
 }

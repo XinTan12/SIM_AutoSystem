@@ -42,6 +42,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 import traceback
+from typing import Any
 
 import numpy as np
 
@@ -80,6 +81,7 @@ from .adapter_factory import (
 from .adapters import (
     HardwareError,
     NIDaqAdapter,
+    R11_ACTIVATION_STATE_ACTIVE,
     find_best_running_order,
     find_z_scan_running_order,
 )
@@ -478,6 +480,11 @@ SIM_ACQUISITION_TEST_ID = "sim_acquisition"
 # SIM 采集测试默认参数：500ms 曝光 + 50ms 帧间隔，便于真机调试时观察是否触发。
 SIM_ACQUISITION_TEST_EXPOSURE_US = 500_000
 SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US = 50_000
+# "SLM 激活时序测试"下拉项目 ID：DAQ 拉高 slm_enable 后轮询 R11 激活状态，
+# 实测 EXT_RUN -> ACT 的延迟上界（数据手册 tHWAT 规格为 5~500 µs）。
+SLM_ACTIVATION_TIMING_TEST_ID = "slm_activation_timing"
+# 激活轮询超时：tHWAT 上限 500 µs + USB 轮询粒度（毫秒级），2 秒足够分辨异常。
+SLM_ACTIVATION_TIMING_TIMEOUT_S = 2.0
 # 测试下拉中可单独发短脉冲的 5 个角色（不含 SLM enable/trigger/finish，避免误触发 SLM）。
 DAQ_PULSE_TEST_ROLES = (
     "camera_trigger_line",
@@ -510,6 +517,26 @@ class SimAcquisitionTestResult:
     output_path: Path
     actual_acquisition_duration_s: float
     daq_waveform_duration_s: float
+
+
+@dataclass(frozen=True)
+class SlmActivationTimingTestResult:
+    """``_run_slm_activation_timing_test`` 的返回结构。
+
+    职责：
+        - ``running_order_name``：本次测试选中的 RO 名。
+        - ``initial_state``：软件 activate 后、slm_enable 拉高前的状态 ``{"code","name"}``。
+        - ``transitions``：``(elapsed_ms, state)`` 列表，记录 enable 拉高后观察到的状态变迁。
+        - ``reached_active`` / ``enable_to_active_ms``：是否达到 0x56 ACT 及对应耗时；
+          受 USB 轮询粒度限制，该耗时是真实 tHWAT 的**上界**。
+        - ``poll_count``：总轮询次数，用于评估轮询粒度。
+    """
+    running_order_name: str
+    initial_state: dict[str, Any]
+    transitions: list[tuple[float, dict[str, Any]]]
+    reached_active: bool
+    enable_to_active_ms: float | None
+    poll_count: int
 
 
 @dataclass(frozen=True)
@@ -564,6 +591,8 @@ def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, st
     ]
     # 2) 末尾追加完整 SIM9 测试项；ID 用 ``SIM_ACQUISITION_TEST_ID`` 常量。
     items.append((SIM_ACQUISITION_TEST_ID, "SIM采集"))
+    # 3) SLM 激活时序诊断：实测 slm_enable(EXT_RUN) 拉高 -> RO ACT 的延迟上界。
+    items.append((SLM_ACTIVATION_TIMING_TEST_ID, "SLM激活时序"))
     return items
 
 
@@ -1566,6 +1595,85 @@ class SimSettingsDialog(QDialog):
             except Exception:
                 pass
 
+    def _run_slm_activation_timing_test(self, daq_config: DaqLineConfig) -> SlmActivationTimingTestResult:
+        """实测 slm_enable(EXT_RUN) 拉高 -> RO 进入 ACT 的延迟上界。
+
+        流程：
+            1. 按当前波长选 RO 并软件 activate（与 SIM 采集测试一致）。
+            2. 读初始激活状态：[HWA h] RO 预期为 0x54 MHW（等待 EXT_RUN）。
+            3. ``set_line`` 拉高 slm_enable，``perf_counter`` 轮询激活状态直至
+               0x56 ACT 或超时，记录每次状态变迁。
+            4. finally：slm_enable 拉低 + DAQ 全 0，硬件安全归位。
+
+        注意：
+            USB 轮询单次往返为毫秒级，因此测得的 enable->ACT 耗时是真实 tHWAT
+            （规格 5~500 µs）的上界；用于确认门控机理与排查异常，不用于精确计时。
+        """
+        # 1) 必须先连接 SLM；选 RO 沿用 SIM 采集测试的波长 + 500ms 曝光桶。
+        if not self.slm_adapter.is_connected():
+            raise HardwareError("SLM激活时序测试前需要先连接 SLM。")
+        self.config.selected_laser_nm = self._selected_laser_nm()
+        running_orders = self.slm_adapter.list_running_orders()
+        ro_index, ro_name, ro_warnings = find_best_running_order(
+            running_orders,
+            wavelength_nm=self.config.selected_laser_nm,
+            exposure_us=SIM_ACQUISITION_TEST_EXPOSURE_US,
+        )
+        if ro_index is None:
+            raise HardwareError("; ".join(ro_warnings) or "未找到匹配的 SLM Running Order。")
+        self.slm_adapter.select_running_order(int(ro_index))
+        self.slm_adapter.activate_prepared_patterns()
+        _, _, enable_line_index = parse_line_name(daq_config.slm_enable_line)
+        # 2) 软件 activate 后、enable 拉高前的基线状态。
+        initial_state = self.slm_adapter.get_running_order_activation_state()
+        # 2a) 旧版 R11CommLib 缺 GetActivationState 时直接拒绝：后续轮询永远拿不到
+        #     ACT，只会变成 2 秒 GUI 线程纯自旋；提示用户升级 SDK。
+        if initial_state.get("code") is None:
+            raise HardwareError(
+                "当前 R11CommLib 不支持 R11_RpcRoGetActivationState，无法执行激活时序测试；"
+                "请升级 R11CommLib（>= 1.8）后重试。"
+            )
+        transitions: list[tuple[float, dict[str, Any]]] = []
+        reached_active = False
+        enable_to_active_ms: float | None = None
+        poll_count = 0
+        try:
+            # 3) 拉高 enable 并尽快开始轮询；不 sleep，轮询间隔即 USB 往返时间。
+            started_at = time.perf_counter()
+            self.daq_adapter.set_line(daq_config.device_name, enable_line_index, high=True)
+            last_code = initial_state.get("code")
+            while True:
+                state = self.slm_adapter.get_running_order_activation_state()
+                poll_count += 1
+                elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+                if state.get("code") != last_code:
+                    transitions.append((elapsed_ms, state))
+                    last_code = state.get("code")
+                if state.get("code") == R11_ACTIVATION_STATE_ACTIVE:
+                    reached_active = True
+                    enable_to_active_ms = elapsed_ms
+                    break
+                if elapsed_ms >= SLM_ACTIVATION_TIMING_TIMEOUT_S * 1000.0:
+                    break
+        finally:
+            # 4) 不论成败：enable 拉低 + DAQ 全 0，避免 SLM 停在 Active Mode。
+            try:
+                self.daq_adapter.set_line(daq_config.device_name, enable_line_index, high=False)
+            except Exception:
+                pass
+            try:
+                self.daq_adapter.set_all_low(daq_config.device_name)
+            except Exception:
+                pass
+        return SlmActivationTimingTestResult(
+            running_order_name=str(ro_name),
+            initial_state=initial_state,
+            transitions=transitions,
+            reached_active=reached_active,
+            enable_to_active_ms=enable_to_active_ms,
+            poll_count=poll_count,
+        )
+
     def _run_pulse_test(self) -> None:
         """测试按钮总入口：按 ``combo_test_target.currentData`` 分派到三类测试。"""
         # 1) 计时起点 → 校验 DAQ 配置 → 取目标 ID。
@@ -1588,6 +1696,26 @@ class SimSettingsDialog(QDialog):
                     f"SIM采集实际用时: {result.actual_acquisition_duration_s * 1000.0:.3f} ms\n"
                     f"DAQ完整播放时长: {result.daq_waveform_duration_s * 1000.0:.3f} ms"
                 )
+            elif target_id == SLM_ACTIVATION_TIMING_TEST_ID:
+                timing_result = self._run_slm_activation_timing_test(daq_config)
+                lines = [
+                    f"Running Order: {timing_result.running_order_name}",
+                    f"软件激活后初始状态: {timing_result.initial_state.get('name')}",
+                ]
+                for elapsed_ms, state in timing_result.transitions:
+                    lines.append(f"+{elapsed_ms:.3f} ms -> {state.get('name')}")
+                if timing_result.reached_active and timing_result.enable_to_active_ms is not None:
+                    lines.append(
+                        f"slm_enable 拉高 -> ACT(active) 用时: {timing_result.enable_to_active_ms:.3f} ms"
+                        f"（USB 轮询粒度上界，共 {timing_result.poll_count} 次轮询；"
+                        "数据手册 tHWAT 规格 5~500 µs）"
+                    )
+                else:
+                    lines.append(
+                        f"超时 {SLM_ACTIVATION_TIMING_TIMEOUT_S:.1f}s 未达到 ACT(active)；"
+                        "请检查 slm_enable(EXT_RUN) 接线、RO 激活方式与 R11CommLib 版本。"
+                    )
+                message = "SLM激活时序测试完成:\n" + "\n".join(lines)
             elif target_id == "camera_trigger_line":
                 output_path = self._run_camera_trigger_test(daq_config)
                 message = f"相机测试完成，16位 TIFF 已保存到:\n{output_path}"

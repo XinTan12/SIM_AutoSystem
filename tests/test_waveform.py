@@ -188,6 +188,54 @@ class WaveformValidationTests(unittest.TestCase):
         self.assertEqual(int(plan.role_matrix["slm_finish_line"].sum()), 0)
         self.assertEqual(int(sum(role[-1] for role in plan.role_matrix.values())), 0)
 
+    def test_waveform_warns_when_guard_at_or_below_r11_activation_max(self):
+        """guard <= 500 µs（R11 tHWAT 上限）时 build / build_z_scan 都应告警。"""
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        builder = NIDaqWaveformBuilder()
+        timing = TimingConfig(
+            sample_rate_hz=1_000_000,
+            edge_pulse_us=50,
+            inter_frame_gap_us=50_000,
+            slm_enable_guard_us=500,
+        )
+
+        plan = builder.build(
+            daq_config=DaqLineConfig(),
+            timing=timing,
+            laser_wavelength_nm=488,
+            exposure_us=10_000,
+            frame_count=9,
+        )
+        z_plan = builder.build_z_scan(
+            daq_config=DaqLineConfig(),
+            timing=timing,
+            exposure_us=7_884,
+        )
+
+        # 两条构建路径都必须出现同一措辞的 tHWAT 告警，提示首 trigger 可能丢失。
+        for current_plan in (plan, z_plan):
+            joined = "\n".join(current_plan.warnings)
+            self.assertIn("slm_enable_guard_us=500", joined)
+            self.assertIn("tHWAT", joined)
+            self.assertIn("first SLM trigger may be lost", joined)
+
+    def test_waveform_default_guard_emits_no_activation_warning(self):
+        """默认 TimingConfig（guard=1000 µs）不应触发 tHWAT 告警。"""
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        plan = NIDaqWaveformBuilder().build(
+            daq_config=DaqLineConfig(),
+            timing=TimingConfig(),
+            laser_wavelength_nm=488,
+            exposure_us=10_000,
+            frame_count=9,
+        )
+
+        self.assertFalse(any("tHWAT" in warning for warning in plan.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

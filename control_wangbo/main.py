@@ -250,15 +250,15 @@ class MainWindow(qw.QWidget):
     signal_btn_rinseChannelCapture = pyqtSignal()      
     signal_btn_rinseChannelSort    = pyqtSignal() 
     signal_btn_rinseChannelRelease = pyqtSignal() 
-    signal_btn_rinseChannelElasticityMeasurement    = pyqtSignal()
+    signal_btn_rinseChannelFunction    = pyqtSignal()
     signal_btn_rinseChannel_OFF    = pyqtSignal()
     # 发送背景图片 背景图片变量的创建应该在打开相机那里
     signal_sendBackgroundFrame = pyqtSignal(object)
     # 手动控制Trigger的信号
     signal_btn_triggerCapture        = pyqtSignal()
-    signal_btn_triggerSort           = pyqtSignal()
+    signal_btn_triggerReleaseSort    = pyqtSignal()
     signal_btn_triggerRelease        = pyqtSignal() 
-    signal_btn_triggerElasticityMeasurement           = pyqtSignal() 
+    signal_btn_triggerFunction       = pyqtSignal()
     signal_updataFastCamera_maxGray  = pyqtSignal(int) 
     signal_setImageProcessingWay_UIThread = pyqtSignal(int) #改变ROI的识别模式
     #手动捕获细胞是否为目标细胞
@@ -318,11 +318,11 @@ class MainWindow(qw.QWidget):
         self.trappedCell_miss  = 0
         self.totalNumb_relese = 0
         self.totalNumb_sort = 0
-        self.totalNumb_elasticityMeasurement_start = 0
-        self.totalNumb_elasticityMeasurement_end = 0
+        self.totalNumb_functionMeasurement_start = 0
+        self.totalNumb_functionMeasurement_end = 0
         self.sortCell_miss  = 0
-        self.elasticityMeasurement_start_miss = 0
-        self.elasticityMeasurement_end_miss = 0
+        self.functionMeasurement_start_miss = 0
+        self.functionMeasurement_end_miss = 0
         self.totalNumb_collected = 0       
         self.collectedCell_miss  = 0
         self.flowRate_ID          = 0      # 用来记录是哪次细胞的
@@ -342,10 +342,12 @@ class MainWindow(qw.QWidget):
         self.sCMOS_closeTimes = 1
         self.sCMOS_minArea = 3000
         self.sCMOS_Bi_threshold = 150
-        self.elasticityROI_X = 0
-        self.elasticityROI_Y = 0
-        self.elasticityROI_width = 70
-        self.elasticityROI_heigh = 70
+        self.function_min_delta_lenth = 1
+        self.function_max_delta_lenth = 1000
+        self.functionROI_X = 0
+        self.functionROI_Y = 0
+        self.functionROI_width = 70
+        self.functionROI_height = 70
         #设置基于图像分析的Trigger模块的状态
         self.btn_enterImageProcessingModel_state   = False
         self.btn_runScreenCell_continue_state      = False
@@ -553,8 +555,8 @@ class MainWindow(qw.QWidget):
         # 定义压力信息确认状态，只有确认状态下才会用其数值作为图像保存的名字
         self.ui.spb_triggerCapture_time.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_triggerRelease_time.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_triggerSort_time.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_triggerElasticityMeasurement_time.valueChanged.connect(self.update_image_processing_para)
+        self.ui.spb_triggerReleaseSort_time.valueChanged.connect(self.update_image_processing_para)
+        self.ui.spb_triggerFunction_time.valueChanged.connect(self.update_image_processing_para)
 
         self.ui.btn_missEventVideoSaveModel.clicked.connect(self.update_image_processing_para)
         self.ui.spb_missEventSavePreFrames.valueChanged.connect(self.update_image_processing_para)
@@ -590,7 +592,7 @@ class MainWindow(qw.QWidget):
         self.ui.spb_trappedROI_Y.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_trappedROI_width.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_trappedROI_height.valueChanged.connect(self.update_image_processing_para)
-        """sCMOS Elasticity Measurement ROI 模块"""
+        """sCMOS Function Measurement ROI 模块"""
         """Collected ROI 模块"""
         self.btn_collectedROI_view_state = False
         self.ui.btn_collectedROI_view.clicked.connect(self.btn_collectedROI_view_function)
@@ -629,34 +631,30 @@ class MainWindow(qw.QWidget):
         """Trigger Control 模块"""
 
         self.ui.btn_triggerCapture.setEnabled(False)
-        self.ui.btn_triggerSort.setEnabled(False)
+        self.ui.btn_triggerReleaseSort.setEnabled(False)
         self.ui.btn_triggerRelease.setEnabled(False)
-        self.ui.btn_triggerElasticityMeasurement.setEnabled(False)
+        self.ui.btn_triggerFunction.setEnabled(False)
         self.ui.btn_triggerCapture.clicked.connect(self.btn_triggerCapture_function)    # Trigger单片机发送信号的按钮连接
-        self.ui.btn_triggerSort.clicked.connect(self.btn_triggerSort_function)
+        self.ui.btn_triggerReleaseSort.clicked.connect(self.btn_triggerReleaseSort_function)
         self.ui.btn_triggerRelease.clicked.connect(self.btn_triggerRelease_function)
-        self.ui.btn_triggerElasticityMeasurement.clicked.connect(self.slot_btn_triggerElasticityMeasurement_function)
+        self.ui.btn_triggerFunction.clicked.connect(self.slot_btn_triggerFunction_function)
                 
         #单片机信号发生变化时更新子线程的参数
         self.ui.spb_triggerCapture_time.valueChanged.connect(self.updata_MCU_tirgger_para)
-        self.ui.spb_triggerSort_time.valueChanged.connect(self.updata_MCU_tirgger_para)
+        self.ui.spb_triggerReleaseSort_time.valueChanged.connect(self.updata_MCU_tirgger_para)
         self.ui.spb_triggerRelease_time.valueChanged.connect(self.updata_MCU_tirgger_para)
-        self.ui.spb_triggerElasticityMeasurement_time.valueChanged.connect(self.updata_MCU_tirgger_para)
+        self.ui.spb_triggerFunction_time.valueChanged.connect(self.updata_MCU_tirgger_para)
            
         """Image Processing Settings 模块"""
-        self.ui.spb_trappedIntervalTime.setEnabled(False)
-        self.ui.spb_sortFrames.setEnabled(False)
+        self.ui.spb_trapFrames.setEnabled(False)
+        self.ui.spb_trapBalance_Time.setEnabled(False)
+        self.ui.spb_collectFrames.setEnabled(False)
         self.ui.spb_maxArea.setEnabled(False)
         self.ui.spb_minArea.setEnabled(False)       
-        self.ui.spb_minLenth.setEnabled(False)
-        self.ui.spb_maxLenth.setEnabled(False) 
-        self.ui.spb_sCMOS_minArea.setEnabled(False)
         self.ui.btn_runScreenCell_continue.setEnabled(False)
         self.ui.btn_runScreenCell_single.setEnabled(False)
         self.ui.chb_isTarget.setChecked(False)
 
-        self.ui.spb_minLenth.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_maxLenth.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_fastCamera_displayGray_max.valueChanged.connect(self.update_image_processing_para)
         #self.ui.spb_fastCamera_displayGray_max.valueChanged.connect(self.spb_fastCamera_displayGray_max_function)
         self.ui.spb_fastCamera_displayGray_max.valueChanged.connect(self.update_image_processing_para)
@@ -665,13 +663,13 @@ class MainWindow(qw.QWidget):
         self.ui.btn_enterImageProcessingModel.clicked.connect(self.btn_enterImageProcessingModel_function)
         self.ui.spb_minArea.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_maxArea.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_minLenth.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_sCMOS_minArea.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_sortFrames.valueChanged.connect(self.update_image_processing_para) 
-        self.ui.spb_sortFrames.valueChanged.connect(self.update_image_processing_para)
+        self.ui.spb_collectFrames.valueChanged.connect(self.update_image_processing_para)
+        self.ui.spb_trapFrames.valueChanged.connect(self.update_image_processing_para)
+        self.ui.spb_trapFrames.valueChanged.connect(self.updata_MCU_tirgger_para)
+        self.ui.spb_trapBalance_Time.valueChanged.connect(self.updata_MCU_tirgger_para)
+        self.ui.chb_isTarget.toggled.connect(self.updata_MCU_tirgger_para)
         self.ui.btn_runScreenCell_continue.clicked.connect(self.update_image_processing_para)
         self.ui.btn_runScreenCell_single.clicked.connect(self.update_image_processing_para)
-        self.ui.spb_trappedIntervalTime.valueChanged.connect(self.updata_MCU_tirgger_para)
         
         # 发送参数
         # 物镜大小选择
@@ -692,17 +690,17 @@ class MainWindow(qw.QWidget):
         self.btn_rinseChannelCapture_state    = False
         self.btn_rinseChannelSort_state       = False
         self.btn_rinseChannelRelease_state    = False
-        self.btn_rinseChannelElasticityMeasurement_state       = False
+        self.btn_rinseChannelFunction_state       = False
         self.btn_enterRinseChannelModel_state = False
         self.ui.btn_enterRinseChannelModel.setEnabled(False)
         self.ui.btn_rinseChannelSort.setEnabled(False)
-        self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+        self.ui.btn_rinseChannelFunction.setEnabled(False)
         self.ui.btn_rinseChannelCapture.setEnabled(False)
         self.ui.btn_rinseChannelRelease.setEnabled(False)
         self.ui.btn_rinseChannelSort.clicked.connect(self.btn_rinseChannelSort_function)
         self.ui.btn_rinseChannelCapture.clicked.connect(self.btn_rinseChannelCapture_function)
         self.ui.btn_rinseChannelRelease.clicked.connect(self.btn_rinseChannelRelease_function)
-        self.ui.btn_rinseChannelElasticityMeasurement.clicked.connect(self.btn_rinseChannelElasticityMeasurement_function)
+        self.ui.btn_rinseChannelFunction.clicked.connect(self.btn_rinseChannelFunction_function)
         self.ui.btn_enterRinseChannelModel.clicked.connect(self.btn_enterRinseChannelModel_function)
 
         self.ui.lb_none.setVisible(False)
@@ -1971,11 +1969,11 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_trappedROI_Y']      = self.ui.spb_trappedROI_Y.value()
         configure_settings['spb_trappedROI_width']  = self.ui.spb_trappedROI_width.value()
         configure_settings['spb_trappedROI_height'] = self.ui.spb_trappedROI_height.value()
-        #Elasticity Measurement ROI 模块
-        configure_settings['spb_sCMOS_elasticityMeasurementROI_X']      = self.elasticityROI_X
-        configure_settings['spb_sCMOS_elasticityMeasurementROI_Y']      = self.elasticityROI_Y
-        configure_settings['spb_sCMOS_elasticityMeasurementROI_width']  = self.elasticityROI_width
-        configure_settings['spb_sCMOS_elasticityMeasurementROI_height'] = self.elasticityROI_heigh
+        #Function Measurement ROI 模块
+        configure_settings['spb_sCMOS_functionROI_X']      = self.functionROI_X
+        configure_settings['spb_sCMOS_functionROI_Y']      = self.functionROI_Y
+        configure_settings['spb_sCMOS_functionROI_width']  = self.functionROI_width
+        configure_settings['spb_sCMOS_functionROI_height'] = self.functionROI_height
         #Release ROI 模块
         configure_settings['spb_releaseROI_X']      = self.ui.spb_cellFlowThroughROI_X.value()
         configure_settings['spb_releaseROI_Y']      = self.ui.spb_cellFlowThroughROI_Y.value()
@@ -2003,21 +2001,22 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_flowRateDetectFramesNumber']    = self.ui.spb_flowRateDetectFramesNumber.value()
         #Trigger Control 模块
         configure_settings['spb_triggerCapture_time']       = self.ui.spb_triggerCapture_time.value()
-        configure_settings['spb_triggerSort_time']          = self.ui.spb_triggerSort_time.value()
+        configure_settings['spb_triggerReleaseSort_time']   = self.ui.spb_triggerReleaseSort_time.value()
         configure_settings['spb_triggerRelease_time']       = self.ui.spb_triggerRelease_time.value()
-        configure_settings['spb_triggerElasticityMeasurement_time']       = self.ui.spb_triggerElasticityMeasurement_time.value()
+        configure_settings['spb_triggerFunction_time']      = self.ui.spb_triggerFunction_time.value()
         #Image Processing Settings 模块
-        configure_settings['spb_trappedIntervalTime']   = self.ui.spb_trappedIntervalTime.value()
-        configure_settings['spb_sortFrames']            = self.ui.spb_sortFrames.value()
+        configure_settings['spb_trapFrames']            = self.ui.spb_trapFrames.value()
+        configure_settings['spb_trapBalance_Time']      = self.ui.spb_trapBalance_Time.value()
+        configure_settings['spb_collectFrames']         = self.ui.spb_collectFrames.value()
         configure_settings['spb_minArea']               = self.ui.spb_minArea.value()
         configure_settings['spb_maxArea']               = self.ui.spb_maxArea.value()
-        configure_settings['spb_minLenth']               = self.ui.spb_minLenth.value()
-        configure_settings['spb_maxLenth']               = self.ui.spb_maxLenth.value()
+        configure_settings['spb_minLenth']              = self.function_min_delta_lenth
+        configure_settings['spb_maxLenth']              = self.function_max_delta_lenth
         configure_settings['spb_threshold_Bi_sCMOS']     = self.sCMOS_Bi_threshold
         configure_settings['spb_sCMOS_morphologyKernel_size'] = self.sCMOS_morphologyKernel.shape[0]
         configure_settings['spb_sCMOS_openTimes']        = self.sCMOS_openTimes
         configure_settings['spb_sCMOS_closeTimes']       = self.sCMOS_closeTimes
-        configure_settings['spb_sCMOS_minArea']          = self.ui.spb_sCMOS_minArea.value()
+        configure_settings['spb_sCMOS_minArea']          = self.sCMOS_minArea
         #Binary ROI 模块
         configure_settings['spb_threshold_Bi'] = self.ui.spb_threshold_Bi.value()
 
@@ -2091,11 +2090,23 @@ class MainWindow(qw.QWidget):
             self.ui.spb_trappedROI_Y.setValue(configure_settings.get('spb_trappedROI_Y', 0))
             self.ui.spb_trappedROI_width.setValue(configure_settings.get('spb_trappedROI_width', 0))
             self.ui.spb_trappedROI_height.setValue(configure_settings.get('spb_trappedROI_height', 0))
-            # 设置Elasticity Measurement ROI 模块
-            self.elasticityROI_X = configure_settings.get('spb_sCMOS_elasticityMeasurementROI_X', 0)
-            self.elasticityROI_Y = configure_settings.get('spb_sCMOS_elasticityMeasurementROI_Y', 0)
-            self.elasticityROI_width = configure_settings.get('spb_sCMOS_elasticityMeasurementROI_width', 70)
-            self.elasticityROI_heigh = configure_settings.get('spb_sCMOS_elasticityMeasurementROI_height', 70)
+            # 设置 Function Measurement ROI 模块。旧 elasticity 配置键继续兼容读取。
+            self.functionROI_X = configure_settings.get(
+                'spb_sCMOS_functionROI_X',
+                configure_settings.get('spb_sCMOS_elasticityMeasurementROI_X', 0),
+            )
+            self.functionROI_Y = configure_settings.get(
+                'spb_sCMOS_functionROI_Y',
+                configure_settings.get('spb_sCMOS_elasticityMeasurementROI_Y', 0),
+            )
+            self.functionROI_width = configure_settings.get(
+                'spb_sCMOS_functionROI_width',
+                configure_settings.get('spb_sCMOS_elasticityMeasurementROI_width', 70),
+            )
+            self.functionROI_height = configure_settings.get(
+                'spb_sCMOS_functionROI_height',
+                configure_settings.get('spb_sCMOS_elasticityMeasurementROI_height', 70),
+            )
             # 设置 cell flow rate ROI 模块
             self.ui.spb_cellFlowThroughROI_X.setValue(configure_settings.get('spb_releaseROI_X', 0))
             self.ui.spb_cellFlowThroughROI_Y.setValue(configure_settings.get('spb_releaseROI_Y', 0))
@@ -2122,24 +2133,36 @@ class MainWindow(qw.QWidget):
             self.ui.spb_flowRateDetectFramesNumber.setValue(configure_settings.get('spb_flowRateDetectFramesNumber', 0))        
             # 设置 Trigger Control 模块
             self.ui.spb_triggerCapture_time.setValue(configure_settings.get('spb_triggerCapture_time', 1))
-            self.ui.spb_triggerSort_time.setValue(configure_settings.get('spb_triggerSort_time', 1))
+            self.ui.spb_triggerReleaseSort_time.setValue(
+                configure_settings.get('spb_triggerReleaseSort_time', configure_settings.get('spb_triggerSort_time', 1))
+            )
             self.ui.spb_triggerRelease_time.setValue(configure_settings.get('spb_triggerRelease_time', 1))
-            self.ui.spb_triggerElasticityMeasurement_time.setValue(configure_settings.get('spb_triggerElasticityMeasurement_time', 1))
+            self.ui.spb_triggerFunction_time.setValue(
+                configure_settings.get(
+                    'spb_triggerFunction_time',
+                    configure_settings.get('spb_triggerElasticityMeasurement_time', 1),
+                )
+            )
             
             # 设置 Image Processing Settings 模块
             self.ui.spb_minArea.setValue(configure_settings.get('spb_minArea', 120))
             self.ui.spb_maxArea.setValue(configure_settings.get('spb_maxArea', 300))
-            self.ui.spb_minLenth.setValue(configure_settings.get('spb_minLenth', 0))
-            self.ui.spb_maxLenth.setValue(configure_settings.get('spb_maxLenth', 0))
+            self.function_min_delta_lenth = configure_settings.get('spb_minLenth', self.function_min_delta_lenth)
+            self.function_max_delta_lenth = configure_settings.get('spb_maxLenth', self.function_max_delta_lenth)
             morphology_size = configure_settings.get('spb_sCMOS_morphologyKernel_size', 13)
             self.sCMOS_Bi_threshold = configure_settings.get('spb_threshold_Bi_sCMOS', 150)
             self.sCMOS_openTimes = configure_settings.get('spb_sCMOS_openTimes', 1)
             self.sCMOS_closeTimes = configure_settings.get('spb_sCMOS_closeTimes', 1)
             self.sCMOS_morphologyKernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morphology_size, morphology_size))
-            self.ui.spb_sCMOS_minArea.setValue(configure_settings.get('spb_sCMOS_minArea', 3000))
+            self.sCMOS_minArea = configure_settings.get('spb_sCMOS_minArea', self.sCMOS_minArea)
 
-            self.ui.spb_trappedIntervalTime.setValue(configure_settings.get('spb_trappedIntervalTime', 30))
-            self.ui.spb_sortFrames.setValue(configure_settings.get('spb_sortFrames', 50))
+            self.ui.spb_trapFrames.setValue(
+                configure_settings.get('spb_trapFrames', configure_settings.get('spb_trappedIntervalTime', 30))
+            )
+            self.ui.spb_trapBalance_Time.setValue(configure_settings.get('spb_trapBalance_Time', 300))
+            self.ui.spb_collectFrames.setValue(
+                configure_settings.get('spb_collectFrames', configure_settings.get('spb_sortFrames', 50))
+            )
 
             # 设置 Binary ROI 模块
             self.ui.spb_threshold_Bi.setValue(configure_settings.get('spb_threshold_Bi', 120))
@@ -2231,13 +2254,11 @@ class MainWindow(qw.QWidget):
            self.ui.spb_maxArea.setEnabled(False)
            self.ui.spb_minArea.setEnabled(False)
 
-           self.ui.spb_trappedIntervalTime.setEnabled(False)
-           self.ui.spb_sortFrames.setEnabled(False)
+           self.ui.spb_trapFrames.setEnabled(False)
+           self.ui.spb_trapBalance_Time.setEnabled(False)
+           self.ui.spb_collectFrames.setEnabled(False)
            self.ui.btn_runScreenCell_single.setEnabled(False)
            self.ui.btn_runScreenCell_continue.setEnabled(False)  
-           self.ui.spb_minLenth.setEnabled(False)
-           self.ui.spb_maxLenth.setEnabled(False)
-           self.ui.spb_sCMOS_minArea.setEnabled(False)
                   
            if self.btn_runScreenCell_continue_state:
                self.btn_runScreenCell_continue_function()
@@ -2251,11 +2272,9 @@ class MainWindow(qw.QWidget):
             self.ui.btn_runScreenCell_single.setEnabled(True)
             self.ui.spb_maxArea.setEnabled(True)
             self.ui.spb_minArea.setEnabled(True)
-            self.ui.spb_trappedIntervalTime.setEnabled(True)
-            self.ui.spb_sortFrames.setEnabled(True)
-            self.ui.spb_minLenth.setEnabled(True)
-            self.ui.spb_maxLenth.setEnabled(True)
-            self.ui.spb_sCMOS_minArea.setEnabled(True)
+            self.ui.spb_trapFrames.setEnabled(True)
+            self.ui.spb_trapBalance_Time.setEnabled(True)
+            self.ui.spb_collectFrames.setEnabled(True)
 
     def btn_runScreenCell_continue_function(self):
         "自动化连续运行整个筛选细胞的流程"
@@ -2299,13 +2318,13 @@ class MainWindow(qw.QWidget):
         self.totalNumb_relese = 0
         self.totalNumb_sort = 0
         self.totalNumb_collected = 0
-        self.totalNumb_elasticityMeasurement_start = 0
-        self.totalNumb_elasticityMeasurement_end = 0
+        self.totalNumb_functionMeasurement_start = 0
+        self.totalNumb_functionMeasurement_end = 0
         self.trappedCell_miss  = 0
         self.sortCell_miss  = 0
         self.collectedCell_miss  = 0
-        self.elasticityMeasurement_start_miss = 0
-        self.elasticityMeasurement_end_miss = 0
+        self.functionMeasurement_start_miss = 0
+        self.functionMeasurement_end_miss = 0
         self.flowRate_ID          = 0 
         self.roi_data_queue.clear()
         self.ui.spb_roiDataNumber.setValue(0)
@@ -2374,14 +2393,15 @@ class MainWindow(qw.QWidget):
         "将capture ROI的Y和高与cell flow through绑定"
         self.ui.spb_captureROI_Y.setValue(self.ui.spb_cellFlowThroughROI_Y.value())
         self.ui.spb_captureROI_height.setValue(self.ui.spb_cellFlowThroughROI_height.value())
-        #将Elasticity Measurement ROI
+        # Function Measurement ROI 由 SIM 主链路/当前内部参数提供，当前 UI 不新增独立排版控件。
         """将图像处理的参数发给fastCamera图像处理线程"""
         para = {}
         # image processing settings
         para["threshold_Bi"]            = self.ui.spb_threshold_Bi.value()
         para["minArea"]                 = self.ui.spb_minArea.value()
         para["maxArea"]                 = self.ui.spb_maxArea.value()
-        para["sortFrames"]              = self.ui.spb_sortFrames.value()
+        para["collectFrames"]           = self.ui.spb_collectFrames.value()
+        para["trapFrames"]              = self.ui.spb_trapFrames.value()
         para["displayGray_max"]         = self.ui.spb_fastCamera_displayGray_max.value()
         
         # capture ROI
@@ -2436,10 +2456,9 @@ class MainWindow(qw.QWidget):
 
         "将图像处理的参数发给sCMOS图像处理线程"
 
-        self.sCMOS_minArea      = self.ui.spb_sCMOS_minArea.value()
         sCMOS_para = {}
-        sCMOS_para["minDeltaLenth"]           = self.ui.spb_minLenth.value()
-        sCMOS_para["maxDeltaLenth"]           = self.ui.spb_maxLenth.value()
+        sCMOS_para["minDeltaLenth"]           = self.function_min_delta_lenth
+        sCMOS_para["maxDeltaLenth"]           = self.function_max_delta_lenth
         sCMOS_para["sCMOS_gaussianKernel"]    = self.sCMOS_gaussianKernel 
         sCMOS_para["sCMOS_gaussBlurSigma"]    = self.sCMOS_gaussBlurSigma 
 
@@ -2447,23 +2466,23 @@ class MainWindow(qw.QWidget):
         sCMOS_para["morphologyKernel"]        = self.sCMOS_morphologyKernel
         sCMOS_para["openTimes"]               = self.sCMOS_openTimes
         sCMOS_para["closeTimes"]              = self.sCMOS_closeTimes
-        sCMOS_para["sCMOS_minArea"]           = self.ui.spb_sCMOS_minArea.value()
+        sCMOS_para["sCMOS_minArea"]           = self.sCMOS_minArea
         sCMOS_para["displayGray_max"]         = self.ui.spb_sCMOS_displayGray_max.value()
         
-        # Elasticity Measurement ROI
-        sCMOS_para["elasticityROI_X"]         = self.elasticityROI_X
-        sCMOS_para["elasticityROI_Y"]         = self.elasticityROI_Y
-        sCMOS_para["elasticityROI_width"]     = self.elasticityROI_width
-        sCMOS_para["elasticityROI_height"]    = self.elasticityROI_heigh
+        # Function Measurement ROI
+        sCMOS_para["functionROI_X"]         = self.functionROI_X
+        sCMOS_para["functionROI_Y"]         = self.functionROI_Y
+        sCMOS_para["functionROI_width"]     = self.functionROI_width
+        sCMOS_para["functionROI_height"]    = self.functionROI_height
 
         self.signal_sendImageProcessingPara_sCMOS.emit(sCMOS_para)
         #图像保存的名称信息
         experiment_imfo = {}
         # 只有btn_ensurePresureInfo为真时，才能保存压力参数作为文件名
         experiment_imfo["spb_triggerCapture_time"] = str(self.ui.spb_triggerCapture_time.value())
-        experiment_imfo["spb_triggerElasticityMeasurement_time"] = str(self.ui.spb_triggerElasticityMeasurement_time.value())
+        experiment_imfo["spb_triggerFunction_time"] = str(self.ui.spb_triggerFunction_time.value())
         experiment_imfo["spb_triggerRelease_time"] = str(self.ui.spb_triggerRelease_time.value())
-        experiment_imfo["spb_triggerSort_time"] = str(self.ui.spb_triggerSort_time.value())
+        experiment_imfo["spb_triggerReleaseSort_time"] = str(self.ui.spb_triggerReleaseSort_time.value())
         experiment_imfo["spb_cellSpeedValue"] = str(self.ui.spb_cellSpeedValue.value())
         experiment_imfo["spb_preTriggerBuffer"] = str(self.ui.spb_preTriggerBuffer.value())
         experiment_imfo["spb_sCMOS_preTriggerBuffer"] = str(self.ui.spb_sCMOS_preTriggerBuffer.value())
@@ -2489,7 +2508,7 @@ class MainWindow(qw.QWidget):
         #参数为3\4时-capture:1.ID; 2.area; 3.X; 4.Y; 5.total; 6.miss;  7.算法时间; 8. 间隔时间; 9.ROI_result-state;
         #参数为5时-capture:1.ID; 2.area; 3.X; 
         #参数为6时-capture:1.ID; 2.area; 3.X; 4. 间隔时间; 5.ROI_result-state;
-        #7代表弹性形变ROI分析的参数。1.ID; 2.total; 3.miss; 4.state; 5.Lenth(pixel)就是轮廓最低点的y位置;
+        #7代表Function Measurement ROI分析的参数。1.ID; 2.total; 3.miss; 4.state; 5.Lenth(pixel)就是轮廓最低点的y位置;
         self.roi_display_lb = {
             0: (self.ui.lb_captureCell_id,self.ui.lb_captureCellArea, self.ui.lb_captureCell_X,self.ui.lb_captureCell_Y,self.ui.lb_captureCell_total,self.ui.lb_captureCell_algorithmTime,self.ui.lb_captureCell_intervalTime),
             1: (self.ui.lb_trappedCell_id,self.ui.lb_trappedCellArea,self.ui.lb_trappedCell_total,self.ui.lb_trappedCell_miss,self.ui.lb_trappedROI_state),
@@ -2793,13 +2812,13 @@ class MainWindow(qw.QWidget):
             if self.FastCameraThread:
                 self.FastCameraThread.stop()
     
-    "更新sCMOS elasticity measurement的图"
+    "更新sCMOS Function Measurement的图"
     @pyqtSlot()
-    def slot_sCMOS_Updata_elasticityTrigger(self):
+    def slot_sCMOS_Updata_functionTrigger(self):
         try:
-            self.trigger_sim_formal_acquisition("mcu_elasticity_trigger")
+            self.trigger_sim_formal_acquisition("mcu_function_trigger")
         except Exception as e:
-            print(f"sCMOS的elasticity索引发送转真: {str(e)}")   
+            print(f"sCMOS的Function索引发送转真: {str(e)}")
 
     "更新sCMOS Bg 图的"
     @pyqtSlot()
@@ -2852,13 +2871,13 @@ class MainWindow(qw.QWidget):
         #Release信号连接
         self.signal_btn_triggerRelease.connect(self.MCUTriggerThread.worker.slot_btn_triggerRelease)
         self.MCUTriggerThread.worker.signal_btn_triggerRelease_finish.connect(self.slot_btn_triggerRelease_finish)
-        #sort信号连接
-        self.signal_btn_triggerSort.connect(self.MCUTriggerThread.worker.slot_btn_triggerSort)
-        self.MCUTriggerThread.worker.signal_btn_triggerSort_finish.connect(self.slot_btn_triggerSort_finish)
-        #elasticity Measurement信号连接
-        self.signal_btn_triggerElasticityMeasurement.connect(self.MCUTriggerThread.worker.slot_btn_triggerElasticityMeasurement)
-        self.MCUTriggerThread.worker.signal_btn_triggerElasticityMeasurement_finish.connect(self.slot_btn_triggerElasticityMeasurement_finish)
-        self.MCUTriggerThread.worker.signal_btn_triggerElasticityMeasurement_start.connect(self.slot_btn_triggerElasticityMeasurement_function)
+        #Function信号连接
+        self.signal_btn_triggerFunction.connect(self.MCUTriggerThread.worker.slot_btn_triggerFunction)
+        self.MCUTriggerThread.worker.signal_btn_triggerFunction_finish.connect(self.slot_btn_triggerFunction_finish)
+        self.MCUTriggerThread.worker.signal_btn_triggerFunction_start.connect(self.slot_btn_triggerFunction_function)
+        #Release+Sort信号连接
+        self.signal_btn_triggerReleaseSort.connect(self.MCUTriggerThread.worker.slot_btn_triggerReleaseSort)
+        self.MCUTriggerThread.worker.signal_btn_triggerReleaseSort_finish.connect(self.slot_btn_triggerReleaseSort_finish)
         #启动单片机子线程
         self.MCUTriggerThread.start()
         self.MCUTriggerThread.worker.signal_btn_portConnect.emit(self.MCU_parameter)
@@ -2871,10 +2890,10 @@ class MainWindow(qw.QWidget):
         self.signal_btn_rinseChannelCapture.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannelCapture)
         self.signal_btn_rinseChannelSort.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannelSort)
         self.signal_btn_rinseChannelRelease.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannelRelease)
-        self.signal_btn_rinseChannelElasticityMeasurement.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannelElasticityMeasurement)
+        self.signal_btn_rinseChannelFunction.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannelFunction)
         self.signal_btn_rinseChannel_OFF.connect(self.MCUTriggerThread.worker.slot_btn_rinseChannel_OFF) 
         self.MCUTriggerThread.worker.signal_sCMOS_BgUpdata_captureTrigger.connect(self.slot_sCMOS_BgUpdata_captureTrigger)
-        self.MCUTriggerThread.worker.signal_sCMOS_enterImageProcessor.connect(self.slot_sCMOS_Updata_elasticityTrigger) 
+        self.MCUTriggerThread.worker.signal_sCMOS_enterImageProcessor.connect(self.slot_sCMOS_Updata_functionTrigger)
         print("打开连接了MCU线程")
     def updata_MCU_tirgger_para(self):
         para = {}
@@ -2886,13 +2905,14 @@ class MainWindow(qw.QWidget):
         else:
             para["runModel"] = 0 #非筛选模式
 
-        # 完全捕获住细胞的间隔时间
-        para["trappedIntervalTime"]                 = self.ui.spb_trappedIntervalTime.value()
-        # Trigger的参数
-        para["spb_triggerCapture_time"]                 = self.ui.spb_triggerCapture_time.value() * 10  #整数单位100us
-        para["spb_triggerElasticityMeasurement_time"]   = self.ui.spb_triggerElasticityMeasurement_time.value() * 10  #整数单位100us
-        para["spb_triggerRelease_time"]                 = self.ui.spb_triggerRelease_time.value() * 10  #整数单位100us
-        para["spb_triggerSort_time"]                    = self.ui.spb_triggerSort_time.value() * 10     #整数单位100us
+        # Trigger的参数。王波最新版 MCU 线程按 1 ms 单位接收。
+        para["spb_triggerCapture_time"]                 = self.ui.spb_triggerCapture_time.value()
+        para["spb_triggerFunction_time"]                = self.ui.spb_triggerFunction_time.value()
+        para["spb_triggerRelease_time"]                 = self.ui.spb_triggerRelease_time.value()
+        para["spb_triggerReleaseSort_time"]             = self.ui.spb_triggerReleaseSort_time.value()
+        para["trapFrames"]                              = self.ui.spb_trapFrames.value()
+        para["trapBalance_Time"]                        = self.ui.spb_trapBalance_Time.value()
+        para["isTarget"]                                = self.ui.chb_isTarget.isChecked()
         self.signal_updataMCURecevieParameter.emit(para)
     def disconnection_MCU_camera_function(self):
         """断开单片机连接"""
@@ -2940,8 +2960,8 @@ class MainWindow(qw.QWidget):
 
         #禁用单片机通信触发模块
         self.ui.btn_triggerCapture.setEnabled(False)
-        self.ui.btn_triggerElasticityMeasurement.setEnabled(False)
-        self.ui.btn_triggerSort.setEnabled(False)
+        self.ui.btn_triggerFunction.setEnabled(False)
+        self.ui.btn_triggerReleaseSort.setEnabled(False)
         self.ui.btn_triggerRelease.setEnabled(False)
 
 
@@ -2998,8 +3018,8 @@ class MainWindow(qw.QWidget):
             self.ui.btn_missEventVideoSaveModel.setEnabled(True)
             #启用单片机trigger通信模块
             self.ui.btn_triggerCapture.setEnabled(True)
-            self.ui.btn_triggerElasticityMeasurement.setEnabled(True)
-            self.ui.btn_triggerSort.setEnabled(True)
+            self.ui.btn_triggerFunction.setEnabled(True)
+            self.ui.btn_triggerReleaseSort.setEnabled(True)
             self.ui.btn_triggerRelease.setEnabled(True)
 
             #图像处理模块
@@ -3317,14 +3337,14 @@ class MainWindow(qw.QWidget):
             x_lb.setText(str(cell_cX))
             interval_time_lb.setText(str(interval_time))
             roi_state_lb.setText(str(processing_state))
-        elif imageProcessing_way == 7: # elasticity_mesurement_roi_start
+        elif imageProcessing_way == 7: # function_measurement_roi
             ID_lb ,total_lb,miss_lb,roi_state_lb,bottom_lb = self.roi_display_lb[imageProcessing_way]
             ID = self.cell_ID
-            self.totalNumb_elasticityMeasurement_end = self.totalNumb_elasticityMeasurement_end + total_add
-            self.elasticityMeasurement_end_miss  = self.elasticityMeasurement_end_miss + miss_add
+            self.totalNumb_functionMeasurement_end = self.totalNumb_functionMeasurement_end + total_add
+            self.functionMeasurement_end_miss  = self.functionMeasurement_end_miss + miss_add
             ID_lb.setText(str(self.cell_ID))
-            total_lb.setText(str(self.totalNumb_elasticityMeasurement_end))
-            miss_lb.setText(str(self.elasticityMeasurement_end_miss))
+            total_lb.setText(str(self.totalNumb_functionMeasurement_end))
+            miss_lb.setText(str(self.functionMeasurement_end_miss))
             roi_state_lb.setText(str(processing_state))
             bottom = ROI_para["max_bottom_y"]
             bottom_lb.setText(str(bottom))
@@ -3537,14 +3557,14 @@ class MainWindow(qw.QWidget):
     @pyqtSlot()
     def slot_btn_triggerCapture_finish(self):   
         self.ui.btn_triggerCapture.setEnabled(True)
-    def btn_triggerSort_function(self):
+    def btn_triggerReleaseSort_function(self):
         """"Trigger信号相关函数"""
         # 禁用按钮，防止重复点击
-        self.ui.btn_triggerSort.setEnabled(False)
-        self.signal_btn_triggerSort.emit()
+        self.ui.btn_triggerReleaseSort.setEnabled(False)
+        self.signal_btn_triggerReleaseSort.emit()
     @pyqtSlot()
-    def slot_btn_triggerSort_finish(self):
-        self.ui.btn_triggerSort.setEnabled(True)
+    def slot_btn_triggerReleaseSort_finish(self):
+        self.ui.btn_triggerReleaseSort.setEnabled(True)
     def btn_triggerRelease_function(self):# 默认值为0，表示仅仅进行release Trigger
         """"Release信号相关函数"""
         # 禁用按钮，防止重复点击
@@ -3554,15 +3574,15 @@ class MainWindow(qw.QWidget):
     def slot_btn_triggerRelease_finish(self):
         self.ui.btn_triggerRelease.setEnabled(True)
     @pyqtSlot()
-    def slot_btn_triggerElasticityMeasurement_function(self):# 默认值为0，表示仅仅进行release Trigger
+    def slot_btn_triggerFunction_function(self):
         """"Release信号相关函数"""
         # 禁用按钮，防止重复点击
-        self.ui.btn_triggerElasticityMeasurement.setEnabled(False)
-        self.signal_btn_triggerElasticityMeasurement.emit()
+        self.ui.btn_triggerFunction.setEnabled(False)
+        self.signal_btn_triggerFunction.emit()
     #手动判断是否为目标细胞
     @pyqtSlot()
-    def slot_btn_triggerElasticityMeasurement_finish(self):
-        self.ui.btn_triggerElasticityMeasurement.setEnabled(True)
+    def slot_btn_triggerFunction_finish(self):
+        self.ui.btn_triggerFunction.setEnabled(True)
         #第一位只能是7；第二位： -1:非目标细胞; 0:非目标细胞,miss了; 1:目标细胞
         if self.ui.chb_isTarget.isChecked():
             self.signal_isTarget.emit(7,1)
@@ -3580,7 +3600,7 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelCapture_state = False
             self.ui.btn_rinseChannelSort.setEnabled(True)
             self.ui.btn_rinseChannelRelease.setEnabled(True)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(True)
+            self.ui.btn_rinseChannelFunction.setEnabled(True)
             self.ui.btn_enterRinseChannelModel.setEnabled(True)
             self.signal_btn_rinseChannel_OFF.emit()
         else:
@@ -3588,7 +3608,7 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelCapture_state = True
             self.ui.btn_rinseChannelSort.setEnabled(False)
             self.ui.btn_rinseChannelRelease.setEnabled(False)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+            self.ui.btn_rinseChannelFunction.setEnabled(False)
             self.ui.btn_enterRinseChannelModel.setEnabled(False)
             self.signal_btn_rinseChannelCapture.emit()
     def btn_rinseChannelSort_function(self):
@@ -3598,8 +3618,7 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelSort_state = False
             self.ui.btn_rinseChannelCapture.setEnabled(True)
             self.ui.btn_rinseChannelRelease.setEnabled(True)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(True)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+            self.ui.btn_rinseChannelFunction.setEnabled(True)
             self.ui.btn_enterRinseChannelModel.setEnabled(True)
             self.signal_btn_rinseChannel_OFF.emit()
         else:
@@ -3607,7 +3626,7 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelSort_state = True
             self.ui.btn_rinseChannelCapture.setEnabled(False)
             self.ui.btn_rinseChannelRelease.setEnabled(False)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+            self.ui.btn_rinseChannelFunction.setEnabled(False)
             self.ui.btn_enterRinseChannelModel.setEnabled(False)
             self.signal_btn_rinseChannelSort.emit()
     def btn_rinseChannelRelease_function(self):
@@ -3617,7 +3636,7 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelRelease_state = False
             self.ui.btn_rinseChannelSort.setEnabled(True)
             self.ui.btn_rinseChannelCapture.setEnabled(True)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(True)
+            self.ui.btn_rinseChannelFunction.setEnabled(True)
             self.ui.btn_enterRinseChannelModel.setEnabled(True)
             self.signal_btn_rinseChannel_OFF.emit()
         else:
@@ -3625,28 +3644,28 @@ class MainWindow(qw.QWidget):
             self.btn_rinseChannelRelease_state = True
             self.ui.btn_rinseChannelSort.setEnabled(False)
             self.ui.btn_rinseChannelCapture.setEnabled(False)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+            self.ui.btn_rinseChannelFunction.setEnabled(False)
             self.ui.btn_enterRinseChannelModel.setEnabled(False)
             self.signal_btn_rinseChannelRelease.emit()
             #发送信号开启。。。
-    def btn_rinseChannelElasticityMeasurement_function(self):
+    def btn_rinseChannelFunction_function(self):
         """手动控制润洗筛选通道"""
-        if self.btn_rinseChannelElasticityMeasurement_state:
-            self.ui.btn_rinseChannelElasticityMeasurement.setStyleSheet("background-color: #E1E1E1")
-            self.btn_rinseChannelElasticityMeasurement_state = False
+        if self.btn_rinseChannelFunction_state:
+            self.ui.btn_rinseChannelFunction.setStyleSheet("background-color: #E1E1E1")
+            self.btn_rinseChannelFunction_state = False
             self.ui.btn_rinseChannelSort.setEnabled(True)
             self.ui.btn_rinseChannelCapture.setEnabled(True)
             self.ui.btn_rinseChannelRelease.setEnabled(True)
             self.ui.btn_enterRinseChannelModel.setEnabled(True)
             self.signal_btn_rinseChannel_OFF.emit()
         else:
-            self.ui.btn_rinseChannelElasticityMeasurement.setStyleSheet("background-color: #4EEE94")
-            self.btn_rinseChannelElasticityMeasurement_state = True
+            self.ui.btn_rinseChannelFunction.setStyleSheet("background-color: #4EEE94")
+            self.btn_rinseChannelFunction_state = True
             self.ui.btn_rinseChannelSort.setEnabled(False)
             self.ui.btn_rinseChannelCapture.setEnabled(False)
             self.ui.btn_rinseChannelRelease.setEnabled(False)
             self.ui.btn_enterRinseChannelModel.setEnabled(False)
-            self.signal_btn_rinseChannelElasticityMeasurement.emit()
+            self.signal_btn_rinseChannelFunction.emit()
             #发送信号开启。。。
    
     def btn_enterRinseChannelModel_function(self):
@@ -3660,12 +3679,12 @@ class MainWindow(qw.QWidget):
                 self.btn_rinseChannelRelease_function()
             elif self.btn_rinseChannelSort_state:
                 self.btn_rinseChannelSort_function()
-            elif self.btn_rinseChannelElasticityMeasurement_state:
-                self.btn_rinseChannelElasticityMeasurement_function()
+            elif self.btn_rinseChannelFunction_state:
+                self.btn_rinseChannelFunction_function()
             self.ui.btn_rinseChannelSort.setEnabled(False)
             self.ui.btn_rinseChannelCapture.setEnabled(False)
             self.ui.btn_rinseChannelRelease.setEnabled(False)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(False)
+            self.ui.btn_rinseChannelFunction.setEnabled(False)
             #发送信号关闭。。。
         else:
             self.ui.btn_enterRinseChannelModel.setStyleSheet("background-color: #4EEE94")
@@ -3673,7 +3692,7 @@ class MainWindow(qw.QWidget):
             self.ui.btn_rinseChannelSort.setEnabled(True)
             self.ui.btn_rinseChannelCapture.setEnabled(True)
             self.ui.btn_rinseChannelRelease.setEnabled(True)
-            self.ui.btn_rinseChannelElasticityMeasurement.setEnabled(True)
+            self.ui.btn_rinseChannelFunction.setEnabled(True)
 
     def _render_sim_preview_frame(self, frame, cache_frame=True):
         if frame is None:
@@ -3763,20 +3782,6 @@ class MainWindow(qw.QWidget):
         self.ui.btn_sCMOS_videoSave.setEnabled(False)
         self.ui.btn_sCMOS_videoSave.setStyleSheet("background-color: #E1E1E1")
 
-    @pyqtSlot()
-    def slot_sCMOS_Updata_elasticityTrigger(self):
-        try:
-            self.trigger_sim_formal_acquisition("mcu_elasticity_trigger")
-        except Exception as e:
-            print(f"SIM acquisition trigger failed: {str(e)}")
-
-    @pyqtSlot()
-    def slot_sCMOS_BgUpdata_captureTrigger(self):
-        try:
-            print("SIM background update trigger received; no separate SIM background frame path is configured.")
-        except Exception as e:
-            print(f"SIM background trigger handling failed: {str(e)}")
- 
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)  # 启用高 DPI 缩放
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)  # 启用高 DPI 图标

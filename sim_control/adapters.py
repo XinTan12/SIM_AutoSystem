@@ -490,6 +490,10 @@ class _R11CommLib:
         if hasattr(self.dll, "R11_RpcRoGetActivationType"):
             self.dll.R11_RpcRoGetActivationType.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
             self.dll.R11_RpcRoGetActivationType.restype = ctypes.c_int
+        # ``R11_RpcRoGetActivationState`` 同为新版函数（AN0027AD §3.26）；旧版本不绑。
+        if hasattr(self.dll, "R11_RpcRoGetActivationState"):
+            self.dll.R11_RpcRoGetActivationState.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
+            self.dll.R11_RpcRoGetActivationState.restype = ctypes.c_int
         self.dll.R11_RpcRoActivate.argtypes = []
         self.dll.R11_RpcRoActivate.restype = ctypes.c_int
         self.dll.R11_RpcRoDeactivate.argtypes = []
@@ -608,6 +612,19 @@ class _R11CommLib:
         self._check(self.dll.R11_RpcRoGetActivationType(ctypes.byref(value)), "R11_RpcRoGetActivationType")
         return int(value.value)
 
+    def get_activation_state(self) -> int | None:
+        """读取 repertoire/RO 当前激活状态码（AN0027AD §3.26）；旧版本 SDK 返回 None。
+
+        [HWA h] RO 在软件 ``activate_running_order`` 后、EXT_RUN 拉高前预期为
+        0x54 MHW（Maintenance – Hardware deactivated）；EXT_RUN 拉高且 tHWAT
+        （最长 500 µs）过后应变为 0x56 ACT。
+        """
+        if not hasattr(self.dll, "R11_RpcRoGetActivationState"):
+            return None
+        value = ctypes.c_uint8()
+        self._check(self.dll.R11_RpcRoGetActivationState(ctypes.byref(value)), "R11_RpcRoGetActivationState")
+        return int(value.value)
+
     def deactivate_running_order(self) -> None:
         """关闭当前 RO，让 SLM 处于待重新配置的状态。"""
         self._check(self.dll.R11_RpcRoDeactivate(), "R11_RpcRoDeactivate")
@@ -643,6 +660,29 @@ class _R11CommLib:
         self._check(self.dll.R11_FlashBurn(page_address), "R11_FlashBurn")
 
 
+# AN0027AD §3.26 (p.33) R11_RpcRoGetActivationState 状态码表。
+# 0x50/0x51/0x55 是瞬态（transitional），其余为稳态；0x56 ACT 表示 RO 正在执行。
+R11_ACTIVATION_STATES = {
+    0x50: "RLD(repertoire loading)",
+    0x51: "STA(starting)",
+    0x52: "MSW(maintenance, software deactivated)",
+    0x53: "MHD(maintenance, hardware+software deactivated)",
+    0x54: "MHW(maintenance, hardware deactivated)",
+    0x55: "PAC(activating)",
+    0x56: "ACT(active)",
+    0x57: "NRP(no repertoire available)",
+}
+# 0x56 ACT：诊断/轮询路径用它判断 RO 已真正进入 Active Mode。
+R11_ACTIVATION_STATE_ACTIVE = 0x56
+
+
+def r11_activation_state_name(code: int | None) -> str:
+    """把激活状态码翻译为可读名；None 表示旧版 SDK 不支持该查询。"""
+    if code is None:
+        return "unsupported(R11CommLib lacks R11_RpcRoGetActivationState)"
+    return R11_ACTIVATION_STATES.get(int(code), f"unknown(0x{int(code):02X})")
+
+
 # DAQ adapter 是 USB-6423 的真实输出边界，负责把 WaveformPlan 播放到 port0 数字线。
 class NIDaqAdapter:
     """NI USB-6423 数字输出适配器。
@@ -651,7 +691,8 @@ class NIDaqAdapter:
         - 枚举 NI 设备 / port0 16 条 line。
         - 播放 ``WaveformPlan.packed_port_values`` 到 port0（``CHAN_FOR_ALL_LINES``）。
         - ``set_all_low``：把整个 port0 写 0，确保停止后所有 SIM TTL 归位低。
-        - ``pulse_line``：单线短脉冲，用于 DAQ 设置弹窗诊断按钮。
+        - ``set_line``：单线静态置高/低（整端口写），供诊断路径使用。
+        - ``pulse_line``：单线短脉冲（复用 ``set_line``），用于 DAQ 设置弹窗诊断按钮。
 
     维护要点：
         - 环境中没有 ``nidaqmx`` 时 ``self._available=False``，所有方法都立即抛 ``HardwareError``。
@@ -761,6 +802,31 @@ class NIDaqAdapter:
         except Exception as exc:
             raise HardwareError(f"Failed to reset NI outputs: {exc}") from exc
 
+    def set_line(self, device_name: str, line_index: int, high: bool) -> None:
+        """把单条 port0 line 静态置为高/低。
+
+        注意：
+            - 写整端口：除目标 line 外端口上其余所有 line 同时被写 0；当前仅用于
+              诊断路径（如 SLM 激活时序测试拉高 ``slm_enable``），不要在正式
+              采集波形播放期间调用。
+            - NI 静态 DO 在任务关闭后保持最后写入的电平，因此 ``set_line(high=True)``
+              返回后线会一直保持高，直到下一次写入或 ``set_all_low``。
+        """
+        if not self._available:
+            raise HardwareError("nidaqmx is not available; cannot set NI outputs.")
+        if not 0 <= int(line_index) <= 31:
+            raise HardwareError(f"Invalid NI line index: {line_index}")
+        line_mask = int(1 << int(line_index)) if high else 0
+        try:
+            with nidaqmx.Task() as task:
+                task.do_channels.add_do_chan(
+                    f"{device_name}/port0",
+                    line_grouping=LineGrouping.CHAN_FOR_ALL_LINES,
+                )
+                task.write(line_mask, auto_start=True)
+        except Exception as exc:
+            raise HardwareError(f"Failed to set NI line {line_index} on {device_name}: {exc}") from exc
+
     def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None:
         """单线短脉冲：``0 → 1 → sleep → 0``，主要供 DAQ 测试按钮使用。
 
@@ -775,22 +841,17 @@ class NIDaqAdapter:
         if duration_s <= 0:
             raise HardwareError(f"Pulse duration must be positive: {duration_s}")
 
-        # 1) ``1 << index`` 把目标 line 映射为 port0 位掩码。
-        line_mask = int(1 << int(line_index))
         try:
-            with nidaqmx.Task() as task:
-                task.do_channels.add_do_chan(
-                    f"{device_name}/port0",
-                    line_grouping=LineGrouping.CHAN_FOR_ALL_LINES,
-                )
-                # 2) 先把整 port 写 0，确保起点干净。
-                task.write(0, auto_start=True)
-                try:
-                    # 3) 写入 line_mask → sleep → 写 0：完整 0/1/0 脉冲。
-                    task.write(line_mask, auto_start=True)
-                    time.sleep(duration_s)
-                finally:
-                    task.write(0, auto_start=True)
+            # 1) 先把整 port 写 0，确保起点干净。
+            self.set_line(device_name, line_index, high=False)
+            try:
+                # 2) 拉高 → sleep → finally 拉低：完整 0/1/0 脉冲。
+                self.set_line(device_name, line_index, high=True)
+                time.sleep(duration_s)
+            finally:
+                self.set_line(device_name, line_index, high=False)
+        except HardwareError:
+            raise
         except Exception as exc:
             raise HardwareError(f"Failed to pulse NI line {line_index} on {device_name}: {exc}") from exc
 
@@ -1740,6 +1801,21 @@ class KopinSlmAdapter:
             "activation_type": activation_type,
             "pattern_result": self._prepared,
         }
+
+    def get_running_order_activation_state(self) -> dict[str, Any]:
+        """读取当前 repertoire/RO 激活状态，返回 ``{"code", "name"}``。
+
+        用途：
+            诊断 [HWA h] RO 的 EXT_RUN 门控时序：软件 activate 后预期 0x54 MHW，
+            ``slm_enable``（EXT_RUN）拉高且 tHWAT（≤500 µs）过后预期 0x56 ACT。
+            旧版 R11CommLib 缺少该函数时 ``code`` 为 None。
+        """
+        if not self._initialized:
+            self.initialize()
+        if not self._device_open:
+            raise HardwareError("Connect to an SLM before querying activation state.")
+        code = self._sdk.get_activation_state()
+        return {"code": code, "name": r11_activation_state_name(code)}
 
     def _upload_pattern(self, bitplane_index: int, pattern_path: Path) -> None:
         """把单个位平面文件烧录到指定 bitplane_index 对应的 R11 flash 位置。"""

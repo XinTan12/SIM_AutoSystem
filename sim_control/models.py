@@ -237,6 +237,14 @@ class CameraConfig:
     trigger_mode: str = "external_level"
 
 
+# R11 数据手册 PD0011CA Table 7-1 (p.26)：EXT_RUN 拉高后系统进入 Active Mode
+# 的硬件激活时间 tHWAT 最大为 500 µs；guard 不超过该值时首个 SLM trigger
+# 可能在 [HWA h] Running Order 激活完成前被丢弃（表现为第一帧黑帧 + 图案错位）。
+R11_HARDWARE_ACTIVATION_MAX_US = 500
+# slm_enable guard 推荐最小值：tHWAT 上限的 2 倍余量。
+SLM_ENABLE_GUARD_RECOMMENDED_US = 1_000
+
+
 @dataclass
 class TimingConfig:
     """保存 DAQ 波形采样率、脉冲宽度、帧间隔和 SLM 保护时间。
@@ -250,11 +258,14 @@ class TimingConfig:
           运行时实际生效值由 ``effective_inter_frame_gap_us`` 决定。
         - ``edge_pulse_us`` 控制 SLM trigger / camera trigger / laser 的上升沿持续时间，
           一般不需要改。
+        - ``slm_enable_guard_us`` 应大于 ``R11_HARDWARE_ACTIVATION_MAX_US``（500 µs），
+          否则首个 trigger 可能落在 RO 硬件激活窗口内被丢弃（waveform builder 会
+          告警但不硬拦截）；默认取 ``SLM_ENABLE_GUARD_RECOMMENDED_US``。
     """
     sample_rate_hz: int = 1_000_000
     edge_pulse_us: int = 50
     inter_frame_gap_us: int = DEFAULT_INTER_FRAME_GAP_US
-    slm_enable_guard_us: int = 50
+    slm_enable_guard_us: int = SLM_ENABLE_GUARD_RECOMMENDED_US
 
 
 @dataclass

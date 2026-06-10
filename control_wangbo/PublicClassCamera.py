@@ -99,7 +99,8 @@ class VideoSaver(QObject):
         self.cap              = None
         self.release          =None
         self.sort             =None
-        self.elasticity       =None
+        self.releaseSort      =None
+        self.function       =None
         self.speed            =None
         self.pre_fast         =None
         self.pre_sCMOS        =None
@@ -108,8 +109,8 @@ class VideoSaver(QObject):
         #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"presure_(b1_c_b2_t_v)"
         self.cap              = experiment_imfo["spb_triggerCapture_time"]
         self.release          = experiment_imfo["spb_triggerRelease_time"]
-        self.sort             = experiment_imfo["spb_triggerSort_time"]
-        self.elasticity       = experiment_imfo["spb_triggerElasticityMeasurement_time"]
+        self.releaseSort      = experiment_imfo["spb_triggerReleaseSort_time"]
+        self.function       = experiment_imfo["spb_triggerFunction_time"]
         self.speed            = experiment_imfo["spb_cellSpeedValue"]
         self.pre_fast         = experiment_imfo["spb_preTriggerBuffer"]
         self.pre_sCMOS        = experiment_imfo["spb_sCMOS_preTriggerBuffer"]
@@ -133,7 +134,7 @@ class VideoSaver(QObject):
                     self._save_as_tiff(frames, filename)
                 elif save_type.lower() == "avi":
                     #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"pressure_(b1_c_b2_trig_cap_Drug)"_speed_um/ms
-                    filename = f"{folder_name}/{timestamp}_[({self.pre_fast})pre] [Trig.({self.cap}_{self.elasticity}_{self.release}_{self.sort})ms] [({self.speed})μm_ms] [{average_fps}fps].avi"
+                    filename = f"{folder_name}/{timestamp}_[({self.pre_fast})pre] [Trig.({self.cap}_{self.function}_{self.release}_{self.sort})ms] [({self.speed})μm_ms] [{average_fps}fps].avi"
                     frames_8bit = self.compress_16bit_to_8bit_fast(frames,self.fastCameraMaxGrayscale)
                     self._save_as_avi(frames_8bit, filename)
                 self.signal_finished_triggerSaveVideo.emit(1)

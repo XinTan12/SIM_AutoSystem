@@ -38,9 +38,13 @@ class DaqTestTargetTests(unittest.TestCase):
     """覆盖 DAQ 测试目标下拉、默认线位映射与波形 647 名称迁移。"""
 
     def test_build_daq_test_target_items_uses_647_labels_and_appends_sim_entry(self):
-        """旧 640 配置迁移后，测试下拉显示 ``Laser 647``，并末尾追加 ``SIM采集``。"""
+        """旧 640 配置迁移后，测试下拉显示 ``Laser 647``，末尾追加 ``SIM采集`` 与 ``SLM激活时序``。"""
         from sim_control.config_store import app_config_from_dict
-        from sim_control.gui import SIM_ACQUISITION_TEST_ID, build_daq_test_target_items
+        from sim_control.gui import (
+            SIM_ACQUISITION_TEST_ID,
+            SLM_ACTIVATION_TIMING_TEST_ID,
+            build_daq_test_target_items,
+        )
 
         # 1) 构造一个 v0 旧配置：含 ``laser_640_line`` 和 ``selected_laser_nm=640``。
         config = app_config_from_dict(
@@ -62,7 +66,7 @@ class DaqTestTargetTests(unittest.TestCase):
 
         items = build_daq_test_target_items(config)
 
-        # 2) 列表顺序与文案锁死；测试目标 ID 末尾必须是 ``SIM_ACQUISITION_TEST_ID``。
+        # 2) 列表顺序与文案锁死；SIM 采集与 SLM 激活时序诊断按固定顺序排在末尾。
         self.assertEqual(
             items,
             [
@@ -72,6 +76,7 @@ class DaqTestTargetTests(unittest.TestCase):
                 ("laser_561_line", "Laser 561 -> Dev2/port0/line7"),
                 ("laser_647_line", "Laser 647 -> Dev2/port0/line9"),
                 (SIM_ACQUISITION_TEST_ID, "SIM采集"),
+                (SLM_ACTIVATION_TIMING_TEST_ID, "SLM激活时序"),
             ],
         )
 
@@ -176,11 +181,112 @@ class NIDaqAdapterPulseTests(unittest.TestCase):
             adapter = adapters.NIDaqAdapter()
             adapter.pulse_line("Dev2", 3, duration_s=0.1)
 
-        # 3) 通道注册时 line_grouping 必须是 CHAN_FOR_ALL_LINES。
-        self.assertEqual(added_channels, [("Dev2/port0", "all_lines")])
-        # 4) 写顺序：起点 0 → 1<<3=8 → 终点 0；sleep 持续 0.1s。
+        # 3) ``pulse_line`` 现复用 ``set_line``：三次静态写各开一个任务，
+        #    每次通道注册的 line_grouping 都必须是 CHAN_FOR_ALL_LINES。
+        self.assertEqual(added_channels, [("Dev2/port0", "all_lines")] * 3)
+        # 4) 写顺序不变：起点 0 → 1<<3=8 → 终点 0；sleep 持续 0.1s。
         self.assertEqual(writes, [(0, True), (8, True), (0, True)])
         mocked_sleep.assert_called_once_with(0.1)
+
+
+class NIDaqAdapterSetLineTests(unittest.TestCase):
+    """覆盖 ``NIDaqAdapter.set_line`` 静态单线输出与仿真 DAQ 的调用记录。"""
+
+    def test_set_line_writes_target_mask_then_zero_when_lowered(self):
+        """``set_line(high=True)`` 写位掩码；``high=False`` 写 0；各开一个任务。"""
+        from sim_control import adapters
+
+        writes = []
+        added_channels = []
+
+        class FakeDoChannels:
+            def add_do_chan(self, channel_name, line_grouping=None):
+                added_channels.append((channel_name, line_grouping))
+
+        class FakeTask:
+            def __init__(self):
+                self.do_channels = FakeDoChannels()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def write(self, value, auto_start=True):
+                writes.append((value, auto_start))
+
+        fake_nidaqmx = type("FakeNidaqmx", (), {"Task": FakeTask})()
+
+        with mock.patch.object(adapters, "nidaqmx", fake_nidaqmx), mock.patch.object(
+            adapters, "LineGrouping", type("LG", (), {"CHAN_FOR_ALL_LINES": "all_lines"})
+        ):
+            adapter = adapters.NIDaqAdapter()
+            adapter.set_line("Dev2", 0, high=True)
+            adapter.set_line("Dev2", 0, high=False)
+
+        self.assertEqual(added_channels, [("Dev2/port0", "all_lines")] * 2)
+        self.assertEqual(writes, [(1, True), (0, True)])
+
+    def test_set_line_rejects_invalid_line_index(self):
+        """line_index 超出 [0, 31] 时应抛 HardwareError，不触碰 NI 任务。"""
+        from sim_control import adapters
+
+        with mock.patch.object(adapters, "nidaqmx", object()):
+            adapter = adapters.NIDaqAdapter()
+            with self.assertRaises(adapters.HardwareError):
+                adapter.set_line("Dev2", 32, high=True)
+
+    def test_simulated_daq_adapter_records_set_line_and_set_all_low(self):
+        """仿真 DAQ 应记录 set_line 调用序列与 set_all_low 次数供测试断言。"""
+        from sim_control.sim_adapters import SimulatedDaqAdapter
+
+        adapter = SimulatedDaqAdapter()
+        adapter.set_line("Dev2", 0, True)
+        adapter.set_line("Dev2", 0, False)
+        adapter.set_all_low("Dev2")
+
+        self.assertEqual(adapter.set_line_calls, [("Dev2", 0, True), ("Dev2", 0, False)])
+        self.assertEqual(adapter.set_all_low_calls, 1)
+
+
+class SlmActivationTimingTestFlowTests(unittest.TestCase):
+    """用仿真 adapter 驱动 ``_run_slm_activation_timing_test`` 的核心流程。"""
+
+    def test_activation_timing_test_reaches_active_and_returns_enable_low(self):
+        """诊断流程应到达 ACT，并在 finally 中把 enable 拉低 + DAQ 全 0。"""
+        from sim_control.config_store import app_config_from_dict
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.sim_adapters import SimulatedDaqAdapter, SimulatedSlmAdapter
+
+        app_config = app_config_from_dict({"config_version": 9})
+        slm = SimulatedSlmAdapter()
+        slm.connect()
+        daq = SimulatedDaqAdapter()
+
+        class HostStub:
+            """duck-typed ``self``：只提供 handler 用到的属性/方法。"""
+
+            def __init__(self):
+                self.slm_adapter = slm
+                self.daq_adapter = daq
+                self.config = app_config
+
+            def _selected_laser_nm(self):
+                return 488
+
+        host = HostStub()
+        result = SimSettingsDialog._run_slm_activation_timing_test(host, app_config.daq)
+
+        self.assertTrue(result.reached_active)
+        self.assertIsNotNone(result.enable_to_active_ms)
+        self.assertGreaterEqual(result.poll_count, 1)
+        # 仿真 SLM 软件激活即视为 ACT，因此初始状态就是 0x56。
+        self.assertEqual(result.initial_state["code"], 0x56)
+        self.assertIn("488_3.5_2d_50ms", result.running_order_name)
+        # slm_enable 先拉高、finally 拉低，随后 set_all_low 安全归位。
+        self.assertEqual(daq.set_line_calls, [("Dev1", 0, True), ("Dev1", 0, False)])
+        self.assertEqual(daq.set_all_low_calls, 1)
 
 
 if __name__ == "__main__":

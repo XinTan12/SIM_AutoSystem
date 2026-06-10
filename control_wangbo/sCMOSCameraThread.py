@@ -20,7 +20,7 @@ class sCMOSCameraWorker(QObject):
     signal_sendImageProcessorIndex      = pyqtSignal(int, int)   # 用于图像处理分析ROI区域细胞的时候，发给图像处理线程 和
     signal_sendFlowRateDetectIndex      = pyqtSignal(int)        # 发送测速图像帧信息
     signal_updataROIBgImage             = pyqtSignal(int)        # 发送背景提取的帧索引
-    signal_elasticityMeasurementTrigger = pyqtSignal(int)        # 发送细胞弹性形变检测帧的索引, 当前帧的前一帧
+    signal_functionMeasurementTrigger = pyqtSignal(int)        # 发送细胞弹性形变检测帧的索引, 当前帧的前一帧
     def __init__(self, sCMOS_camera_para,sCMOS_ring_buffer):
         super().__init__()
         self.sCMOS_exposure_time  = sCMOS_camera_para["sCMOS_exposure_time"] / 1000  # 曝光时间(ms)转换成秒
@@ -138,7 +138,7 @@ class sCMOSCameraWorker(QObject):
                         if self.enterImageProcessor_state:
                             self.enterImageProcessor_state = False
                             #发送前一帧的ROI图像进行细胞拉伸长度的数据分析
-                            self.signal_elasticityMeasurementTrigger.emit((current_pos - 1) % self.sCMOS_ring_buffer_capacity) 
+                            self.signal_functionMeasurementTrigger.emit((current_pos - 1) % self.sCMOS_ring_buffer_capacity) 
                             print("sCMOS 发送了帧索引")
                         # 发送背景提取帧的索引
                         if self.send_sCMOS_BgIndex_state:
@@ -172,7 +172,7 @@ class ImageProcessor(QObject):
                                         sigmaX=self.sCMOS_gaussBlurSigma).astype(np.uint16)
     @pyqtSlot(dict)
     def slot_image_processing_sCMOS_parameters(self,sCMOS_para):     
-        #elasticity Mesurement threshold
+        #function Mesurement threshold
         self.minDeltaLenth        = sCMOS_para["minDeltaLenth"]            
         self.maxDeltaLenth        = sCMOS_para["maxDeltaLenth"]   
         self.sCMOS_gaussianKernel = sCMOS_para["sCMOS_gaussianKernel"]
@@ -185,11 +185,11 @@ class ImageProcessor(QObject):
         self.openTimes            = sCMOS_para["openTimes"]      
         self.closeTimes           = sCMOS_para["closeTimes"]  
         self.minArea              = sCMOS_para["sCMOS_minArea"]               
-        # Elasticity Measurement ROI
-        self.ROI_x = sCMOS_para["elasticityROI_X"]          
-        self.ROI_y = sCMOS_para["elasticityROI_Y"]          
-        self.ROI_w = sCMOS_para["elasticityROI_width"]      
-        self.ROI_h = sCMOS_para["elasticityROI_height"] 
+        # Function Measurement ROI
+        self.ROI_x = sCMOS_para["functionROI_X"]          
+        self.ROI_y = sCMOS_para["functionROI_Y"]          
+        self.ROI_w = sCMOS_para["functionROI_width"]      
+        self.ROI_h = sCMOS_para["functionROI_height"] 
 
     @pyqtSlot(int)
     def  sCMOS_Image_processing(self,index):
@@ -231,13 +231,13 @@ class ImageProcessor(QObject):
                 self.signal_finishROIProcessing_sCMOS.emit(7,1) #是目标细胞
                 #发送给UI界面显示ROI的消息
                 ROI_para = {}
-                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 elasticity ROI
+                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 function ROI
                 ROI_para["ID_add"]              = 0 # 只有在capture的时候ID才增加1
 
                 ROI_para["algorithm_time"]      = 0
                 ROI_para["interval_time"]       = 0
 
-                ROI_para["total_add"]           = 1 # elasticity measurement ROI 的总数+1
+                ROI_para["total_add"]           = 1 # function measurement ROI 的总数+1
                 ROI_para["miss_add"]            = 0 # 不存在miss
 
                 ROI_para["cell_area"]           = 0
@@ -253,13 +253,13 @@ class ImageProcessor(QObject):
             elif len(filtered_contours) > 0:
                 self.signal_finishROIProcessing_sCMOS.emit(7,-1) #非目标细胞
                 ROI_para = {}
-                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 elasticity ROI
+                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 function ROI
                 ROI_para["ID_add"]              = 0 # 只有在capture的时候ID才增加1
 
                 ROI_para["algorithm_time"]      = 0
                 ROI_para["interval_time"]       = 0
 
-                ROI_para["total_add"]           = 1 # elasticity measurement ROI 的总数+1
+                ROI_para["total_add"]           = 1 # function measurement ROI 的总数+1
                 ROI_para["miss_add"]            = 0 # 不存在miss
 
                 ROI_para["cell_area"]           = 0
@@ -275,13 +275,13 @@ class ImageProcessor(QObject):
             else: #未发现
                 self.signal_finishROIProcessing_sCMOS.emit(7,0) #未检测出细胞，miss了
                 ROI_para = {}
-                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 elasticity ROI
+                ROI_para["imageProcessing_way"] = 7 # 代表sCMOS的 function ROI
                 ROI_para["ID_add"]              = 0 # 只有在capture的时候ID才增加1
 
                 ROI_para["algorithm_time"]      = 0
                 ROI_para["interval_time"]       = 0
 
-                ROI_para["total_add"]           = 1 # elasticity measurement ROI 的总数+1
+                ROI_para["total_add"]           = 1 # function measurement ROI 的总数+1
                 ROI_para["miss_add"]            = 1 # 不存在miss
 
                 ROI_para["cell_area"]           = 0
@@ -328,7 +328,7 @@ class sCMOSCameraThread:
         self.sCMOS_camera_worker.signal_triggerReady.connect(self.sCMOS_video_saver.slot_start_save_video) # 保存视频的信号
         self.sCMOS_camera_thread.started.connect(self.sCMOS_camera_worker.run)
         self.sCMOS_camera_worker.signal_updataROIBgImage.connect(self.sCMOS_image_processor.slot_updata_ROI_Bg_Image) #更新背景图
-        self.sCMOS_camera_worker.signal_elasticityMeasurementTrigger.connect(self.sCMOS_image_processor.sCMOS_Image_processing) # 分析图像ROI中细胞的拉伸长度
+        self.sCMOS_camera_worker.signal_functionMeasurementTrigger.connect(self.sCMOS_image_processor.sCMOS_Image_processing) # 分析图像ROI中细胞的拉伸长度
         #self.sCMOS_camera_worker.signal_sendImageProcessorIndex.connect(self.image_processor.slot_basic_image_processor) #发送ringbuffer的图像索引给图像分析线程      
         #self.sCMOS_image_processor.signal_saveMissEventVideo.connect(self.video_saver.slot_start_save_miss_event_video) # 保存missEvent的图像
 

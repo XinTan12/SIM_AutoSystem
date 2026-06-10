@@ -41,7 +41,13 @@ from typing import Any
 
 import numpy as np
 
-from .models import DAQ_ROLE_ORDER, DaqLineConfig, LASER_ROLE_MAP, TimingConfig
+from .models import (
+    DAQ_ROLE_ORDER,
+    DaqLineConfig,
+    LASER_ROLE_MAP,
+    R11_HARDWARE_ACTIVATION_MAX_US,
+    TimingConfig,
+)
 
 
 # 正则解析 ``Dev1/port0/line5`` 形式的 NI 线名；命名组让调用方按名取值。
@@ -186,6 +192,14 @@ class NIDaqWaveformBuilder:
             warnings.append(
                 f"inter_frame_gap_us={timing.inter_frame_gap_us} is below the conservative 1000 us readout margin."
             )
+        # 4b) guard 不超过 R11 tHWAT 上限（500 µs，PD0011CA Table 7-1）时，
+        #     [HWA h] RO 可能尚未激活完成，首个 slm_trigger 会被丢弃。
+        if timing.slm_enable_guard_us <= R11_HARDWARE_ACTIVATION_MAX_US:
+            warnings.append(
+                f"slm_enable_guard_us={timing.slm_enable_guard_us} is at or below the R11 hardware "
+                f"activation worst case ({R11_HARDWARE_ACTIVATION_MAX_US} us tHWAT); the first SLM "
+                "trigger may be lost before the running order becomes active."
+            )
 
         # 5) 总样本数 = 两端 guard + 9 × (曝光 + 帧间隔)；提前一次性算出便于分配数组。
         per_frame_span = exposure_samples + gap_samples
@@ -308,6 +322,14 @@ class NIDaqWaveformBuilder:
         warnings: list[str] = []
         if exposure_samples < edge_pulse_samples:
             warnings.append("z-scan exposure is shorter than the trigger pulse width.")
+        # guard 不超过 R11 tHWAT 上限（500 µs）时，z-scan 单帧 trigger 同样可能在
+        # RO 硬件激活完成前被丢弃；与 ``build()`` 的告警保持一致措辞。
+        if timing.slm_enable_guard_us <= R11_HARDWARE_ACTIVATION_MAX_US:
+            warnings.append(
+                f"slm_enable_guard_us={timing.slm_enable_guard_us} is at or below the R11 hardware "
+                f"activation worst case ({R11_HARDWARE_ACTIVATION_MAX_US} us tHWAT); the first SLM "
+                "trigger may be lost before the running order becomes active."
+            )
 
         matrix = (
             {role: np.zeros(sample_count, dtype=np.uint8) for role in DAQ_ROLE_ORDER}

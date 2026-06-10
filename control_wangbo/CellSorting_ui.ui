@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <ui version="4.0">
  <class>Single_Cell_Sorting</class>
  <widget class="QWidget" name="Single_Cell_Sorting">
@@ -177,13 +177,13 @@
         <double>0.100000000000000</double>
        </property>
        <property name="maximum">
-        <double>25.000000000000000</double>
+        <double>254.000000000000000</double>
        </property>
        <property name="singleStep">
         <double>0.100000000000000</double>
        </property>
        <property name="value">
-        <double>1.000000000000000</double>
+        <double>5.000000000000000</double>
        </property>
       </widget>
      </item>
@@ -221,7 +221,7 @@
       </widget>
      </item>
      <item row="2" column="0">
-      <widget class="QDoubleSpinBox" name="spb_triggerElasticityMeasurement_time">
+      <widget class="QDoubleSpinBox" name="spb_triggerFunction_time">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
@@ -255,7 +255,7 @@
         <double>1.000000000000000</double>
        </property>
        <property name="maximum">
-        <double>600000.000000000000000</double>
+        <double>60000.000000000000000</double>
        </property>
        <property name="singleStep">
         <double>10.000000000000000</double>
@@ -266,7 +266,7 @@
       </widget>
      </item>
      <item row="2" column="1">
-      <widget class="QPushButton" name="btn_triggerElasticityMeasurement">
+      <widget class="QPushButton" name="btn_triggerFunction">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
@@ -294,7 +294,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Elasticity</string>
+        <string>Function</string>
        </property>
       </widget>
      </item>
@@ -333,7 +333,7 @@
         <double>0.100000000000000</double>
        </property>
        <property name="maximum">
-        <double>25.000000000000000</double>
+        <double>250.000000000000000</double>
        </property>
        <property name="singleStep">
         <double>0.100000000000000</double>
@@ -377,7 +377,7 @@
       </widget>
      </item>
      <item row="4" column="0">
-      <widget class="QDoubleSpinBox" name="spb_triggerSort_time">
+      <widget class="QDoubleSpinBox" name="spb_triggerReleaseSort_time">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
@@ -411,7 +411,7 @@
         <double>0.100000000000000</double>
        </property>
        <property name="maximum">
-        <double>25.000000000000000</double>
+        <double>254.000000000000000</double>
        </property>
        <property name="singleStep">
         <double>0.100000000000000</double>
@@ -422,7 +422,7 @@
       </widget>
      </item>
      <item row="4" column="1">
-      <widget class="QPushButton" name="btn_triggerSort">
+      <widget class="QPushButton" name="btn_triggerReleaseSort">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
@@ -450,7 +450,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Sort</string>
+        <string>Rel+Sort</string>
        </property>
       </widget>
      </item>
@@ -1230,7 +1230,7 @@
      <enum>QFrame::StyledPanel</enum>
     </property>
     <property name="text">
-     <string/>
+     <string />
     </property>
    </widget>
    <widget class="QLabel" name="lb_FPSshow">
@@ -2179,7 +2179,7 @@
      <height>2</height>
     </rect>
    </property>
-   <layout class="QHBoxLayout" name="horizontalLayout"/>
+   <layout class="QHBoxLayout" name="horizontalLayout" />
   </widget>
   <widget class="QGroupBox" name="grp_releaseROIView">
    <property name="geometry">
@@ -2247,7 +2247,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -2277,7 +2277,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -2307,7 +2307,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -2689,7 +2689,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -2719,7 +2719,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -2749,7 +2749,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -4034,7 +4034,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -4064,7 +4064,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -4094,7 +4094,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -4230,7 +4230,7 @@
         </font>
        </property>
        <property name="text">
-        <string>trapped(ms)</string>
+        <string>TrapFrames</string>
        </property>
       </widget>
      </item>
@@ -4263,12 +4263,12 @@
         </font>
        </property>
        <property name="text">
-        <string>sortFrames</string>
+        <string>CollectFrames</string>
        </property>
       </widget>
      </item>
      <item row="0" column="4">
-      <widget class="QLabel" name="label_42">
+      <widget class="QLabel" name="label_85">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
          <horstretch>0</horstretch>
@@ -4296,73 +4296,7 @@
         </font>
        </property>
        <property name="text">
-        <string>minLenth</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="5">
-      <widget class="QLabel" name="label_41">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>65</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>65</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>maxLenth</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="6">
-      <widget class="QLabel" name="label_65">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>70</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>70</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>minArea_pco</string>
+        <string>TrapBalance(ms)</string>
        </property>
       </widget>
      </item>
@@ -4463,7 +4397,7 @@
       </widget>
      </item>
      <item row="1" column="2">
-      <widget class="QSpinBox" name="spb_trappedIntervalTime">
+      <widget class="QSpinBox" name="spb_trapFrames">
        <property name="enabled">
         <bool>true</bool>
        </property>
@@ -4511,7 +4445,7 @@
       </widget>
      </item>
      <item row="1" column="3">
-      <widget class="QSpinBox" name="spb_sortFrames">
+      <widget class="QSpinBox" name="spb_collectFrames">
        <property name="enabled">
         <bool>true</bool>
        </property>
@@ -4559,103 +4493,7 @@
       </widget>
      </item>
      <item row="1" column="4">
-      <widget class="QSpinBox" name="spb_minLenth">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>65</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>65</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>1</number>
-       </property>
-       <property name="maximum">
-        <number>1000</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>1</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="5">
-      <widget class="QSpinBox" name="spb_maxLenth">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>65</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>65</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>1</number>
-       </property>
-       <property name="maximum">
-        <number>1000</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>1000</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="6">
-      <widget class="QSpinBox" name="spb_sCMOS_minArea">
+      <widget class="QSpinBox" name="spb_trapBalance_Time">
        <property name="enabled">
         <bool>true</bool>
        </property>
@@ -4689,7 +4527,7 @@
         <number>0</number>
        </property>
        <property name="maximum">
-        <number>50000</number>
+        <number>1000</number>
        </property>
        <property name="singleStep">
         <number>1</number>
@@ -4698,7 +4536,7 @@
         <enum>QAbstractSpinBox::DefaultStepType</enum>
        </property>
        <property name="value">
-        <number>3000</number>
+        <number>300</number>
        </property>
       </widget>
      </item>
@@ -5571,7 +5409,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -5601,7 +5439,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -5631,7 +5469,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -6036,7 +5874,7 @@
     </font>
    </property>
    <property name="title">
-    <string/>
+    <string />
    </property>
    <widget class="QWidget" name="layoutWidget">
     <property name="geometry">
@@ -6272,7 +6110,7 @@
            <bool>false</bool>
           </property>
           <property name="text">
-           <string/>
+           <string />
           </property>
          </widget>
         </item>
@@ -6311,7 +6149,7 @@
              <string notr="true">background-color: #8b949e; border-radius: 8px;</string>
             </property>
             <property name="text">
-             <string/>
+             <string />
             </property>
            </widget>
           </item>
@@ -6364,7 +6202,7 @@
              <string notr="true">background-color: #8b949e; border-radius: 8px;</string>
             </property>
             <property name="text">
-             <string/>
+             <string />
             </property>
            </widget>
           </item>
@@ -6417,7 +6255,7 @@
              <string notr="true">background-color: #8b949e; border-radius: 8px;</string>
             </property>
             <property name="text">
-             <string/>
+             <string />
             </property>
            </widget>
           </item>
@@ -6470,7 +6308,7 @@
              <string notr="true">background-color: #8b949e; border-radius: 8px;</string>
             </property>
             <property name="text">
-             <string/>
+             <string />
             </property>
            </widget>
           </item>
@@ -6654,7 +6492,7 @@
       </widget>
      </item>
      <item row="1" column="0">
-      <widget class="QPushButton" name="btn_rinseChannelElasticityMeasurement">
+      <widget class="QPushButton" name="btn_rinseChannelFunction">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
@@ -6680,7 +6518,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Elasticity</string>
+        <string>Function</string>
        </property>
       </widget>
      </item>
@@ -8585,7 +8423,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -8615,7 +8453,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -8645,7 +8483,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -8731,7 +8569,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -8761,7 +8599,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -8791,7 +8629,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9010,7 +8848,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9040,7 +8878,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9070,7 +8908,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9667,7 +9505,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9736,7 +9574,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9847,7 +9685,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9877,7 +9715,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -9907,7 +9745,7 @@
         <enum>QFrame::StyledPanel</enum>
        </property>
        <property name="text">
-        <string/>
+        <string />
        </property>
       </widget>
      </item>
@@ -10403,7 +10241,7 @@
      <enum>QFrame::StyledPanel</enum>
     </property>
     <property name="text">
-     <string/>
+     <string />
     </property>
    </widget>
    <widget class="QLabel" name="lb_sCMOS_FPSshow">
@@ -11948,6 +11786,6 @@
    </layout>
   </widget>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>

@@ -45,6 +45,7 @@ from .models import (
     CameraConfig,
     DaqLineConfig,
     ReconstructionConfig,
+    SLM_ENABLE_GUARD_RECOMMENDED_US,
     SUPPORTED_LASERS,
     TimingConfig,
     Z_SCAN_DIRECTIONS,
@@ -62,7 +63,7 @@ DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "sim_control_config.json"
 LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
-CURRENT_CONFIG_VERSION = 8
+CURRENT_CONFIG_VERSION = 9
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 
 
@@ -188,6 +189,27 @@ def _migrate_v7_to_v8(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v8_to_v9(payload: dict) -> dict:
+    """v8 -> v9 migration: raise slm_enable_guard_us below the R11 tHWAT margin.
+
+    背景：
+        R11 数据手册 PD0011CA Table 7-1 规定 EXT_RUN 拉高后最长 500 µs（tHWAT）
+        才进入 Active Mode；旧默认 guard=50 µs 会让首个 SLM trigger 在 [HWA h]
+        RO 激活完成前被丢弃（第一帧黑帧 + 图案错位一帧）。低于推荐值的旧配置
+        统一抬到 ``SLM_ENABLE_GUARD_RECOMMENDED_US``；用户仍可事后手动调低。
+    """
+    timing = dict(payload.get("timing") or {})
+    try:
+        guard_value = int(timing.get("slm_enable_guard_us", 0))
+    except (TypeError, ValueError):
+        guard_value = 0
+    if guard_value < SLM_ENABLE_GUARD_RECOMMENDED_US:
+        timing["slm_enable_guard_us"] = SLM_ENABLE_GUARD_RECOMMENDED_US
+    payload["timing"] = timing
+    payload["config_version"] = 9
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
@@ -198,6 +220,7 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (5, _migrate_v5_to_v6),
     (6, _migrate_v6_to_v7),
     (7, _migrate_v7_to_v8),
+    (8, _migrate_v8_to_v9),
 ]
 
 

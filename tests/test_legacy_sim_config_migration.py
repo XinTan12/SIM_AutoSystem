@@ -142,13 +142,13 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
         )
 
         # 2) 加载后版本号应升到当前版本；缺失字段被补齐为安全默认。
-        self.assertEqual(config.config_version, 8)
+        self.assertEqual(config.config_version, 9)
         self.assertFalse(config.backend.simulation_mode)
         # 3) round-trip 回 dict 时字段仍存在。
         payload = app_config_to_dict(config)
         self.assertFalse(payload["backend"]["simulation_mode"])
         self.assertEqual(payload["selected_running_order"], "")
-        self.assertEqual(payload["config_version"], 8)
+        self.assertEqual(payload["config_version"], 9)
 
     def test_v2_config_migration_adds_selected_running_order_default(self):
         """v2 → v3 迁移应只补 ``selected_running_order``，保留已有 simulation_mode。"""
@@ -165,11 +165,11 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 8)
+        self.assertEqual(config.config_version, 9)
         self.assertEqual(config.selected_running_order, "")
         payload = app_config_to_dict(config)
         self.assertEqual(payload["selected_running_order"], "")
-        self.assertEqual(payload["config_version"], 8)
+        self.assertEqual(payload["config_version"], 9)
 
     def test_v4_config_migration_adds_reconstruction_defaults(self):
         """v4 -> v6 应补齐 SIM9 重建配置，并可 round-trip 到 JSON。"""
@@ -177,7 +177,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         config = app_config_from_dict({"config_version": 4})
 
-        self.assertEqual(config.config_version, 8)
+        self.assertEqual(config.config_version, 9)
         self.assertTrue(config.reconstruction.enabled)
         self.assertEqual(config.reconstruction.backend, "sim_wiener_gpu")
         self.assertEqual(config.reconstruction.otf_488_path, "")
@@ -187,7 +187,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
         self.assertTrue(payload["reconstruction"]["enabled"])
         self.assertEqual(payload["reconstruction"]["output_path"], "data/reconstruction")
         self.assertEqual(payload["reconstruction"]["theta_ratio"], (1, 1, 1))
-        self.assertEqual(payload["config_version"], 8)
+        self.assertEqual(payload["config_version"], 9)
 
     def test_v5_config_migration_enables_reconstruction_and_adds_output_path(self):
         """v5 -> v7 应补 output_path，并将无界面开关的重建默认设为启用。"""
@@ -204,13 +204,13 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 8)
+        self.assertEqual(config.config_version, 9)
         self.assertTrue(config.reconstruction.enabled)
         self.assertEqual(config.reconstruction.output_path, "data/reconstruction")
         payload = app_config_to_dict(config)
         self.assertTrue(payload["reconstruction"]["enabled"])
         self.assertEqual(payload["reconstruction"]["output_path"], "data/reconstruction")
-        self.assertEqual(payload["config_version"], 8)
+        self.assertEqual(payload["config_version"], 9)
 
     def test_v6_config_migration_converts_output_tiff_to_output_directory(self):
         """v6 -> v7 应把旧 output_path 文件路径迁移成输出目录。"""
@@ -227,11 +227,65 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 8)
+        self.assertEqual(config.config_version, 9)
         self.assertEqual(config.reconstruction.output_path, "E:/data/reconstruction")
         payload = app_config_to_dict(config)
         self.assertEqual(payload["reconstruction"]["output_path"], "E:/data/reconstruction")
-        self.assertEqual(payload["config_version"], 8)
+        self.assertEqual(payload["config_version"], 9)
+
+    def test_v8_config_migration_raises_low_slm_enable_guard(self):
+        """v8 -> v9 应把低于推荐值的 slm_enable_guard_us 抬到 1000 µs。
+
+        背景：R11 数据手册 tHWAT（EXT_RUN -> Active Mode）最大 500 µs，旧默认
+        guard=50 µs 会丢失首个 SLM trigger（第一帧黑帧 + 图案错位一帧）。
+        """
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 8,
+                "timing": {
+                    "sample_rate_hz": 1_000_000,
+                    "edge_pulse_us": 50,
+                    "inter_frame_gap_us": 50_000,
+                    "slm_enable_guard_us": 50,
+                },
+            }
+        )
+
+        self.assertEqual(config.config_version, 9)
+        self.assertEqual(config.timing.slm_enable_guard_us, 1000)
+        payload = app_config_to_dict(config)
+        self.assertEqual(payload["timing"]["slm_enable_guard_us"], 1000)
+        self.assertEqual(payload["config_version"], 9)
+
+    def test_v8_config_migration_keeps_guard_at_or_above_recommended(self):
+        """v8 -> v9 不应降低用户已设置的 >= 1000 µs guard。"""
+        from sim_control.config_store import app_config_from_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 8,
+                "timing": {"slm_enable_guard_us": 2_500},
+            }
+        )
+
+        self.assertEqual(config.config_version, 9)
+        self.assertEqual(config.timing.slm_enable_guard_us, 2_500)
+
+    def test_v9_config_keeps_user_low_guard_without_remigration(self):
+        """已是 v9 的配置不再重复迁移：用户显式调低的 guard 原样保留。"""
+        from sim_control.config_store import app_config_from_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 9,
+                "timing": {"slm_enable_guard_us": 600},
+            }
+        )
+
+        self.assertEqual(config.config_version, 9)
+        self.assertEqual(config.timing.slm_enable_guard_us, 600)
 
     def test_selected_running_order_round_trips_through_config_dict(self):
         """``selected_running_order`` 应能保存到 dict 后再加载回来。"""

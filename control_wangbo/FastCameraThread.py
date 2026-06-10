@@ -228,7 +228,7 @@ class ImageProcessor(QObject):
         self.totalNumb_relese = 0
         self.totalNumb_sort = 0
         self.totalNumb_collected = 0
-        self.elasticityMeasurement_bottom = 0 #初始化底部
+        self.functionMeasurement_bottom = 0 #初始化底部
         # 定义是否为singleRun模式：
         """
         delay sort 筛选模式
@@ -248,8 +248,10 @@ class ImageProcessor(QObject):
         self.captureScan_number = 0
 
         self.trappedCell_miss  = 0 # 使用了capture，但是没有检测到合适细胞的个数
-        
-        self.max_collectedScan_number = 50 #设置最大的trapped扫描帧数 #后面重新定义
+        self.trappedScan_number = 0
+        self.max_trappedScan_number = 40 #设置最大的trapped扫描帧数 #后面重新定义
+
+        self.max_collectedScan_number = 50 #设置最大的collected扫描帧数 #后面重新定义
         self.collectedScan_number = 0
         self.collectedCell_miss  = 0 # 使用了capture，但是没有检测到合适细胞的个数
 
@@ -308,12 +310,14 @@ class ImageProcessor(QObject):
         self.maxArea              = int(para["maxArea"])      # 细胞的最大像素面积
         self.maxGray              = int(para["displayGray_max"]) #用于显示的最大灰度值
 
-        self.sortFrames           = int(para["sortFrames"])  
+        self.collectFrames           = int(para["collectFrames"])
+        self.trapFrames              = int(para.get("trapFrames", 60))
         self.missEventVideoSaveModel = para["missEventVideoSaveModel"]  #是否保存missTriggerEvent视频
         self.missEventSavePreFrames =  para["missEventSavePreFrames"] #需要保存的missTrigger前的帧数，从trapped和collectedROI失误开始算
 
-        self.max_collectedScan_number = self.sortFrames * 2
-        self.max_sortScan_number = self.sortFrames  
+        self.max_collectedScan_number = self.collectFrames
+        self.max_sortScan_number = self.collectFrames
+        self.max_trappedScan_number = self.trapFrames  
         # cellFlowThrough ROI
         self.cellFlowThroughROI_X         = int(para["cellFlowThroughROI_X"])
         self.cellFlowThroughROI_Y         = int(para["cellFlowThroughROI_Y"])
@@ -330,19 +334,12 @@ class ImageProcessor(QObject):
         self.trappedROI_height    = int(para["trappedROI_height"])
         self.trappedROI_noneImage = np.full((self.trappedROI_height, self.trappedROI_width),125, dtype=np.uint8)
 
-        """#elasticity Mesurement ROI
-        self.elasticityMeasurementROI_X          = int(para["trappedROI_X"])
-        self.elasticityMeasurementROI_Y         = int(para["trappedROI_Y"])
-        self.elasticityMeasurementROI_width     = int(para["trappedROI_width"])
-        self.elasticityMeasurementROI_height    = int(para["elasticityMeasurementROI_height"])
-        self.elasticityMeasurementROI_noneImage = np.full((self.elasticityMeasurementROI_height, self.elasticityMeasurementROI_width),125, dtype=np.uint8)"""
-
-        # sort ROI
-        self.sortROI_X            = int(para["sortROI_X"])
-        self.sortROI_Y            = int(para["sortROI_Y"])
-        self.sortROI_width        = int(para["sortROI_width"])
-        self.sortROI_height       = int(para["sortROI_height"])
-        self.sortROI_noneImage = np.full((self.sortROI_height, self.sortROI_width),125, dtype=np.uint8)
+        # sort ROI (way 3 removed from state machine, no longer in UI)
+        self.sortROI_X = 0
+        self.sortROI_Y = 0
+        self.sortROI_width = 100
+        self.sortROI_height = 100
+        self.sortROI_noneImage = np.full((100, 100), 125, dtype=np.uint8)
         # collected ROI
         self.collectedROI_X       = int(para["collectedROI_X"])
         self.collectedROI_Y       = int(para["collectedROI_Y"])
@@ -522,7 +519,7 @@ class ImageProcessor(QObject):
             if all(conditions):
                 self.slot_set_image_processing_way(-1) #出现目标后不再筛选，由于是线程池操作，这样是避免其他线程重复判断，最后再设置其值
                 # 首先发送trigger信号，其次发送图片和图像处理结果的相关信息
-                self.signal_finishROIProcessing.emit(0,0) #第二个数字为了凑数，并且MCU线程的判断函数需要延迟目标时间再扫描Trapped
+                self.signal_finishROIProcessing.emit(0,0) #第二个数字为了凑数
                 end_time = time.perf_counter()  # 记录结束时间
                 algorithm_time = (end_time - self.start_time) * 1e6  # 转换为微秒
                 #发送给UI界面显示ROI的消息
@@ -549,8 +546,10 @@ class ImageProcessor(QObject):
         except Exception as e:
             print(f"图像分析错误capture_ROI: {str(e)}")
 
-    def particle_detection_for_trapped(self,roi_frame,opened_frame,contours,roi_h,TimeStamp):
-        # 检测出现的细胞是否贴着下边框就行
+    def particle_detection_for_trapped(self,roi_frame,opened_frame,contours,_roi_h,TimeStamp):
+        # 检测出现的细胞证明捕获
+        # 连续扫描最大帧数后还未发现目标细胞，代表着捕获失败，发送信号，释放一下
+        #目标帧内出现细胞，证明捕获成功
         # 如果出现过于大的颗粒或多个细胞，发送ROI_capture_state = 2 (ui线程先releaseTrigger一下，再开启第二次capture)和完成信号
         # 如果连续扫描20帧任未发现可以合适的细胞，发送ROI_capture_state = 0 (ui线程先releaseTrigger一下，再开启第二次capture)和完成信号
         # 如果发现合适大小的细胞，发送ROI_capture_state = 1,进入SIM超分辨判断
@@ -558,70 +557,71 @@ class ImageProcessor(QObject):
         # 面积为 最小阈值的1/2.5
         # trapped的筛选条件是最松的
         # 1次开运算 1次闭运算
-        self.first_TimeStamp = TimeStamp
         try:
-            filtered_contours = []   
+            filtered_contours = []
             for cnt in contours:
                 # 计算面积
                 area = cv2.contourArea(cnt)
-                if area < (self.minArea/4) or area > self.maxArea*0.80: # 因为trapped的ROI小所以肯定只有部分被框选
-                    continue #跳过当前循环进行下一个循环
-                #用于计算颗粒是否贴边了
-                x_side, y_side, w_side, h_side = cv2.boundingRect(cnt)
-                # 只要接触到底部边框的细胞
-                if y_side + h_side == roi_h:
-                    filtered_contours.append(cnt) #只要底部接触的颗粒
+                if area < (self.minArea/2):
+                    continue
+                filtered_contours.append(cnt)
             if self.get_image_processing_way() == 1:
-                if len(filtered_contours) != 1: #未捕获目标细胞
-                    self.slot_set_image_processing_way(-1) #结束筛选
-                    finish_state = 0         # 0 代表超过最大帧还没发现目标细胞
-                    self.signal_finishROIProcessing.emit(1, finish_state) #发送完成指令
-                    ROI_para = {}
-                    ROI_para["imageProcessing_way"] = 1 # 代表的是 trapped
-                    ROI_para["ID_add"]              = 0
-                    ROI_para["algorithm_time"]      = 0 #其实不需要    
-                    ROI_para["interval_time"]       = 0 #其实不需要                    
-                    
-                    ROI_para["total_add"]           = 1
-                    ROI_para["miss_add"]            = 1 #没发现细胞 +1
-                    ROI_para["cell_area"]           = 0 # 其实不需要
-                    ROI_para["cell_cX"]             = 0 # 其实不需要
-                    ROI_para["cell_cY"]             = 0 # 其实不需要
-                    roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
-                    ROI_para["roi_frame"]           = roi_frame_8bit
-                    ROI_para["processed_frame"]     = opened_frame
-                    ROI_para["target_frame"]        = self.trappedROI_noneImage #没有图像
-                    ROI_para["processing_state"]    = 0 # 0:miss; 1:ok
-                    if self.missEventVideoSaveModel: #如果开启保存missEvent视频模式
-                        self.signal_saveMissEventVideo.emit(self.currentIndex,self.missEventSavePreFrames)
-                        #发送指令关闭missEvent视频保存
-                        self.signal_closeMissEventVideoSave.emit()
-                    #专属参数
-                    self.signal_processedROIImage_for_view.emit(ROI_para)                            
+                if self.trappedScan_number == 0:
+                    self.trappedScan_number += 1
+                    self.first_TimeStamp = TimeStamp
+                else:
+                    self.trappedScan_number += 1
+
+                if len(filtered_contours) != 1: #当前帧未发现目标细胞
+                    if self.trappedScan_number >= self.max_trappedScan_number:
+                        self.slot_set_image_processing_way(-1) #结束筛选
+                        self.trappedScan_number = 0 #扫描次数归零
+                        finish_state = 0         # 0 代表超过最大帧还没发现目标细胞
+                        self.signal_finishROIProcessing.emit(1, finish_state) #发送完成指令
+                        ROI_para = {}
+                        ROI_para["imageProcessing_way"] = 1 # 代表的是 trapped
+                        ROI_para["ID_add"]              = 0
+                        ROI_para["algorithm_time"]      = 0 #其实不需要
+                        ROI_para["interval_time"]       = (TimeStamp - self.first_TimeStamp)*10  #单位ms
+                        ROI_para["total_add"]           = 1
+                        ROI_para["miss_add"]            = 1 #没发现细胞 +1
+                        ROI_para["cell_area"]           = 0 # 其实不需要
+                        ROI_para["cell_cX"]             = 0 # 其实不需要
+                        ROI_para["cell_cY"]             = 0 # 其实不需要
+                        roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
+                        ROI_para["roi_frame"]           = roi_frame_8bit
+                        ROI_para["processed_frame"]     = opened_frame
+                        ROI_para["target_frame"]        = self.trappedROI_noneImage #没有图像
+                        ROI_para["processing_state"]    = 0 # 0:miss; 1:ok
+                        if self.missEventVideoSaveModel: #如果开启保存missEvent视频模式
+                            self.signal_saveMissEventVideo.emit(self.currentIndex,self.missEventSavePreFrames)
+                            #发送指令关闭missEvent视频保存
+                            self.signal_closeMissEventVideoSave.emit()
+                        self.signal_processedROIImage_for_view.emit(ROI_para)
+                    # 未超过最大帧数，继续等待下一帧
                 else: #获取到了目标细胞
-                    self.slot_set_image_processing_way(-1) #出现目标后不再筛选，逻辑判断在UI线程中
-                    finish_state   = 1  # capture状态的意思，0-> 为发现目标细胞;1->正好目标细胞
-                    self.signal_finishROIProcessing.emit(1, finish_state) #将ROI分析的按钮置灰 #连续筛选的逻辑还没写
+                    self.slot_set_image_processing_way(-1) #出现目标后不再筛选，逻辑判断在单片机线程中
+                    self.trappedScan_number = 0 #扫描次数归零
+                    finish_state   = 1  # capture状态的意思，0-> 未发现目标细胞;1->正好目标细胞
+                    self.signal_finishROIProcessing.emit(1, finish_state)
+                    end_time = time.perf_counter()  # 记录结束时间
+                    algorithm_time = (end_time - self.start_time) * 1e6  # 转换为微秒
                     #发送给UI界面显示ROI的消息
                     ROI_para = {}
                     ROI_para["imageProcessing_way"] = 1             # 代表的是 trapped
-                    ROI_para["ID_add"]              = 0      
-                    
-                    ROI_para["algorithm_time"]      = 0 # 其实不需要
-                    ROI_para["interval_time"]       = 0 # 其实不需要
-
+                    ROI_para["ID_add"]              = 0
+                    ROI_para["algorithm_time"]      = algorithm_time
+                    ROI_para["interval_time"]       = (TimeStamp - self.first_TimeStamp)*10  #单位ms
                     ROI_para["total_add"]           = 1
                     ROI_para["miss_add"]            = 0
-
                     ROI_para["cell_area"]           = area      # 因为只有一个颗粒所以直接用area
                     ROI_para["cell_cX"]             = 0 # 其实不需要
                     ROI_para["cell_cY"]             = 0 # 其实不需要
-
                     roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
                     ROI_para["roi_frame"]           = roi_frame_8bit
                     ROI_para["processed_frame"]     = opened_frame
                     ROI_para["target_frame"]        = cv2.drawContours(roi_frame_8bit.copy(), filtered_contours, -1, (255,255,255), 1)
-                    ROI_para["processing_state"]    = 1 # 0:miss; 1:ok   
+                    ROI_para["processing_state"]    = 1 # 0:miss; 1:ok
                     self.signal_processedROIImage_for_view.emit(ROI_para)
         except Exception as e:
             print(f"图像分析错误trapped_ROI: {str(e)}")
@@ -681,6 +681,7 @@ class ImageProcessor(QObject):
             print(f"图像分析错误release_ROI: {str(e)}")
 
     def particle_detection_for_sort(self,roi_frame,opened_frame,contours,TimeStamp):
+        """不使用了，盲推形式"""
         # capture、sort和collected ROI的细胞应该为悬浮状态
         # 其中capture需要保证ROI中只能有一个细胞，且细胞的X位置必须大于0.6*roi_x，假设ROI为100*50，X坐标必须大于60，这样吸的时候就不会多吸细胞
         # capture的筛选条件是最严格的

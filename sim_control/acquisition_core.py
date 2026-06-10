@@ -272,6 +272,24 @@ def run_single_acquisition(
         _raise_if_cancelled(stop_event)
         # 6c) 激活 SLM 图案或 Running Order。
         slm.activate_prepared_patterns()
+        # 6c-1) best-effort 上报 SLM 激活状态：[HWA h] RO 在 DAQ 拉高 slm_enable
+        #       （EXT_RUN）前预期为 0x54 MHW，真正的 ACT 发生在波形播放期间。
+        #       查询失败只记 warning，不影响采集；旧 fake/adapter 无此方法则跳过。
+        activation_state_reader = getattr(slm, "get_running_order_activation_state", None)
+        if callable(activation_state_reader):
+            try:
+                activation_state = activation_state_reader()
+            except Exception:
+                logger.warning("Failed to query SLM activation state after activation.", exc_info=True)
+            else:
+                on_status(
+                    "slm_activation_state",
+                    {
+                        "task_id": task_id,
+                        "code": activation_state.get("code"),
+                        "name": activation_state.get("name", ""),
+                    },
+                )
         _raise_if_cancelled(stop_event)
         # 6d) 播放 DAQ 波形：USB-6423 输出同步 TTL；播放期间相机/SLM 协同工作。
         try:
