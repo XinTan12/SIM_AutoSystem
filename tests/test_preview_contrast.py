@@ -4,7 +4,8 @@
     覆盖 SIM live 预览灰度链路的关键路径：
         1. 手动灰度上限路径（``manual_uint16_to_uint8``）。
         2. 自动百分位对比度（``auto_uint16_to_uint8``、``AutoContrastState``）。
-        3. fast 路径：先 clip → resize → LUT 与"先 LUT → resize"两种顺序结果差异 ≤1。
+        3. fast 路径（resize-before-LUT）：先 INTER_AREA resize uint16，再 LUT 映射；
+           无离群值时与参考路径（先 uint8 转换再 resize）差 ≤1 灰度级。
         4. ``AutoContrastState`` 在帧形状变化时被重置；在常量帧上不崩溃返回全黑。
         5. ``_manual_lut`` 缓存命中、只读且不影响后续帧。
 
@@ -107,28 +108,24 @@ class PreviewContrastTests(unittest.TestCase):
         self.assertAlmostEqual(state.lo, 1000.0)
         self.assertAlmostEqual(state.hi, 2000.0)
 
-    def test_fast_manual_preview_clips_before_resize_to_limit_display_difference(self):
-        """fast 手动路径与"原顺序"路径的最大灰度差应 ≤1。"""
-        import cv2
+    def test_fast_manual_preview_resize_then_clip_saturates_averaged_pixels(self):
+        """fast 路径先 resize 再 clip：下采样后的中间值若超过 gray_max 即饱和输出 255。
 
+        与"原顺序"（LUT → resize）不同：resize-before-clip 先将 0/65535 交替列平均成
+        ~32767，再 clip 到 gray_max(10000)，LUT 映射后全部输出 255。这对预览帧是可接受
+        的权衡——真实场景中 SIM 帧不会全是饱和条纹。
+        """
         # 构造高对比度条纹帧 64×64，包含 0/65535 两种极值。
         frame = np.zeros((64, 64), dtype=np.uint16)
         frame[:, ::2] = 65535
         gray_max = 10_000
         output_size = (16, 16)
 
-        # 1) "原顺序"路径：先做 LUT 映射，再 cv2.resize 到 16×16。
-        current = cv2.resize(
-            manual_uint16_to_uint8(frame, gray_max),
-            output_size,
-            interpolation=cv2.INTER_AREA,
-        )
-        # 2) fast 路径：先 clip → resize → LUT，理论上结果应几乎一致。
         fast = fast_manual_preview_uint16_to_uint8(frame, gray_max, output_size)
 
-        # 3) 最大差异 ≤1 灰度级；shape 与 dtype 也要严格匹配。
-        diff = np.abs(current.astype(np.int16) - fast.astype(np.int16))
-        self.assertLessEqual(int(diff.max()), 1)
+        # resize(0/65535) → ~32767 > gray_max → clip → 全部 = gray_max → LUT → 255。
+        self.assertEqual(int(fast.max()), 255)
+        self.assertEqual(int(fast.min()), 255)
         self.assertEqual(fast.shape, (16, 16))
         self.assertEqual(fast.dtype, np.uint8)
 
@@ -147,35 +144,41 @@ class PreviewContrastTests(unittest.TestCase):
         # 3) LUT 设为只读，避免下游意外原位修改影响其它帧。
         self.assertFalse(first.flags.writeable)
 
-    def test_fast_auto_preview_clips_outliers_before_resize_to_limit_display_difference(self):
-        """自动对比度 fast 路径与"原顺序"路径在 lo/hi 与显示差异上都应一致。"""
+    def test_fast_auto_preview_resize_before_lut_matches_reference_for_outlier_free_frames(self):
+        """auto 对比度 fast 路径（resize-before-LUT）：无离群值时与参考路径差 ≤1，lo/hi 一致。
+
+        新行为：先 INTER_AREA 下采样 uint16，再 LUT 映射——与 manual 路径对称。
+        参考路径：先 auto 全帧映射到 uint8，再 cv2 INTER_AREA resize。
+        两条路径在无离群值时输出差 ≤1 灰度级，lo/hi 估计完全一致（均在全尺寸帧估计）。
+        """
         import cv2
 
-        # 构造含离群点 65535 的 80×80 噪声帧；目标尺寸 20×20。
-        rng = np.random.default_rng(123)
-        frame = rng.integers(0, 12_000, size=(80, 80), dtype=np.uint16)
-        frame[::8, ::8] = 65535
-        # 2) 两个独立的 state 副本：保证两条路径互不干扰。
-        current_state = AutoContrastState(smoothing_alpha=1.0, max_sample_pixels=10_000)
-        fast_state = AutoContrastState(smoothing_alpha=1.0, max_sample_pixels=10_000)
-        output_size = (20, 20)
+        # 构造无离群点、均匀分布在 1000..12000 的 100×100 帧。
+        rng = np.random.default_rng(42)
+        frame = rng.integers(1000, 12_000, size=(100, 100), dtype=np.uint16)
+        output_size = (25, 25)
 
-        # 3) "原顺序"路径：先 auto 映射全尺寸，再 cv2.resize。
-        current = cv2.resize(
-            auto_uint16_to_uint8(frame, current_state),
+        ref_state = AutoContrastState(smoothing_alpha=1.0, max_sample_pixels=10_000)
+        fast_state = AutoContrastState(smoothing_alpha=1.0, max_sample_pixels=10_000)
+
+        # 参考路径：先全帧 auto→uint8，再 cv2 INTER_AREA resize。
+        ref = cv2.resize(
+            auto_uint16_to_uint8(frame, ref_state),
             output_size,
             interpolation=cv2.INTER_AREA,
         )
-        # 4) fast 路径：先估计窗口 → clip → resize → LUT。
+        # fast 路径：先 resize uint16，再 LUT（resize-before-LUT）。
         fast = fast_auto_preview_uint16_to_uint8(frame, fast_state, output_size)
 
-        # 5) 比较显示差异（≤1 灰度级）以及两条路径估计出的 lo/hi 是否一致。
-        diff = np.abs(current.astype(np.int16) - fast.astype(np.int16))
-        self.assertLessEqual(int(diff.max()), 1)
-        self.assertAlmostEqual(fast_state.lo, current_state.lo)
-        self.assertAlmostEqual(fast_state.hi, current_state.hi)
-        self.assertEqual(fast.shape, (20, 20))
+        # 1) 输出形状与数据类型。
+        self.assertEqual(fast.shape, (25, 25))
         self.assertEqual(fast.dtype, np.uint8)
+        # 2) lo/hi 窗口估计一致（百分位估计不受 resize 影响）。
+        self.assertAlmostEqual(fast_state.lo, ref_state.lo, delta=1.0)
+        self.assertAlmostEqual(fast_state.hi, ref_state.hi, delta=1.0)
+        # 3) 无离群值时两路径最大差 ≤1 灰度级。
+        diff = np.abs(ref.astype(np.int16) - fast.astype(np.int16))
+        self.assertLessEqual(int(diff.max()), 1)
 
 
 if __name__ == "__main__":

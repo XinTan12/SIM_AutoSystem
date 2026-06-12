@@ -184,9 +184,90 @@ class NIDaqAdapterPulseTests(unittest.TestCase):
         # 3) ``pulse_line`` 现复用 ``set_line``：三次静态写各开一个任务，
         #    每次通道注册的 line_grouping 都必须是 CHAN_FOR_ALL_LINES。
         self.assertEqual(added_channels, [("Dev2/port0", "all_lines")] * 3)
-        # 4) 写顺序不变：起点 0 → 1<<3=8 → 终点 0；sleep 持续 0.1s。
+        # 4) 写顺序不变：起点 0 → 1<<3=8 → 终点 0；不传 stop_event 时保持单次
+        #    sleep(0.1) 原行为（_interruptible_sleep 的退化路径）。
         self.assertEqual(writes, [(0, True), (8, True), (0, True)])
         mocked_sleep.assert_called_once_with(0.1)
+
+    def test_pulse_line_stop_event_set_during_sleep_ends_pulse_early(self):
+        """sleep 分片期间 stop_event 置位 → 不再继续后续分片，finally 仍写 0 收尾。"""
+        import threading
+
+        from sim_control import adapters
+
+        writes = []
+
+        class FakeDoChannels:
+            def add_do_chan(self, channel_name, line_grouping=None):
+                return None
+
+        class FakeTask:
+            def __init__(self):
+                self.do_channels = FakeDoChannels()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def write(self, value, auto_start=True):
+                writes.append((value, auto_start))
+
+        fake_nidaqmx = type("FakeNidaqmx", (), {"Task": FakeTask})()
+        stop_event = threading.Event()
+
+        def _set_event_on_first_sleep(_duration):
+            stop_event.set()
+
+        with mock.patch.object(adapters, "nidaqmx", fake_nidaqmx), mock.patch.object(
+            adapters, "LineGrouping", type("LG", (), {"CHAN_FOR_ALL_LINES": "all_lines"})
+        ), mock.patch.object(adapters.time, "sleep", side_effect=_set_event_on_first_sleep) as mocked_sleep:
+            adapter = adapters.NIDaqAdapter()
+            # 0.2s 脉冲按 0.05s 分片应有 4 次 sleep；第 1 次分片后置位 → 只 sleep 1 次。
+            adapter.pulse_line("Dev2", 3, duration_s=0.2, stop_event=stop_event)
+
+        mocked_sleep.assert_called_once_with(0.05)
+        # 脉冲形状完整：0 → 8 → 0（取消时 finally 拉低，不遗留高电平）。
+        self.assertEqual(writes, [(0, True), (8, True), (0, True)])
+
+    def test_pulse_line_preset_stop_event_skips_sleep_entirely(self):
+        """stop_event 预先置位 → 完全不 sleep；写序列仍为 0 → 掩码 → 0。"""
+        import threading
+
+        from sim_control import adapters
+
+        writes = []
+
+        class FakeDoChannels:
+            def add_do_chan(self, channel_name, line_grouping=None):
+                return None
+
+        class FakeTask:
+            def __init__(self):
+                self.do_channels = FakeDoChannels()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def write(self, value, auto_start=True):
+                writes.append((value, auto_start))
+
+        fake_nidaqmx = type("FakeNidaqmx", (), {"Task": FakeTask})()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with mock.patch.object(adapters, "nidaqmx", fake_nidaqmx), mock.patch.object(
+            adapters, "LineGrouping", type("LG", (), {"CHAN_FOR_ALL_LINES": "all_lines"})
+        ), mock.patch.object(adapters.time, "sleep", autospec=True) as mocked_sleep:
+            adapter = adapters.NIDaqAdapter()
+            adapter.pulse_line("Dev2", 3, duration_s=0.2, stop_event=stop_event)
+
+        mocked_sleep.assert_not_called()
+        self.assertEqual(writes, [(0, True), (8, True), (0, True)])
 
 
 class NIDaqAdapterSetLineTests(unittest.TestCase):
@@ -248,6 +329,23 @@ class NIDaqAdapterSetLineTests(unittest.TestCase):
 
         self.assertEqual(adapter.set_line_calls, [("Dev2", 0, True), ("Dev2", 0, False)])
         self.assertEqual(adapter.set_all_low_calls, 1)
+
+    def test_simulated_pulse_line_preset_stop_event_returns_immediately(self):
+        """仿真 pulse_line：stop_event 预先置位时立即返回，不再模拟 100 ms 脉冲时长。"""
+        import threading
+        import time
+
+        from sim_control.sim_adapters import SimulatedDaqAdapter
+
+        adapter = SimulatedDaqAdapter()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        started_at = time.perf_counter()
+        adapter.pulse_line("Dev2", 6, duration_s=0.1, stop_event=stop_event)
+        elapsed_s = time.perf_counter() - started_at
+
+        self.assertLess(elapsed_s, 0.05)
 
 
 class SlmActivationTimingTestFlowTests(unittest.TestCase):

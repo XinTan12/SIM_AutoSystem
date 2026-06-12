@@ -335,6 +335,140 @@ class FusionBtCameraAdapterTests(unittest.TestCase):
         self.assertEqual(stack.shape, (3, 2, 2))
         self.assertEqual([int(frame[0, 0]) for frame in stack], [0, 1, 2])
         self.assertEqual(len(timestamps), 3)
+        # FakeCamera 只有 buf_getframedata（无 buf_getframe）→ 走回退路径，无硬件时间戳。
+        self.assertIsNone(adapter.get_last_hardware_timestamps())
+
+    def test_read_frame_sequence_collects_dcam_hardware_timestamps_via_buf_getframe(self):
+        """绑定支持 buf_getframe 时：像素与 DCAMBUF_FRAME.timestamp 一次取出；
+
+        软件消费时刻（返回值第二项）语义不变，硬件时间戳走 get_last_hardware_timestamps()
+        新字段（审查条目 #24：新增而非替换）。
+        """
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.frames = [np.full((2, 2), index, dtype=np.uint16) for index in range(3)]
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=3)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                return False
+
+            def buf_getframe(self, index):
+                frame_struct = SimpleNamespace(
+                    timestamp=SimpleNamespace(sec=100 + index, microsec=250_000),
+                    framestamp=index,
+                )
+                return (frame_struct, self.frames[index])
+
+            def buf_getframedata(self, index):
+                raise AssertionError("buf_getframe available; fallback path should not be used")
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        adapter = FusionBtCameraAdapter()
+        adapter._armed = True
+        adapter._camera_config = CameraConfig(roi_width=2, roi_height=2, exposure_us=500_000)
+        adapter._dcam_camera = FakeCamera()
+
+        stack, timestamps = adapter.read_frame_sequence(
+            frame_count=3,
+            pattern_files=[""] * 3,
+            laser_wavelength_nm=488,
+        )
+
+        self.assertEqual(stack.shape, (3, 2, 2))
+        self.assertEqual([int(frame[0, 0]) for frame in stack], [0, 1, 2])
+        # 1) 软件时间戳合同不变：长度 = 帧数。
+        self.assertEqual(len(timestamps), 3)
+        # 2) 硬件时间戳 = sec + microsec×1e-6。
+        self.assertEqual(adapter.get_last_hardware_timestamps(), [100.25, 101.25, 102.25])
+        # 3) getter 返回副本：调用方修改不影响 adapter 内部状态。
+        adapter.get_last_hardware_timestamps().append(999.0)
+        self.assertEqual(len(adapter.get_last_hardware_timestamps()), 3)
+
+    def test_read_frame_sequence_missing_timestamp_field_reports_none_not_partial_list(self):
+        """个别帧缺 timestamp 字段时整组置 None，不返回残缺硬件时间戳列表。"""
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.frames = [np.full((2, 2), index, dtype=np.uint16) for index in range(2)]
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=2)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                return False
+
+            def buf_getframe(self, index):
+                # 第 2 帧没有 timestamp 字段，模拟旧固件/驱动。
+                frame_struct = (
+                    SimpleNamespace(timestamp=SimpleNamespace(sec=1, microsec=0))
+                    if index == 0
+                    else SimpleNamespace()
+                )
+                return (frame_struct, self.frames[index])
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        adapter = FusionBtCameraAdapter()
+        adapter._armed = True
+        adapter._camera_config = CameraConfig(roi_width=2, roi_height=2, exposure_us=500_000)
+        adapter._dcam_camera = FakeCamera()
+
+        stack, timestamps = adapter.read_frame_sequence(
+            frame_count=2,
+            pattern_files=[""] * 2,
+            laser_wavelength_nm=488,
+        )
+
+        self.assertEqual(stack.shape, (2, 2, 2))
+        self.assertEqual(len(timestamps), 2)
+        self.assertIsNone(adapter.get_last_hardware_timestamps())
+
+    def test_read_frame_sequence_all_zero_timestamps_report_none_not_epoch_zero(self):
+        """固件不支持 timestamp 时字段留 0 不抛异常 → 整组全 0 应视为 None，不输出 epoch-0 假值。"""
+        from sim_control.adapters import FusionBtCameraAdapter
+        from sim_control.models import CameraConfig
+
+        class FakeCamera:
+            def __init__(self):
+                self.frames = [np.full((2, 2), index, dtype=np.uint16) for index in range(2)]
+
+            def cap_transferinfo(self):
+                return SimpleNamespace(nFrameCount=2)
+
+            def wait_capevent_frameready(self, timeout_ms):
+                return False
+
+            def buf_getframe(self, index):
+                frame_struct = SimpleNamespace(timestamp=SimpleNamespace(sec=0, microsec=0))
+                return (frame_struct, self.frames[index])
+
+            def lasterr(self):
+                return SimpleNamespace(name="TIMEOUT")
+
+        adapter = FusionBtCameraAdapter()
+        adapter._armed = True
+        adapter._camera_config = CameraConfig(roi_width=2, roi_height=2, exposure_us=500_000)
+        adapter._dcam_camera = FakeCamera()
+
+        stack, timestamps = adapter.read_frame_sequence(
+            frame_count=2,
+            pattern_files=[""] * 2,
+            laser_wavelength_nm=488,
+        )
+
+        self.assertEqual(stack.shape, (2, 2, 2))
+        self.assertEqual(len(timestamps), 2)
+        self.assertIsNone(adapter.get_last_hardware_timestamps())
 
     def test_read_frame_sequence_timeout_reports_partial_capture_count(self):
         from sim_control.adapters import FusionBtCameraAdapter, HardwareError

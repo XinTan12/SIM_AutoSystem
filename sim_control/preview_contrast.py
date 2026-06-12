@@ -112,16 +112,16 @@ def fast_manual_preview_uint16_to_uint8(frame: Any, gray_max: int | float, outpu
     if frame_array.size == 0:
         return np.zeros(_output_shape(output_size), dtype=np.uint8)
 
-    # 2) 把 gray_max 夹到 ≥1 并对整帧做 clip：当 gray_max≥65535 且本身就是 uint16 时跳过 clip 复制以省一次拷贝。
+    # 2) 计算 gray_max 参数。
     gray_max_value = max(1.0, float(gray_max))
     high_clip = int(math.ceil(min(65535.0, gray_max_value)))
-    if high_clip >= 65535 and frame_array.dtype == np.uint16:
-        clipped = frame_array
-    else:
-        clipped = np.clip(frame_array, 0, high_clip).astype(np.uint16, copy=False)
-    # 3) 缩放到显示尺寸（cv2 INTER_AREA 缩小 / INTER_LINEAR 放大）。
-    resized = _resize_uint16_for_preview(clipped, output_size)
-    # 4) 用缓存的 LUT 把 uint16 直接索引为 uint8；LUT 形状 (65536,) 与 resized dtype 匹配。
+    # 3) 先 resize 到显示尺寸（大图→小图；后续操作均在小图上进行，节省 clip/LUT 开销）。
+    src = frame_array if frame_array.dtype == np.uint16 else frame_array.astype(np.uint16, copy=False)
+    resized = _resize_uint16_for_preview(src, output_size)
+    # 4) 仅在 gray_max 低于满量程时才对小图 clip（in-place 无额外分配）。
+    if high_clip < 65535:
+        np.clip(resized, 0, high_clip, out=resized)
+    # 5) 用缓存的 LUT 把 uint16 直接索引为 uint8；LUT 形状 (65536,) 与 resized dtype 匹配。
     lut = _manual_lut(gray_max_value)
     return lut[resized]
 
@@ -165,11 +165,11 @@ def fast_auto_preview_uint16_to_uint8(frame: Any, state: AutoContrastState, outp
     if state.hi <= state.lo:
         return np.zeros(_output_shape(output_size), dtype=np.uint8)
 
-    # 6) 按 lo/hi 做 clip，再 resize 与 LUT 映射；与 manual 路径共用 resize/LUT 助手函数。
-    low_clip = int(math.floor(max(0.0, float(state.lo))))
-    high_clip = int(math.ceil(min(65535.0, float(state.hi))))
-    clipped = np.clip(frame_array, low_clip, high_clip).astype(np.uint16, copy=False)
-    resized = _resize_uint16_for_preview(clipped, output_size)
+    # 6) 先 resize（INTER_AREA 在 uint16 上执行），再 LUT 映射；LUT 本身处理 lo/hi 边界夹紧，
+    #    与 manual 路径保持一致（resize-before-LUT）。
+    resized = _resize_uint16_for_preview(
+        np.asarray(frame_array).astype(np.uint16, copy=False), output_size
+    )
     lut = _window_lut(float(state.lo), float(state.hi))
     return lut[resized]
 

@@ -3,8 +3,9 @@
 这个文件承载旧版 CellSorting GUI 的大部分业务槽函数，同时把 sim_control 的配置、预览、SLM Running Order 和正式 SIM9 采集接入到同一个主窗口。它通过 PyQt5 信号槽连接相机线程、MCU 触发线程、ROI 显示和 SIM controller；本次只补结构注释，不改历史控制逻辑。
 """
 
+import copy
 import sys
-from PyQt5.QtCore import QEvent, QMetaObject, QThread, Qt, pyqtSlot,pyqtSignal,QTimer
+from PyQt5.QtCore import QEvent, QMetaObject, QObject, QThread, Qt, pyqtSlot,pyqtSignal,QTimer
 from PyQt5.QtGui import QImage, QPixmap
 import PyQt5.QtWidgets as qw
 import CellSorting_ui
@@ -16,6 +17,7 @@ import FastCameraThread
 import cv2
 import math
 import json
+import logging
 from datetime import datetime
 import os
 import time
@@ -45,6 +47,7 @@ from sim_control.pipeline import ReconstructionWorker
 from sim_control.preview import SimPreviewController
 from sim_control.preview_contrast import AutoContrastState, fast_preview_uint16_to_uint8
 from sim_control.summary import build_sim_settings_summary
+from sim_control.z_scan_timing_history import DEFAULT_Z_SCAN_TIMING_HISTORY_PATH, load_z_scan_timing_records
 from sim_control.sim_camera_presets import (
     DEFAULT_SIM_CAMERA_SIZE,
     SIM_CAMERA_SIZE_PRESETS,
@@ -57,6 +60,8 @@ from sim_control.sim_camera_presets import (
     sim_camera_roi_origin_bounds,
     size_from_sim_camera_label,
 )
+
+logger = logging.getLogger(__name__)
 
 # SIM 集成区使用毫秒级 UI 控件，进入 sim_control 前统一转换为微秒级配置。
 SIM_EXPOSURE_MIN_MS = 1
@@ -234,6 +239,33 @@ class SnappingExposureSpinBox(qw.QSpinBox):
         return value
 
 
+class _ConnectWorker(QObject):
+    """One-shot hardware-connect worker; runs ``fn()`` in a QThread and reports back.
+
+    Signals are emitted in order: ``signal_success`` or ``signal_error``, then ``signal_finished``.
+    The caller is responsible for calling ``thread.quit()`` and ``thread.wait()`` in the
+    ``signal_finished`` slot.
+    """
+
+    signal_success = pyqtSignal(object)
+    signal_error = pyqtSignal(str)
+    signal_finished = pyqtSignal()
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            result = self._fn()
+            self.signal_success.emit(result)
+        except Exception as exc:
+            self.signal_error.emit(str(exc))
+        finally:
+            self.signal_finished.emit()
+
+
 # MainWindow 同时承载历史微流控界面和新增 SIM 控制状态，是两个子系统的集成边界。
 class MainWindow(qw.QWidget):
     
@@ -288,7 +320,6 @@ class MainWindow(qw.QWidget):
         self.sim_preview_stop_in_progress = False
         self.sim_acquisition_in_progress = False
         self.sim_resume_preview_after_acquisition = False
-        self.sim_last_acquisition_batch = None
         self.sim_last_reconstruction_result = None
         self.sim_recon_thread = None
         self.sim_recon_worker = None
@@ -296,6 +327,8 @@ class MainWindow(qw.QWidget):
         self.sim_last_preview_frame = None
         self.sim_last_preview_sequence = -1
         self.sim_auto_contrast_state = AutoContrastState()
+        self.sim_zscan_timing_records_cache = None
+        self.sim_zscan_timing_history_signature = None
         self.sim_camera_sensor_size = DEFAULT_SIM_CAMERA_SIZE
         self.sim_camera_size_presets = SIM_CAMERA_SIZE_PRESETS
         self.sim_camera_roi_step_px = SIM_CAMERA_ROI_STEP_PX
@@ -813,10 +846,37 @@ class MainWindow(qw.QWidget):
         if callable(refresh_slm):
             refresh_slm()
 
+    def get_sim_zscan_timing_records(self):
+        # 摘要刷新调用点多且都在 GUI 线程；历史 JSONL 只在 mtime/size 变化（设置弹窗
+        # 测试追加、外部进程写入）时重读，其余时候复用内存缓存，避免每次全量读盘。
+        history_path = DEFAULT_Z_SCAN_TIMING_HISTORY_PATH
+        try:
+            stat_result = history_path.stat()
+            signature = (stat_result.st_mtime_ns, stat_result.st_size)
+        except OSError:
+            signature = ("missing",)
+        cached_records = getattr(self, "sim_zscan_timing_records_cache", None)
+        if cached_records is None or signature != getattr(self, "sim_zscan_timing_history_signature", None):
+            try:
+                cached_records = load_z_scan_timing_records(history_path)
+            except OSError:
+                # 文件被锁定/权限异常时退回旧缓存，保证摘要刷新不因历史文件不可读而失败。
+                logger.debug("Failed to read z-scan timing history.", exc_info=True)
+                cached_records = [] if cached_records is None else cached_records
+            self.sim_zscan_timing_records_cache = cached_records
+            self.sim_zscan_timing_history_signature = signature
+        return cached_records
+
     def refresh_sim_settings_summary(self):
         sim_config = app_config_from_dict(app_config_to_dict(self.sim_app_config))
         runtime_timing = dict(getattr(self, "sim_runtime_timing_snapshot", {}) or {})
-        self.ui.pte_simSummary.setPlainText(build_sim_settings_summary(sim_config, runtime_timing=runtime_timing))
+        self.ui.pte_simSummary.setPlainText(
+            build_sim_settings_summary(
+                sim_config,
+                runtime_timing=runtime_timing,
+                z_scan_timing_records=MainWindow.get_sim_zscan_timing_records(self),
+            )
+        )
 
     def current_sim_camera_size_presets(self):
         return tuple(getattr(self, "sim_camera_size_presets", SIM_CAMERA_SIZE_PRESETS) or SIM_CAMERA_SIZE_PRESETS)
@@ -1191,16 +1251,49 @@ class MainWindow(qw.QWidget):
 
         selected_slm = self.sim_available_slms[selected_combo_index]
         device_path = str(selected_slm.get("path") or selected_slm.get("id") or "")
-        try:
-            self.sim_acquisition_controller.connect_slm(device_path=device_path or None)
+        wavelength = self.sim_app_config.selected_laser_nm
+        exposure_us = self.sim_app_config.camera.exposure_us
+        controller = self.sim_acquisition_controller
+
+        def _slm_connect_fn():
+            controller.connect_slm(device_path=device_path or None)
+            return controller.select_running_order_for_task(wavelength, exposure_us)
+
+        if getattr(self, "_slm_connect_thread", None) is not None:
+            return
+        self.ui.btn_SLM_connection.setEnabled(False)
+        _slm_thread = QThread()
+        _slm_worker = _ConnectWorker(_slm_connect_fn)
+        _slm_worker.moveToThread(_slm_thread)
+        # Keep strong references so the GC cannot collect live QThread/QObject.
+        self._slm_connect_thread = _slm_thread
+        self._slm_connect_worker = _slm_worker
+
+        def _on_slm_success(result):
             self.sim_slm_connected = True
-            self.select_current_sim_running_order(save_to_disk=True)
-        except Exception as e:
+            self.sim_app_config.selected_running_order = str(result.get("running_order_name", ""))
+            save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+            self.refresh_sim_settings_summary()
+            self.update_sim_slm_controls()
+
+        def _on_slm_error(msg):
             self.sim_slm_connected = False
-            print(f"SIM SLM connect failed: {str(e)}")
-            qw.QMessageBox.warning(self, "SIM SLM", str(e))
-        finally:
+            print(f"SIM SLM connect failed: {msg}")
+            qw.QMessageBox.warning(self, "SIM SLM", msg)
+
+        def _on_slm_finished():
+            _slm_thread.quit()
+            _slm_thread.wait()
+            self._slm_connect_thread = None
+            self._slm_connect_worker = None
+            self.ui.btn_SLM_connection.setEnabled(True)
             self.refresh_sim_slm_devices()
+
+        _slm_worker.signal_success.connect(_on_slm_success)
+        _slm_worker.signal_error.connect(_on_slm_error)
+        _slm_worker.signal_finished.connect(_on_slm_finished)
+        _slm_thread.started.connect(_slm_worker.run)
+        _slm_thread.start()
 
     def select_current_sim_running_order(self, save_to_disk=False):
         if not getattr(self, "sim_slm_connected", False):
@@ -1420,9 +1513,13 @@ class MainWindow(qw.QWidget):
             self.ui.lbl_z_position_value.setGeometry(142, 486, 90, 24)
             self.ui.lbl_z_position_value.show()
 
-    def poll_sim_stage_position(self):
+    def poll_sim_stage_position(self, force=False):
         label = getattr(self.ui, "lbl_z_position_value", None)
         if label is None:
+            return
+        # 采集期间跳过定时器轮询，避免 GUI 线程与采集 worker 并发访问 Ti2 SDK；
+        # z-scan 完成等明确时机用 force=True 主动刷新（adapter 内已有锁串行化）。
+        if getattr(self, "sim_acquisition_in_progress", False) and not force:
             return
         controller = getattr(self, "sim_acquisition_controller", None)
         if controller is None:
@@ -1432,6 +1529,7 @@ class MainWindow(qw.QWidget):
             z_um = float(controller.get_stage_position_um())
             label.setText(f"{z_um:.2f} um")
         except Exception:
+            logger.debug("SIM stage position poll failed.", exc_info=True)
             label.setText("-- um")
 
     def set_sim_runtime_led_state(self, led, state):
@@ -1666,7 +1764,6 @@ class MainWindow(qw.QWidget):
         self.sim_acquisition_in_progress = True
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(False)
-        self.sim_last_acquisition_batch = None
         self.sim_current_task_id = ""
         try:
             app_config_snapshot = app_config_from_dict(app_config_to_dict(self.sim_app_config))
@@ -1839,7 +1936,7 @@ class MainWindow(qw.QWidget):
 
     def slot_handle_sim_z_scan_complete(self, best_z_um, focus_curve):
         print(f"SIM z-scan complete: best_z={float(best_z_um):.3f} um, points={len(focus_curve or [])}")
-        self.poll_sim_stage_position()
+        self.poll_sim_stage_position(force=True)
 
     def slot_handle_sim_acquisition_ready(self, payload):
         self.sim_acquisition_in_progress = False
@@ -2697,24 +2794,42 @@ class MainWindow(qw.QWidget):
         self.sim_app_config.camera.device_index = int(selected_camera.get("index", 0))
         self.sim_app_config.camera.device_label = str(selected_camera.get("display", ""))
         self.sync_sim_camera_config_from_ui(save_to_disk=False)
+        device_index = self.sim_app_config.camera.device_index
+        device_label = self.sim_app_config.camera.device_label
+        camera_config_snap = copy.copy(self.sim_app_config.camera)
+        controller = self.sim_acquisition_controller
+        config_path = self.sim_app_config.config_path
 
-        try:
-            connection_info = self.sim_acquisition_controller.connect_camera(
-                device_index=self.sim_app_config.camera.device_index,
-                device_label=self.sim_app_config.camera.device_label,
+        def _cam_connect_fn():
+            connection_info = controller.connect_camera(
+                device_index=device_index,
+                device_label=device_label,
             )
-            camera_result = self.sim_acquisition_controller.apply_camera_config(self.sim_app_config.camera) or {}
+            camera_result = controller.apply_camera_config(camera_config_snap) or {}
             if not isinstance(camera_result, dict):
                 camera_result = {}
             supported_bit_depths = camera_result.get("supported_bit_depths")
             if not supported_bit_depths and isinstance(connection_info, dict):
                 supported_bit_depths = connection_info.get("supported_bit_depths")
             runtime_payload = {
-                "camera_config": dict(getattr(self.sim_app_config.camera, "__dict__", {})),
+                "camera_config": dict(getattr(camera_config_snap, "__dict__", {})),
                 **dict(camera_result),
             }
             if supported_bit_depths and "supported_bit_depths" not in runtime_payload:
                 runtime_payload["supported_bit_depths"] = supported_bit_depths
+            return runtime_payload
+
+        if getattr(self, "_cam_connect_thread", None) is not None:
+            return
+        self.ui.btn_sCMOS_connection.setEnabled(False)
+        _cam_thread = QThread()
+        _cam_worker = _ConnectWorker(_cam_connect_fn)
+        _cam_worker.moveToThread(_cam_thread)
+        # Keep strong references so the GC cannot collect live QThread/QObject.
+        self._cam_connect_thread = _cam_thread
+        self._cam_connect_worker = _cam_worker
+
+        def _on_cam_success(runtime_payload):
             MainWindow.update_sim_runtime_timing_from_payload(self, runtime_payload)
             if {
                 "applied_roi",
@@ -2723,23 +2838,34 @@ class MainWindow(qw.QWidget):
                 "roi_step_px",
                 "roi_size_presets",
             }.intersection(runtime_payload):
-                save_app_config(self.sim_app_config, self.sim_app_config.config_path)
-        except Exception as e:
+                save_app_config(self.sim_app_config, config_path)
+            self.sim_camera_connected = True
+            self.set_sim_camera_controls_enabled(True)
+
+        def _on_cam_error(msg):
             try:
-                self.sim_acquisition_controller.disconnect_camera()
+                controller.disconnect_camera()
             except Exception as cleanup_error:
                 print(f"SIM camera cleanup after connection failure failed: {str(cleanup_error)}")
-            print(f"SIM camera connection failed: {str(e)}")
-            qw.QMessageBox.warning(self, "SIM Camera", str(e))
+            print(f"SIM camera connection failed: {msg}")
+            qw.QMessageBox.warning(self, "SIM Camera", msg)
             self.sim_camera_connected = False
             self.sim_preview_requested = False
             self.set_sim_camera_controls_enabled(False)
-            self.update_sim_camera_action_buttons()
-            return
 
-        self.sim_camera_connected = True
-        self.set_sim_camera_controls_enabled(True)
-        self.update_sim_camera_action_buttons()
+        def _on_cam_finished():
+            _cam_thread.quit()
+            _cam_thread.wait()
+            self._cam_connect_thread = None
+            self._cam_connect_worker = None
+            self.ui.btn_sCMOS_connection.setEnabled(True)
+            self.update_sim_camera_action_buttons()
+
+        _cam_worker.signal_success.connect(_on_cam_success)
+        _cam_worker.signal_error.connect(_on_cam_error)
+        _cam_worker.signal_finished.connect(_on_cam_finished)
+        _cam_thread.started.connect(_cam_worker.run)
+        _cam_thread.start()
 
     def connection_camera_function(self):
         """连接选中的相机"""
@@ -3694,7 +3820,7 @@ class MainWindow(qw.QWidget):
             self.ui.btn_rinseChannelRelease.setEnabled(True)
             self.ui.btn_rinseChannelFunction.setEnabled(True)
 
-    def _render_sim_preview_frame(self, frame, cache_frame=True):
+    def _render_sim_preview_frame(self, frame, cache_frame=True, copy_cached_frame=True):
         if frame is None:
             return
         original_height, original_width = frame.shape[:2]
@@ -3718,7 +3844,9 @@ class MainWindow(qw.QWidget):
         self.ui.lb_sCMOS_cameraView.setPixmap(QPixmap.fromImage(q_img.copy()))
         self.ui.lb_sCMOS_cameraView.setAlignment(Qt.AlignCenter)
         if cache_frame:
-            self.sim_last_preview_frame = frame.copy()
+            # resize 重绘缓存：SIM 轮询路径的快照帧每帧独立分配（latest-frame-wins
+            # 取走即清空），存引用即可；王波相机线程路径缓冲生命周期未确认，维持 copy 防御。
+            self.sim_last_preview_frame = frame.copy() if copy_cached_frame else frame
 
     def _clear_sim_preview_display(self):
         label = self.ui.lb_sCMOS_cameraView
@@ -3745,7 +3873,7 @@ class MainWindow(qw.QWidget):
         if int(snapshot.sequence) <= int(getattr(self, "sim_last_preview_sequence", -1)):
             return
         try:
-            self._render_sim_preview_frame(snapshot.frame)
+            self._render_sim_preview_frame(snapshot.frame, copy_cached_frame=False)
         except Exception as e:
             print(f"SIM preview display error: {str(e)}")
             return

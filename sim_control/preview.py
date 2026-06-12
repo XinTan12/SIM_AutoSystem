@@ -33,7 +33,7 @@ import threading
 import time
 import traceback
 
-from PyQt5.QtCore import QCoreApplication, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from .adapters import FusionBtCameraAdapter, HardwareError
 from .models import CameraConfig
@@ -70,7 +70,7 @@ class SimPreviewWorker(QObject):
     # 错误广播：worker 捕获异常后把堆栈文本一次性发回 GUI。
     signal_error = pyqtSignal(str)
 
-    def __init__(self, gui_preview_fps_limit: int = 30) -> None:
+    def __init__(self) -> None:
         # 1) 调父类构造让 QObject 信号系统就绪。
         super().__init__()
         # 2) ``threading.Event`` 比 pyqtSignal 更适合做"快速取消标志"，因为 worker
@@ -84,14 +84,30 @@ class SimPreviewWorker(QObject):
         self._snapshot_lock = threading.Lock()
         self._latest_snapshot: PreviewFrameSnapshot | None = None
         self._frame_sequence = 0
+        # 5) ``_stopped_event``：worker 循环真正退出（slot_start 的 finally 跑完）后置位；
+        #    controller 的 ``stop(wait=True)`` 直接在该 Event 上等待，不再泵 Qt 事件循环。
+        self._stopped_event = threading.Event()
+        # 6) ``_generation``：预览代数。controller 每次 start 前递增并经 prepare_for_start
+        #    写入；worker 把它盖在状态 payload 上，controller 据此丢弃"上一代"迟到的
+        #    preview_stopped，避免它把新一代的 active 状态错误清零。
+        self._generation = 0
 
-    def prepare_for_start(self) -> None:
+    def prepare_for_start(self, generation: int = 0) -> None:
         """把内部状态恢复到"未启动"基线，供 controller 在每次重启前调用。"""
         # 清取消标志 + 清最新帧 + 重置帧序号；保证下一次启动从 0 开始计数。
+        # ``generation`` 在 GUI 线程写入、worker 线程读取：本调用发生在 start 信号
+        # 投递之前，且上一代 worker 已退出（stop(wait=True) 或收到 stopped 信号后
+        # 才允许重启），不存在并发写读。
+        self._generation = int(generation)
         self._stop_requested.clear()
+        self._stopped_event.clear()
         with self._snapshot_lock:
             self._latest_snapshot = None
             self._frame_sequence = 0
+
+    def wait_until_stopped(self, timeout_s: float) -> bool:
+        """阻塞等待预览循环退出；返回是否在超时内退出。线程安全，不进 Qt 事件循环。"""
+        return self._stopped_event.wait(timeout_s)
 
     def request_stop(self) -> None:
         """从任意线程请求停止预览循环；线程安全。"""
@@ -139,6 +155,9 @@ class SimPreviewWorker(QObject):
         self._camera = payload["camera"]
         self._config = payload["config"]
         self._timeout_ms = int(payload.get("timeout_ms", 100))
+        # 1b) 入口处把当前代数捕获成局部变量：本轮 started/stopped 两个信号必须
+        #     盖同一代数戳，即便极端情况下 _generation 字段中途被新一轮改写。
+        generation = self._generation
         # 2) FPS 估算的累计字段；每秒重置一次。
         frame_counter = 0
         last_fps_at = time.perf_counter()
@@ -151,7 +170,10 @@ class SimPreviewWorker(QObject):
             if self._stop_requested.is_set():
                 return
             # 4) 广播"预览已启动"，GUI 据此切换按钮可用状态。
-            self.signal_status_changed.emit("preview_started", {"camera_config": self._config.__dict__})
+            self.signal_status_changed.emit(
+                "preview_started",
+                {"camera_config": self._config.__dict__, "generation": generation},
+            )
             # 5) 主循环：持续读帧；HardwareError 在 preview 正常停止时被吞掉。
             while not self._stop_requested.is_set():
                 try:
@@ -188,7 +210,10 @@ class SimPreviewWorker(QObject):
             # 11) 清最新快照并广播"预览已停止"，让 GUI 进入空闲态。
             with self._snapshot_lock:
                 self._latest_snapshot = None
-            self.signal_status_changed.emit("preview_stopped", {})
+            self.signal_status_changed.emit("preview_stopped", {"generation": generation})
+            # 12) 最后置位 stopped event（先 emit 后 set：保证等待方醒来时 stopped
+            #     信号已经在 Qt 队列里，不会丢广播）。
+            self._stopped_event.set()
 
     @pyqtSlot()
     def slot_stop(self) -> None:
@@ -224,12 +249,12 @@ class SimPreviewController(QObject):
         self.frame_poll_interval_ms = max(1, int(round(1000.0 / float(max(1, int(gui_preview_fps_limit))))))
         # 3) 创建独立 QThread + worker，把 worker 移过去；此后 worker 的 slot 都在工作线程执行。
         self._thread = QThread(self)
-        self._worker = SimPreviewWorker(gui_preview_fps_limit=gui_preview_fps_limit)
+        self._worker = SimPreviewWorker()
         self._worker.moveToThread(self._thread)
         # 4) 连接信号：worker → controller 的 ``_handle_worker_status``（用于本地状态机），
-        #    再把 status 与 error 透传到外部。
+        #    状态信号只连到 ``_handle_worker_status``，由它过滤"上一代"迟到的
+        #    preview_stopped 后再对外转发（见 _handle_worker_status 注释）。
         self._worker.signal_status_changed.connect(self._handle_worker_status)
-        self._worker.signal_status_changed.connect(self.signal_status_changed)
         self._worker.signal_error.connect(self.signal_error)
         self.signal_start_worker.connect(self._worker.slot_start)
         self.signal_stop_worker.connect(self._worker.slot_stop)
@@ -238,6 +263,8 @@ class SimPreviewController(QObject):
         # 6) 状态字段：``active`` 表示 worker 正在跑；``stopping`` 表示请求了停止但未确认结束。
         self._active = False
         self._stopping = False
+        # 7) 预览代数：每次 start 前递增；与 worker payload 里的 "generation" 对账。
+        self._generation = 0
 
     @property
     def active(self) -> bool:
@@ -249,7 +276,17 @@ class SimPreviewController(QObject):
 
     @pyqtSlot(str, dict)
     def _handle_worker_status(self, status: str, payload: dict) -> None:
-        """根据 worker 广播的状态名维护本地 ``_active`` / ``_stopping`` 标志。"""
+        """维护本地 ``_active`` / ``_stopping`` 标志，并把非陈旧状态对外转发。
+
+        代数过滤：``stop(wait=True)`` 改为在 worker 的 threading.Event 上等待并
+        本地收尾（不再泵 Qt 事件循环），若调用方随后立刻 ``start()`` 新一轮预览，
+        上一轮 queued 的 ``preview_stopped`` 会迟到——它携带旧 generation，在这里
+        整体丢弃（含对外转发），避免把新一轮的 active 状态和外部按钮状态错误清零。
+        payload 无 "generation" 键时（外部直调/旧测试路径）不过滤。
+        """
+        generation = payload.get("generation") if isinstance(payload, dict) else None
+        if generation is not None and int(generation) != self._generation:
+            return
         # ``preview_started`` 表示 worker 已经成功打开相机预览；切到 active=True。
         if status == "preview_started":
             self._active = True
@@ -258,6 +295,10 @@ class SimPreviewController(QObject):
         elif status == "preview_stopped":
             self._active = False
             self._stopping = False
+        # 对外转发前剥掉内部 "generation" 键，保持外部 payload 合同不变。
+        if isinstance(payload, dict) and "generation" in payload:
+            payload = {key: value for key, value in payload.items() if key != "generation"}
+        self.signal_status_changed.emit(status, payload)
 
     def take_latest_frame(self) -> PreviewFrameSnapshot | None:
         """转交 worker 的 latest-frame-wins 快照给 GUI 定时器。"""
@@ -272,8 +313,9 @@ class SimPreviewController(QObject):
         # 1) 拒绝重入：避免在未确认上次结束前发起新的预览，造成双重连接。
         if self._active or self.stopping:
             raise RuntimeError("SIM preview is already active or stopping.")
-        # 2) 重置 worker 内部状态，再立刻置 active；后续状态变更由 worker 广播。
-        self._worker.prepare_for_start()
+        # 2) 代数 +1 并重置 worker 内部状态，再立刻置 active；后续状态变更由 worker 广播。
+        self._generation += 1
+        self._worker.prepare_for_start(self._generation)
         self._active = True
         # 3) 把 (camera, config, timeout_ms) 投递给 worker 的 slot_start。
         self.signal_start_worker.emit(
@@ -295,13 +337,14 @@ class SimPreviewController(QObject):
         if not self.stopping:
             self._active = False
             self._stopping = True
-        # 4) 调用方需要"同步等待"时，通过 ``processEvents`` 让 Qt 信号循环把
-        #    ``preview_stopped`` 投递到本地 slot；2 秒 deadline 防止无限等。
-        if wait:
-            deadline = time.time() + 2.0
-            while self._stopping and time.time() < deadline:
-                QCoreApplication.processEvents()
-                QThread.msleep(10)
+        # 4) 调用方需要"同步等待"时，直接在 worker 的 threading.Event 上等待循环
+        #    退出（彻底移除 processEvents 重入面）；2 秒 deadline 防止无限等。
+        #    等到后本地先行收尾，保证返回后可立即重启预览；queued 的
+        #    ``preview_stopped`` 稍后照常投递（同代→正常转发；若期间已重启新一轮
+        #    则携带旧代数→被 ``_handle_worker_status`` 丢弃）。
+        if wait and self._worker.wait_until_stopped(2.0):
+            self._active = False
+            self._stopping = False
 
     def shutdown(self) -> None:
         """组件关闭：先停止预览，再关闭线程，最多等 2 秒。"""

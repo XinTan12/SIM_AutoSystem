@@ -53,6 +53,7 @@ from .models import (
     Z_SCAN_FOCUS_METRICS,
     ZScanConfig,
 )
+from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE
 
 
 # 仓库根目录（``sim_control/`` 的上一级）。其它路径常量都以它为基准。
@@ -63,7 +64,8 @@ DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "sim_control_config.json"
 LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
-CURRENT_CONFIG_VERSION = 9
+# 必须与 ``models.AppConfig.config_version`` 默认值保持一致。
+CURRENT_CONFIG_VERSION = 10
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 
 
@@ -210,6 +212,23 @@ def _migrate_v8_to_v9(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v9_to_v10(payload: dict) -> dict:
+    """v9 -> v10 migration: 补齐 BackendConfig 的 Ti2 路径字段默认空串。
+
+    背景：
+        v10 把 Nikon Ti2 ZDrive 的 DLL / SDK wrapper 路径纳入 ``BackendConfig``，
+        以便按配置定位 SDK 而非硬编码推导（见 AGENTS.md「SDK 定位不要硬编码，
+        优先走配置」）。旧配置没有这两个键，统一 ``setdefault`` 为空字符串；
+        空串表示沿用 ``Ti2ZStageAdapter`` 内部默认推导路径，运行行为与 v9 一致。
+    """
+    backend = dict(payload.get("backend") or {})
+    backend.setdefault("ti2_dll_path", "")
+    backend.setdefault("ti2_sdk_module_path", "")
+    payload["backend"] = backend
+    payload["config_version"] = 10
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
@@ -221,6 +240,7 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (6, _migrate_v6_to_v7),
     (7, _migrate_v7_to_v8),
     (8, _migrate_v8_to_v9),
+    (9, _migrate_v9_to_v10),
 ]
 
 
@@ -261,6 +281,9 @@ def app_config_to_dict(config: AppConfig) -> dict:
     payload.pop("config_path", None)
     # 3) 强制对 pattern_files 做长度对齐，写盘格式始终 9 项。
     payload["pattern_files"] = _merge_list(payload.get("pattern_files", []))
+    # 4) 写盘前强制标当前 schema 版本：防止 ``AppConfig`` 默认值漂移时写出
+    #    过期版本号、导致下次加载重跑迁移（迁移非幂等时会出错）。
+    payload["config_version"] = CURRENT_CONFIG_VERSION
     return payload
 
 
@@ -284,6 +307,8 @@ def app_config_from_dict(payload: dict) -> AppConfig:
     backend = BackendConfig(
         fusion_bt_sdk_path=str(backend_payload.get("fusion_bt_sdk_path", "")),
         slm_sdk_path=str(backend_payload.get("slm_sdk_path", "")),
+        ti2_dll_path=str(backend_payload.get("ti2_dll_path", "")),
+        ti2_sdk_module_path=str(backend_payload.get("ti2_sdk_module_path", "")),
         simulation_mode=bool(backend_payload.get("simulation_mode", False)),
     )
     z_scan_payload = payload.get("z_scan") or {}
@@ -367,11 +392,13 @@ def validate_app_config(config: AppConfig) -> list[str]:
         errors.append("camera.roi_x must be >= 0.")
     if camera.roi_y < 0:
         errors.append("camera.roi_y must be >= 0.")
-    # 2) ROI 不能超过 Fusion BT 传感器 2304×2304 的物理边界。
-    if camera.roi_x + camera.roi_width > 2304:
-        errors.append("camera ROI width exceeds the 2304 px sensor bounds.")
-    if camera.roi_y + camera.roi_height > 2304:
-        errors.append("camera ROI height exceeds the 2304 px sensor bounds.")
+    # 2) ROI 不能超过 Fusion BT 传感器物理边界；尺寸统一引用
+    #    ``sim_camera_presets.DEFAULT_SIM_CAMERA_SIZE``，避免 2304 双源硬编码。
+    sensor_width, sensor_height = DEFAULT_SIM_CAMERA_SIZE
+    if camera.roi_x + camera.roi_width > sensor_width:
+        errors.append(f"camera ROI width exceeds the {sensor_width} px sensor bounds.")
+    if camera.roi_y + camera.roi_height > sensor_height:
+        errors.append(f"camera ROI height exceeds the {sensor_height} px sensor bounds.")
     # 3) 相机超时不应小于 100 ms，否则容易误报 timeout。
     if camera.timeout_ms < 100:
         errors.append("camera.timeout_ms must be >= 100.")

@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import traceback
@@ -427,6 +428,11 @@ class SimAcquisitionController(QObject):
         # 3) 退出 QThread。``wait(2000)`` 给 worker 2 秒优雅退出窗口。
         self._thread.quit()
         if not self._thread.wait(2000):
+            # 取舍（审查报告 #21）：worker 在 2 秒内未退出（可能卡在某个硬件调用）时，
+            # 这里只广播 shutdown_timeout 并提前返回，**不**强行断开 camera/SLM/stage——
+            # 卡住的 worker 很可能仍持有同一硬件句柄，并发断开会与之竞争、可能损坏
+            # R11 WinUSB / DCAM 会话或句柄状态；句柄交由进程退出兜底回收。真机复现
+            # shutdown 超时、确认卡住时句柄状态后，再评估是否改为 best-effort 断开。
             self.signal_status_changed.emit("shutdown_timeout", {})
             return
         # 4) 主动断相机和 SLM；DAQ 没有显式 disconnect 接口。
@@ -694,18 +700,25 @@ class SimAcquisitionController(QObject):
         stop_event = threading.Event()
         self._active_stop_events[task_id] = stop_event
         self._current_stop_event = stop_event
-        # 6) 组装 payload；adapter 引用从 controller 自身取，保证 SLM/相机共享同一连接。
+        # 6) 快照 task / daq_config / z_scan_config：防止 GUI 线程在 worker 运行期间
+        #    修改同一个可变对象（竞态）。adapter 引用是共享句柄，不拷贝（设计约束）。
+        task_snap = copy.copy(task)
+        task_snap.timing = copy.copy(task.timing)
+        task_snap.camera = copy.copy(task.camera)
+        daq_snap = copy.copy(self.daq_config)
+        z_scan_snap = copy.copy(selected_z_scan_config)
+        # 7) 组装 payload；adapter 引用从 controller 自身取，保证 SLM/相机共享同一连接。
         payload = {
             "task_id": task_id,
-            "task": task,
-            "daq_config": self.daq_config,
+            "task": task_snap,
+            "daq_config": daq_snap,
             "pattern_result": pattern_result,
             "waveform_builder": self.waveform_builder,
             "daq_adapter": self.daq_adapter,
             "camera_adapter": self.camera_adapter,
             "slm_adapter": self.slm_adapter,
             "stage_adapter": self.stage_adapter,
-            "z_scan_config": selected_z_scan_config,
+            "z_scan_config": z_scan_snap,
             "z_scan_enabled": selected_z_scan_enabled,
             "stop_event": stop_event,
             "prepare_running_order": bool(prepare_running_order),
@@ -717,6 +730,11 @@ class SimAcquisitionController(QObject):
         # 7) 通过跨线程信号投递给 worker；本函数立即返回，GUI 不会被阻塞。
         self.signal_start_worker.emit(payload)
         return task_id
+
+    @property
+    def is_busy(self) -> bool:
+        """True when at least one acquisition task is active (started but not yet cleared)."""
+        return bool(self._active_stop_events)
 
     def stop(self) -> None:
         """取消当前 / 所有活跃 worker；置位 stop_event 让采集核心尽快退出。"""

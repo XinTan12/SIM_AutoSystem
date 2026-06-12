@@ -5,6 +5,32 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-06-11
+
+### 决策：preview stop(wait=True) 弃用 processEvents 泵循环，改为 worker 侧 threading.Event 等待 + generation 代数过滤
+- 原因：
+  此前 `SimPreviewController.stop(wait=True)` 用 `QCoreApplication.processEvents(ExcludeUserInputEvents)` 循环等待 worker 的 `preview_stopped` queued 信号，本质是 GUI 线程内的事件循环重入，只是"缓解"而非根除（外部 Codex 审查 #8 持续标记）。直接换成 threading.Event 等待会引入新竞态：等待返回后调用方立即重启预览时，上一轮迟到的 `preview_stopped` 会把新一轮 active 状态错误清零。
+- 影响：
+  `SimPreviewWorker` 新增 `_stopped_event`（slot_start 的 finally 先 emit stopped 再 set，保证等待方醒来时信号已入队）与 `_generation` 代数（slot_start 入口捕获为局部变量，盖在 started/stopped payload 上）；controller `start()` 时代数 +1 经 `prepare_for_start(generation)` 写入，`_handle_worker_status` 丢弃携带旧代数的陈旧信号、对外转发前剥掉 `generation` 键（外部 payload 合同不变，`control_wangbo/main.py` 订阅者无需改动）。`stop(wait=True)` 改为 `wait_until_stopped(2.0)` + 本地收尾。约束：worker 状态信号必须只经 `_handle_worker_status` 过滤后转发，不得恢复 worker→外部的直连；新增预览状态 payload 键时注意 `generation` 为 controller 内部键，外部不可依赖。
+
+### 决策：诊断测试与硬件按钮全面 worker 化 + stop_event 全链路贯通；DCAM 硬件时间戳作为新增字段而非替换
+- 原因：
+  Codex 审查 #1/#6 持续指出：Z-Scan 仅位移台测试、相机触发/激光脉冲测试无取消检查点，standalone GUI 的 Initialize Camera / Program Patterns 仍在 GUI 线程同步调用可阻塞数秒的 DCAM/SLM 操作。#24 指出 `read_frame_sequence` 返回的时间戳是软件消费时刻 `time.time()`，不能代表曝光时刻，但直接替换会破坏现有合同。
+- 影响：
+  `pulse_line`（protocol/真实/仿真三处）增加可选 `stop_event`，`adapters._interruptible_sleep` 在 `stop_event=None` 时退化为单次 sleep（行为零变化），提供时分片倒计时、取消即提前拉低；`_run_zscan_stage_only_test`/`_run_camera_trigger_test`/`_run_laser_pulse_test` 增加取消检查点；`SimControlWindow._initialize_camera`/`_program_patterns` 改 `_PulseTestWorker` 模式（GUI 线程快照配置，worker 不读 Qt 控件）。DCAM 路径优先 `buf_getframe` 一次取像素 + `DCAMBUF_FRAME.timestamp`，经新方法 `get_last_hardware_timestamps()` 暴露（缺方法/缺字段/整组全 0 均置 None），返回值软件时间戳语义不变。约束：今后新增诊断测试一律走 `_PulseTestWorker` 模式，不得在 GUI 线程同步调用硬件；取消语义统一为"stop_event 置位 → 检查点抛错/提前返回 → worker 静默吞异常 → finally 安全收尾（DAQ 拉低/回起始层）"。
+
+### 决策：配置 schema 升到 v10——Ti2 SDK 路径配置化，并加 config_version 写盘防御
+- 原因：
+  Ti2 ZDrive 的 DLL / SDK wrapper 路径此前由 `Ti2ZStageAdapter` 内部硬编码推导，与 AGENTS.md「SDK 定位不要硬编码，优先走配置」不一致；而 `Ti2ZStageAdapter` 构造函数早已支持 `dll_path`/`sdk_module_path` 参数，缺的只是配置接线。另外 `models.AppConfig.config_version` 默认值（8）与 `config_store.CURRENT_CONFIG_VERSION`（9）长期不一致：新建默认配置写盘会标过期版本号、每次加载重跑迁移，未来任何非幂等迁移会误作用于「全新默认配置」。
+- 影响：
+  `BackendConfig` 新增 `ti2_dll_path`/`ti2_sdk_module_path`（默认空串=沿用 adapter 内部默认推导，保证默认行为不变），`adapter_factory.create_stage_adapter_for_backend` 以「路径 or None」透传；schema 升 v10，`_migrate_v9_to_v10` 对旧配置 `setdefault` 两个空串键（幂等、不覆盖用户已填）。`models.AppConfig.config_version` 默认改 10 并与 `CURRENT_CONFIG_VERSION` 钉死一致（`test_legacy_sim_config_migration` 覆盖），`app_config_to_dict` 写盘前强制 `config_version=CURRENT_CONFIG_VERSION` 作为第二层防御。后续新增 schema 字段仍须同时升 `CURRENT_CONFIG_VERSION`、加迁移函数并同步 `models` 默认值。
+
+### 决策：HardwareError 抽到 `sim_control/errors.py`，真实与仿真适配器共用
+- 原因：
+  仿真适配器需要与真实适配器抛同一种硬件错误类型，让「SLM/相机未连接被拒」等回归在仿真模式下也能被测出，并让 preview/controller 的 `except HardwareError` 分支在仿真与真实两种模式走同一路径。但若让仿真层直接 `from .adapters import HardwareError`，会使仿真路径反向依赖 1700+ 行的真实适配器模块（连带其 ctypes / SDK import 副作用）。
+- 影响：
+  `HardwareError(RuntimeError)` 定义移到 `sim_control/errors.py`；`adapters.py` 改为 import 并 re-export（既有 `from sim_control.adapters import HardwareError` 调用点不破）。仿真适配器统一从 `errors` 抛 `HardwareError`；`SimulatedCameraAdapter`/`SimulatedSlmAdapter` 新增 `strict_connection`（默认 False 保持自动连接便利，True 时未连接抛 HardwareError，供测试验证拒绝语义）。`HardwareError` 继承 `RuntimeError`，既有 `except RuntimeError` / `assertRaises(RuntimeError)` 仍命中。约束：`read_frame_sequence` 的取消信号仍须是裸 `RuntimeError("Acquisition cancelled.")`，由 `acquisition_core` 归一化为 `AcquisitionCancelled`，不得改成 `HardwareError`，否则破坏取消语义。
+
 ## 2026-06-10
 
 ### 决策：slm_enable guard 以 R11 tHWAT 规格为准固定为 ≥1 ms，首帧黑帧归因于 [HWA h] RO 的 EXT_RUN 硬件激活窗口

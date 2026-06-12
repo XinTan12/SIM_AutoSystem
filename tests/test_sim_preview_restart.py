@@ -64,6 +64,21 @@ def load_legacy_main_module():
     return importlib.import_module("control_wangbo.main")
 
 
+def _wait_for_condition(predicate, timeout_ms: int = 5000, interval_ms: int = 10) -> bool:
+    """事件驱动等待：每 ``interval_ms`` 跑一轮 Qt 事件循环，``predicate`` 命中立即返回。
+
+    用于等待 worker 线程经 queued signal 回 GUI 线程后的断言条件；替代固定时长
+    ``QTest.qWait(N)``——慢速/高负载环境下不 flaky，条件命中后也不浪费等待时间。
+    本机 PyQt5 没有 ``QTest.qWaitFor``，故自行实现。
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        QtTest.QTest.qWait(interval_ms)
+    return predicate()
+
+
 class TimerSpy:
     """记录 QTimer.start/stop 调用，便于断言预览重启节流行为。"""
     def __init__(self):
@@ -636,7 +651,6 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_stop_in_progress=False,
             sim_acquisition_in_progress=False,
             sim_resume_preview_after_acquisition=False,
-            sim_last_acquisition_batch=None,
             sim_current_task_id="",
             sim_acquisition_controller=controller,
             sim_app_config=AppConfig(),
@@ -656,6 +670,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertFalse(window.sim_preview_restart_requested)
         self.assertEqual(stop_calls, [True])
         self.assertTrue(window.sim_acquisition_in_progress)
+        self.assertFalse(hasattr(window, "sim_last_acquisition_batch"))
         self.assertEqual(window.sim_current_task_id, "task-1")
         controller.initialize_hardware.assert_not_called()
         controller.apply_daq_config.assert_not_called()
@@ -690,7 +705,6 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_stop_in_progress=False,
             sim_acquisition_in_progress=False,
             sim_resume_preview_after_acquisition=False,
-            sim_last_acquisition_batch=None,
             sim_current_task_id="",
             sim_acquisition_controller=controller,
             sim_app_config=AppConfig(),
@@ -769,7 +783,6 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_camera_connected=True,
             sim_resume_preview_after_acquisition=True,
             sim_current_task_id="",
-            sim_last_acquisition_batch="previous-batch",
             update_sim_camera_action_buttons=lambda: action_updates.append("updated"),
             set_sim_camera_controls_enabled=lambda enabled: controls_enabled.append(enabled),
             start_sim_preview=lambda: starts.append("start"),
@@ -780,7 +793,8 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertFalse(window.sim_acquisition_in_progress)
         self.assertEqual(action_updates, ["updated"])
         self.assertEqual(controls_enabled, [True])
-        self.assertEqual(window.sim_last_acquisition_batch, "previous-batch")
+        # summary 槽不得在窗口上暂存 raw batch / 预览帧：合同为"不新增任何同类属性"。
+        self.assertFalse(hasattr(window, "sim_last_acquisition_batch"))
         self.assertFalse(hasattr(window, "sim_last_preview_frame"))
         self.assertEqual(window.sim_current_task_id, "task-2")
         self.assertEqual(starts, ["start"])
@@ -1224,6 +1238,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             refresh_sim_settings_summary=lambda: None,
             sim_runtime_timing_snapshot={},
             ui=SimpleNamespace(
+                btn_sCMOS_connection=mock.MagicMock(),
                 cmb_sCMOS_camera=ComboBoxSpy(current_index=0),
                 cmb_sCMOS_imageSize=image_size_combo,
                 spb_sCMOS_ROI_X=SpinBoxSpy(0, maximum=0, enabled=False),
@@ -1247,6 +1262,8 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         with mock.patch.object(legacy_main, "save_app_config") as save_mock:
             legacy_main.MainWindow.btn_sCMOS_connection_function(window)
+            from PyQt5.QtTest import QTest
+            QTest.qWait(200)
 
         self.assertTrue(window.sim_camera_connected)
         self.assertEqual(camera.roi_width, 2048)
@@ -1468,6 +1485,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             update_sim_camera_action_buttons=lambda: None,
             refresh_sim_settings_summary=lambda: None,
             ui=SimpleNamespace(
+                btn_sCMOS_connection=mock.MagicMock(),
                 cmb_sCMOS_camera=ComboBoxSpy(current_index=0),
                 cmb_sCMOS_imageSize=ComboBoxSpy(text="2304 x 2304", enabled=True),
                 spb_sCMOS_ROI_X=SpinBoxSpy(270, maximum=2304, enabled=True),
@@ -1489,6 +1507,8 @@ class SimPreviewRestartTests(unittest.TestCase):
         )
 
         legacy_main.MainWindow.btn_sCMOS_connection_function(window)
+        from PyQt5.QtTest import QTest
+        QTest.qWait(200)
 
         self.assertEqual(camera.roi_width, 2304)
         self.assertEqual(camera.roi_height, 2304)
@@ -1528,6 +1548,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             update_sim_camera_action_buttons=lambda: action_update_calls.append("updated"),
             refresh_sim_settings_summary=lambda: None,
             ui=SimpleNamespace(
+                btn_sCMOS_connection=mock.MagicMock(),
                 cmb_sCMOS_camera=ComboBoxSpy(current_index=0),
                 cmb_sCMOS_imageSize=ComboBoxSpy(text="1152 x 1152", enabled=True),
                 spb_sCMOS_ROI_X=SpinBoxSpy(270, maximum=2304, enabled=True),
@@ -1550,6 +1571,8 @@ class SimPreviewRestartTests(unittest.TestCase):
 
         with mock.patch.object(legacy_main.qw.QMessageBox, "warning"):
             legacy_main.MainWindow.btn_sCMOS_connection_function(window)
+            from PyQt5.QtTest import QTest
+            QTest.qWait(200)
 
         controller.disconnect_camera.assert_called_once()
         self.assertFalse(window.sim_camera_connected)
@@ -1598,7 +1621,7 @@ class SimPreviewControllerTests(unittest.TestCase):
     def test_worker_take_latest_frame_returns_only_newest_snapshot_once(self):
         from sim_control.preview import SimPreviewWorker
 
-        worker = SimPreviewWorker(gui_preview_fps_limit=30)
+        worker = SimPreviewWorker()
 
         with mock.patch("sim_control.preview.time.perf_counter", side_effect=[1.0, 1.1, 1.2]):
             worker.publish_preview_frame(np.array([[1]], dtype=np.uint16), fps=1)
@@ -1719,7 +1742,7 @@ class SimPreviewPollingTests(unittest.TestCase):
         window = SimpleNamespace(
             sim_preview_controller=controller,
             sim_last_preview_sequence=-1,
-            _render_sim_preview_frame=lambda frame: rendered_frames.append(frame.copy()),
+            _render_sim_preview_frame=lambda frame, copy_cached_frame=True: rendered_frames.append(frame.copy()),
             ui=SimpleNamespace(lb_sCMOS_FPSshow=fps_label),
         )
 
@@ -2210,7 +2233,7 @@ class SimSettingsDialogTests(unittest.TestCase):
 
         with mock.patch("sim_control.gui.QMessageBox.information") as information:
             dialog.btn_zscan_test.click()
-            self.app.processEvents()
+            _wait_for_condition(lambda: information.called)
 
         information.assert_called_once()
         message = information.call_args.args[2]
@@ -2338,6 +2361,7 @@ class SimSettingsDialogTests(unittest.TestCase):
             "sim_control.gui.QMessageBox.information"
         ) as info, mock.patch("sim_control.gui.QMessageBox.critical") as critical:
             dialog._run_zscan_test()
+            _wait_for_condition(lambda: warning.called or info.called or critical.called)
 
         warning.assert_called_once()
         info.assert_not_called()
@@ -2638,14 +2662,17 @@ class SimSettingsDialogTests(unittest.TestCase):
             dialog = SimSettingsDialog(config=AppConfig())
         dialog.combo_zscan_test_target.setCurrentIndex(dialog.combo_zscan_test_target.findData(Z_SCAN_TEST_STAGE_PLUS_CAPTURE))
 
-        def _fail_after_select(_started_at_s):
+        def _fail_after_select(_started_at_s, **kwargs):
             dialog._pending_zscan_slm_warning = "SLM 当前 RO 可能仍为 z-scan RO。"
             raise RuntimeError("capture failed")
 
         dialog._run_zscan_stage_plus_capture_test = mock.Mock(side_effect=_fail_after_select)
 
-        with mock.patch("sim_control.gui.QMessageBox.critical") as critical:
+        with mock.patch.object(dialog, "_current_daq_config", return_value=AppConfig().daq), mock.patch(
+            "sim_control.gui.validate_daq_line_config"
+        ), mock.patch("sim_control.gui.QMessageBox.critical") as critical:
             dialog._run_zscan_test()
+            _wait_for_condition(lambda: critical.called)
 
         message = critical.call_args.args[2]
         self.assertIn("capture failed", message)
@@ -2853,7 +2880,7 @@ class SimSettingsDialogTests(unittest.TestCase):
         self.assertEqual(waveform_builder.build.call_args.kwargs["exposure_us"], 500_000)
         timing_config = waveform_builder.build.call_args.kwargs["timing"]
         self.assertEqual(timing_config.inter_frame_gap_us, 50_000)
-        dialog.daq_adapter.play_waveform.assert_called_once_with("Dev1", waveform_plan)
+        dialog.daq_adapter.play_waveform.assert_called_once_with("Dev1", waveform_plan, stop_event=None)
         dialog.close()
 
     def test_sim_acquisition_pulse_message_shows_actual_and_daq_durations_from_command_start(self):
@@ -2883,16 +2910,296 @@ class SimSettingsDialogTests(unittest.TestCase):
             "sim_control.gui.QMessageBox.information"
         ) as info_mock:
             dialog._run_pulse_test()
+            # Worker runs async; wait for it to finish then process queued signals.
+            _wait_for_condition(lambda: info_mock.called)
 
         self.assertEqual(events[:2], ["timer", "daq_config"])
         dialog._run_sim_acquisition_test.assert_called_once_with(
             dialog.config.daq,
             acquisition_started_at_s=123.0,
+            stop_event=mock.ANY,
+            selected_laser_nm=mock.ANY,
         )
         message = info_mock.call_args.args[2]
         self.assertIn("16位 TIFF 已保存到:\ndummy.tiff", message)
         self.assertIn("SIM采集实际用时: 1250.000 ms", message)
         self.assertIn("DAQ完整播放时长: 630.100 ms", message)
+        dialog.close()
+
+
+    def test_run_sim_acquisition_test_forwards_stop_event_to_play_waveform(self):
+        """_run_sim_acquisition_test 把 stop_event 原样传给 daq_adapter.play_waveform。"""
+        import threading
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, CameraConfig, TimingConfig
+
+        config = AppConfig(
+            camera=CameraConfig(exposure_us=20_000),
+            timing=TimingConfig(inter_frame_gap_us=10_000),
+        )
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "488_3.5_2d_50ms"),
+        ]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
+        }
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+        waveform_builder = mock.Mock()
+        waveform_plan = SimpleNamespace(duration_s=0.6)
+        waveform_builder.build.return_value = waveform_plan
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(
+                config=config, slm_adapter=slm_adapter, camera_adapter=camera_adapter
+            )
+        dialog.daq_adapter = mock.Mock()
+
+        sentinel = threading.Event()
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("x.tiff")), mock.patch.object(
+            dialog, "_write_uint16_tiff"
+        ), mock.patch("sim_control.gui.NIDaqWaveformBuilder", return_value=waveform_builder), mock.patch(
+            "time.perf_counter", return_value=1.0
+        ):
+            dialog._run_sim_acquisition_test(
+                dialog.config.daq, acquisition_started_at_s=0.0, stop_event=sentinel
+            )
+
+        dialog.daq_adapter.play_waveform.assert_called_once_with(
+            mock.ANY, mock.ANY, stop_event=sentinel
+        )
+        dialog.close()
+
+    def test_run_sim_acquisition_test_uses_snapshot_laser_nm_not_widget(self):
+        """selected_laser_nm 快照优先于 _selected_laser_nm() 控件读取，确保 worker 线程安全。"""
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, CameraConfig, TimingConfig
+
+        config = AppConfig(
+            camera=CameraConfig(exposure_us=20_000),
+            timing=TimingConfig(inter_frame_gap_us=10_000),
+        )
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [
+            (0, "488_3.5_2d_10ms"),
+            (1, "488_3.5_2d_50ms"),
+        ]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
+        }
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((9, 2, 2), dtype=np.uint16), [])
+        waveform_builder = mock.Mock()
+        waveform_builder.build.return_value = SimpleNamespace(duration_s=0.6)
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(
+                config=config, slm_adapter=slm_adapter, camera_adapter=camera_adapter
+            )
+        dialog.daq_adapter = mock.Mock()
+
+        with mock.patch.object(
+            dialog, "_selected_laser_nm", side_effect=RuntimeError("Qt widget access forbidden in worker")
+        ), mock.patch.object(dialog, "_test_capture_path", return_value=Path("x.tiff")), mock.patch.object(
+            dialog, "_write_uint16_tiff"
+        ), mock.patch("sim_control.gui.NIDaqWaveformBuilder", return_value=waveform_builder), mock.patch(
+            "time.perf_counter", return_value=1.0
+        ):
+            result = dialog._run_sim_acquisition_test(
+                dialog.config.daq, acquisition_started_at_s=0.0, selected_laser_nm=488
+            )
+
+        self.assertIsNotNone(result)
+        dialog.close()
+
+    def test_on_zscan_test_finished_clears_worker_state_and_restores_button(self):
+        """_on_zscan_test_finished 正确清理线程引用并把按钮恢复到初始文本。"""
+        import threading
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        thread_mock = mock.Mock()
+        dialog._zscan_test_thread = thread_mock
+        dialog._zscan_test_worker = mock.Mock()
+        dialog._zscan_test_stop_event = threading.Event()
+        dialog.btn_zscan_test.setText("Cancel")
+        dialog.btn_zscan_test.setEnabled(False)
+
+        dialog._on_zscan_test_finished()
+
+        thread_mock.quit.assert_called_once()
+        thread_mock.wait.assert_called_once()
+        self.assertIsNone(dialog._zscan_test_thread)
+        self.assertIsNone(dialog._zscan_test_worker)
+        self.assertIsNone(dialog._zscan_test_stop_event)
+        self.assertEqual(dialog.btn_zscan_test.text(), "Run Z-Scan Test")
+        dialog.close()
+
+    def test_on_zscan_test_success_shows_warning_dialog_for_restore_sentinel(self):
+        """_on_zscan_test_success 识别 _ZSCAN_WARN_SEP 前缀并弹出 warning 对话框。"""
+        from sim_control.gui import SimSettingsDialog, _ZSCAN_WARN_SEP
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+
+        msg = f"{_ZSCAN_WARN_SEP}回起点失败: 超时\nZ-scan 已完成 3 步"
+
+        with mock.patch.object(dialog, "_set_error") as set_error, mock.patch(
+            "sim_control.gui.QMessageBox.warning"
+        ) as warn_mock:
+            dialog._on_zscan_test_success(msg)
+
+        warn_mock.assert_called_once()
+        set_error.assert_called_once()
+        self.assertIn("警告", dialog.label_zscan_test_status.text())
+        dialog.close()
+
+    def test_zscan_stage_only_test_cancels_between_moves_and_still_restores_first_layer(self):
+        """stage-only 测试：第 2 次移动后置位 stop_event → 第 3 次移动前抛取消，finally 仍回起始层。"""
+        import threading
+
+        from sim_control.errors import HardwareError
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stop_event = threading.Event()
+        move_targets = []
+
+        def _record_move(z_um):
+            move_targets.append(float(z_um))
+            if len(move_targets) == 2:
+                stop_event.set()
+
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        stage_adapter.move_z_um.side_effect = _record_move
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        with self.assertRaises(HardwareError):
+            dialog._run_zscan_stage_only_test(time.perf_counter(), stop_event=stop_event)
+
+        # 扫描序列 [1.0, 1.5, 2.0, 2.5]：第 2 次移动后取消 → 不再发起 2.0；
+        # finally 回起始层 1.0 → 实际移动序列为 [1.0, 1.5, 1.0]。
+        self.assertEqual(move_targets, [1.0, 1.5, 1.0])
+        dialog.close()
+
+    def test_zscan_stage_only_test_preset_stop_event_skips_all_moves(self):
+        """stop_event 预先置位时 stage-only 测试不发起任何移动（也无需回起始层）。"""
+        import threading
+
+        from sim_control.errors import HardwareError
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig, ZScanConfig
+
+        stop_event = threading.Event()
+        stop_event.set()
+        stage_adapter = mock.Mock()
+        stage_adapter.is_connected = True
+        stage_adapter.get_position_um.return_value = 1.0
+        stage_adapter.get_z_ranges_um.return_value = (0.0, 5.0)
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(
+                config=AppConfig(z_scan=ZScanConfig(start_um=1.0, step_um=0.5, num_steps=3)),
+                stage_adapter=stage_adapter,
+            )
+
+        with self.assertRaises(HardwareError):
+            dialog._run_zscan_stage_only_test(time.perf_counter(), stop_event=stop_event)
+
+        stage_adapter.move_z_um.assert_not_called()
+        dialog.close()
+
+    def test_camera_trigger_test_forwards_stop_event_to_read_frame_sequence(self):
+        """相机触发测试必须把 stop_event 透传给 read_frame_sequence（等帧是主要阻塞段）。"""
+        import threading
+
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(config=AppConfig(), camera_adapter=camera_adapter)
+        dialog.daq_adapter = mock.Mock()
+        sentinel = threading.Event()
+
+        with mock.patch.object(dialog, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
+            dialog, "_write_uint16_tiff"
+        ):
+            dialog._run_camera_trigger_test(dialog.config.daq, stop_event=sentinel)
+
+        self.assertIs(camera_adapter.read_frame_sequence.call_args.kwargs["stop_event"], sentinel)
+        dialog.close()
+
+    def test_laser_pulse_test_skips_pulse_when_stop_event_preset(self):
+        """stop_event 预先置位时激光脉冲测试直接返回，不再驱动 DAQ。"""
+        import threading
+
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+        dialog.daq_adapter = mock.Mock()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        dialog._run_laser_pulse_test(dialog.config.daq, "laser_488_line", stop_event=stop_event)
+
+        dialog.daq_adapter.pulse_line.assert_not_called()
+        dialog.close()
+
+    def test_laser_pulse_test_forwards_stop_event_to_pulse_line(self):
+        """激光脉冲测试把 stop_event 透传给 pulse_line，让 1 秒脉冲期间可被取消（提前拉低）。"""
+        import threading
+
+        from sim_control.gui import SimSettingsDialog
+        from sim_control.models import AppConfig
+
+        with mock.patch("sim_control.gui.NIDaqAdapter.list_devices", return_value=[]), mock.patch(
+            "sim_control.gui.NIDaqAdapter.list_port0_lines", return_value=[]
+        ):
+            dialog = SimSettingsDialog(config=AppConfig())
+        dialog.daq_adapter = mock.Mock()
+        sentinel = threading.Event()
+
+        dialog._run_laser_pulse_test(dialog.config.daq, "laser_488_line", stop_event=sentinel)
+
+        kwargs = dialog.daq_adapter.pulse_line.call_args.kwargs
+        self.assertIs(kwargs["stop_event"], sentinel)
         dialog.close()
 
 

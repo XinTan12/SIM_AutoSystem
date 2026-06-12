@@ -1217,6 +1217,88 @@ class UiRegressionTests(unittest.TestCase):
         # 2) prepare_patterns 不应被调（GUI 已禁用手动 pattern 编程路径）。
         controller.prepare_patterns.assert_not_called()
 
+    def test_sim_control_window_initialize_camera_runs_in_worker_thread(self):
+        """``_initialize_camera`` 必须在 worker 线程调 controller.initialize_camera，不阻塞 GUI 线程。"""
+        import tempfile
+        import threading
+        import time
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            original_controller = window.controller
+            call_thread_idents = []
+            controller = SimpleNamespace(
+                initialize_camera=mock.Mock(side_effect=lambda: call_thread_idents.append(threading.get_ident())),
+            )
+            window.controller = controller
+
+            try:
+                window._initialize_camera()
+                # worker 完成后 _on_cam_init_finished（GUI 线程 queued slot）清理 thread 引用。
+                deadline = time.monotonic() + 5.0
+                while window._cam_init_thread is not None and time.monotonic() < deadline:
+                    QtTest.QTest.qWait(10)
+                self.assertIsNone(window._cam_init_thread)
+                self.assertIsNone(window._cam_init_worker)
+            finally:
+                window.controller = original_controller
+                window.close()
+
+        controller.initialize_camera.assert_called_once()
+        # 必须在非 GUI 线程执行（阻塞的 DCAM 初始化不冻结界面）。
+        self.assertEqual(len(call_thread_idents), 1)
+        self.assertNotEqual(call_thread_idents[0], threading.get_ident())
+
+    def test_sim_control_window_program_patterns_runs_snapshot_in_worker_thread(self):
+        """``_program_patterns`` 在 GUI 线程快照 pattern_files，worker 线程调 prepare_patterns。"""
+        import tempfile
+        import threading
+        import time
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(AppConfig(backend=BackendConfig(simulation_mode=True)), config_path)
+            window = SimControlWindow(config_path=str(config_path))
+            original_controller = window.controller
+            call_records = []
+            controller = SimpleNamespace(
+                prepare_patterns=mock.Mock(
+                    side_effect=lambda files: call_records.append((threading.get_ident(), list(files)))
+                ),
+            )
+            window.controller = controller
+
+            try:
+                window._program_patterns()
+                deadline = time.monotonic() + 5.0
+                while window._program_patterns_thread is not None and time.monotonic() < deadline:
+                    QtTest.QTest.qWait(10)
+                self.assertIsNone(window._program_patterns_thread)
+                self.assertIsNone(window._program_patterns_worker)
+                expected_files = list(window.config.pattern_files)
+            finally:
+                window.controller = original_controller
+                window.close()
+
+        controller.prepare_patterns.assert_called_once()
+        self.assertEqual(len(call_records), 1)
+        worker_ident, received_files = call_records[0]
+        # 1) 非 GUI 线程执行（阻塞的 SLM 烧录不冻结界面）。
+        self.assertNotEqual(worker_ident, threading.get_ident())
+        # 2) worker 收到的是 GUI 线程快照的 9 个 pattern 路径列表。
+        self.assertEqual(received_files, expected_files)
+        self.assertEqual(len(received_files), 9)
+
     def test_sim_control_window_run_acquisition_defers_preflight_to_worker(self):
         """``_run_single_acquisition`` 必须把所有预备开关都置 True，且不在 GUI 线程做硬件操作。"""
         import tempfile
@@ -1231,6 +1313,7 @@ class UiRegressionTests(unittest.TestCase):
             window = SimControlWindow(config_path=str(config_path))
             original_controller = window.controller
             controller = SimpleNamespace(
+                is_busy=False,
                 slm_adapter=SimpleNamespace(is_connected=mock.Mock(return_value=True)),
                 start_single_acquisition=mock.Mock(return_value="task-1"),
                 apply_daq_config=mock.Mock(side_effect=AssertionError("DAQ preflight should run in worker")),

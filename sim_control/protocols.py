@@ -162,4 +162,10 @@ class DaqAdapter(Protocol):
 
     def set_line(self, device_name: str, line_index: int, high: bool) -> None: ...
 
-    def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None: ...
+    def pulse_line(
+        self,
+        device_name: str,
+        line_index: int,
+        duration_s: float,
+        stop_event: Any | None = None,
+    ) -> None: ...

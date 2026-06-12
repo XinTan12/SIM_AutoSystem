@@ -36,8 +36,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 import functools
+import logging
 import statistics
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +49,7 @@ from typing import Any
 
 import numpy as np
 
-from PyQt5.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -121,6 +124,9 @@ from .z_scan_timing_history import (
     estimate_z_scan_move_only_total_time_ms,
     load_z_scan_timing_records,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # GUI 槽函数统一捕获异常并显示到状态区，避免 PyQt 回调静默失败。
@@ -497,6 +503,8 @@ DAQ_PULSE_TEST_ROLES = (
 TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "data" / "test_captures"
 Z_SCAN_TEST_STAGE_ONLY = "zscan_stage_only"
 Z_SCAN_TEST_STAGE_PLUS_CAPTURE = "zscan_stage_plus_capture"
+# Z-Scan worker 信号编码：success 消息以此开头表示"带警告成功"，接着是警告文本和换行。
+_ZSCAN_WARN_SEP = "\x00ZSCAN_WARN\x00"
 Z_SCAN_TEST_TARGET_ITEMS = (
     (Z_SCAN_TEST_STAGE_ONLY, "Z 位移台移动 (仅位移台)"),
     (Z_SCAN_TEST_STAGE_PLUS_CAPTURE, "Z 位移台 + 每层采图 (含 SML 评分)"),
@@ -596,6 +604,43 @@ def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, st
     return items
 
 
+class _PulseTestWorker(QObject):
+    """一次性诊断测试 worker；在独立 QThread 中执行，通过信号把结果回传 GUI。
+
+    线程模型：
+        - ``__init__`` 在 GUI 线程构造；``moveToThread`` 后 ``run`` 在工作线程执行。
+        - ``cancel()`` 线程安全：置位 ``_stop_event``，fn 在下一个检查点退出。
+        - fn 接受 ``threading.Event`` 参数，fn 内各测试方法的 finally 块负责 DAQ 全低收尾。
+    """
+    signal_success = pyqtSignal(str)   # 测试通过；payload 为显示消息
+    signal_error = pyqtSignal(str)     # 失败；payload 为错误描述（取消时不发出）
+    signal_finished = pyqtSignal()     # 成功 / 失败 / 取消三条路径均发出
+
+    def __init__(self, fn, stop_event: threading.Event, parent=None):
+        super().__init__(parent)
+        self._fn = fn                  # Callable[[threading.Event], str]
+        self._stop_event = stop_event
+
+    def cancel(self) -> None:
+        self._stop_event.set()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            if self._stop_event.is_set():
+                return
+            message = self._fn(self._stop_event)
+            if not self._stop_event.is_set():
+                self.signal_success.emit(message)
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                self.signal_error.emit(str(exc))
+            else:
+                logger.debug("Test exception during cancellation (suppressed): %s", exc)
+        finally:
+            self.signal_finished.emit()
+
+
 # 设置弹窗只编辑 SIM 配置和执行短测试，不拥有集成主界面共享的 SLM/相机生命周期。
 class SimSettingsDialog(QDialog):
     """SIM 设置弹窗。
@@ -651,6 +696,15 @@ class SimSettingsDialog(QDialog):
         self._populating_widgets = False
         # 6) 延迟硬件刷新：``showEvent`` 后再做，避免对话框未显示就阻塞 UI。
         self._initial_hardware_refresh_pending = True
+        # 诊断测试 worker 状态；None 表示当前没有测试在运行。
+        self._pulse_test_thread: QThread | None = None
+        self._pulse_test_worker: _PulseTestWorker | None = None
+        self._pulse_test_stop_event: threading.Event | None = None
+        self._pulse_test_btn_original_text: str = "Run Test"
+        # Z-Scan 测试 worker 状态；与 pulse test 独立，两者可并行（实际不会同时触发）。
+        self._zscan_test_thread: QThread | None = None
+        self._zscan_test_worker: _PulseTestWorker | None = None
+        self._zscan_test_stop_event: threading.Event | None = None
         # 7) UI 构造 + 信号连接 + 控件初值填充。
         self._build_ui()
         self._wire_signals()
@@ -985,12 +1039,13 @@ class SimSettingsDialog(QDialog):
             for label in preview_value_labels:
                 _set_language_specific_label_text(label, "--")
 
-    def _append_zscan_timing_history(self, records: list[object]) -> None:
+    def _append_zscan_timing_history(self, records: list[object], *, refresh_preview: bool = True) -> None:
         if not records:
             return
         append_z_scan_timing_records(records, self._zscan_timing_history_path)
         self._zscan_timing_records.extend(records)
-        self._refresh_zscan_preview()
+        if refresh_preview or QThread.currentThread() == self.thread():
+            self._refresh_zscan_preview()
 
     def _handle_zscan_test_error(self, err_msg: str) -> None:
         warning = getattr(self, "_pending_zscan_restore_warning", None)
@@ -1006,8 +1061,15 @@ class SimSettingsDialog(QDialog):
         QMessageBox.critical(self, "Z-Scan Test", err_msg)
 
     def _run_zscan_test(self) -> None:
-        self._pending_zscan_restore_warning = None
-        self._pending_zscan_slm_warning = None
+        """Z-Scan 测试按钮：首次点击启动 worker；测试进行中再次点击取消。"""
+        # 如果 worker 正在运行，本次点击是取消请求。
+        if self._zscan_test_thread is not None:
+            if self._zscan_test_worker is not None:
+                self._zscan_test_worker.cancel()
+            self.btn_zscan_test.setEnabled(False)
+            return
+
+        # 1) 在 GUI 线程完成所有控件读取和前置校验（快速失败，不启动 worker）。
         started_at_s = time.perf_counter()
         target_id = self.combo_zscan_test_target.currentData()
         if not target_id:
@@ -1015,61 +1077,140 @@ class SimSettingsDialog(QDialog):
             return
         try:
             self.config.z_scan = read_z_scan_config_from_widgets(self)
-            if not self.config.z_scan.enabled:
-                self._handle_zscan_test_error("Z-Scan is disabled. Enable z-scan before running tests.")
-                return
-
-            if target_id == Z_SCAN_TEST_STAGE_ONLY:
-                result = self._run_zscan_stage_only_test(started_at_s)
-                message_lines = [
-                    "位移台测试完成。",
-                    f"步数: {int(self.config.z_scan.num_steps)}",
-                    f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
-                ]
-                if result.move_latencies_ms:
-                    message_lines.append(
-                        "每步移动耗时(min/mean/max): "
-                        f"{min(result.move_latencies_ms):.2f} / "
-                        f"{statistics.mean(result.move_latencies_ms):.2f} / "
-                        f"{max(result.move_latencies_ms):.2f} ms"
-                    )
-                else:
-                    message_lines.append("每步移动耗时: 无 (没有任何一次层间移动成功)")
-            elif target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
-                result = self._run_zscan_stage_plus_capture_test(started_at_s)
-                score_min = min(result.focus_scores) if result.focus_scores else float("nan")
-                score_max = max(result.focus_scores) if result.focus_scores else float("nan")
-                message_lines = [
-                    "位移台 + 每层采图测试完成 (含 SML 评分)。",
-                    f"采集帧数: {result.frame_count}",
-                    f"SML 选择的最佳层: 第 {result.best_layer_index + 1} 层 / 共 {result.frame_count} 层",
-                    f"最佳层 Z: {result.best_z_um:.3f} um",
-                    f"SML 分数范围 (min/max): {score_min:.3g} / {score_max:.3g}",
-                    f"TIFF 输出: {result.output_path}",
-                    f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
-                    "提示: 测试结束后 SLM 当前 RO 仍为 z-scan RO；下一次正式 SIM9 会重新选择正式 RO。",
-                ]
-            else:
-                self._handle_zscan_test_error(f"Unknown Z-scan test target: {target_id!r}")
-                return
-
-            warning = getattr(self, "_pending_zscan_restore_warning", None)
-            if warning:
-                self._pending_zscan_restore_warning = None
-                degraded_message = "测试已完成，但回起点失败。\n" + "\n".join(message_lines[1:]) + f"\n警告: {warning}"
-                self.label_zscan_test_status.setText(degraded_message)
-                self._set_error(warning)
-                QMessageBox.warning(self, "Z-Scan Test", degraded_message)
-                return
-
-            message = "\n".join(message_lines)
-            self.label_zscan_test_status.setText(message)
-            self._set_error("-")
-            if target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
-                self._pending_zscan_slm_warning = None
-            QMessageBox.information(self, "Z-Scan Test", message)
         except Exception as exc:
             self._handle_zscan_test_error(str(exc))
+            return
+        if not self.config.z_scan.enabled:
+            self._handle_zscan_test_error("Z-Scan is disabled. Enable z-scan before running tests.")
+            return
+
+        # 2) stage_plus_capture 分支需要 daq_config；在 GUI 线程快照，避免 worker 读 Qt 控件。
+        daq_config_snapshot: DaqLineConfig | None = None
+        if target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
+            try:
+                daq_config_snapshot = copy.copy(self._current_daq_config())
+                validate_daq_line_config(daq_config_snapshot)
+            except Exception as exc:
+                self._handle_zscan_test_error(str(exc))
+                return
+
+        # 3) 快照 z_scan config（不可变数据，供 worker 直接使用）。
+        z_scan_cfg_snapshot = copy.copy(self.config.z_scan)
+
+        # 4) 构造 worker fn 闭包；只捕获快照值和 self（adapter 均为长生命周期对象）。
+        def _zscan_fn(stop_event: threading.Event) -> str:
+            # 清上次遗留的警告状态（全在 worker 线程内读写，无跨线程竞争）。
+            self._pending_zscan_restore_warning = None
+            self._pending_zscan_slm_warning = None
+            try:
+                if target_id == Z_SCAN_TEST_STAGE_ONLY:
+                    result = self._run_zscan_stage_only_test(started_at_s, stop_event=stop_event)
+                    message_lines = [
+                        "位移台测试完成。",
+                        f"步数: {int(z_scan_cfg_snapshot.num_steps)}",
+                        f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
+                    ]
+                    if result.move_latencies_ms:
+                        message_lines.append(
+                            "每步移动耗时(min/mean/max): "
+                            f"{min(result.move_latencies_ms):.2f} / "
+                            f"{statistics.mean(result.move_latencies_ms):.2f} / "
+                            f"{max(result.move_latencies_ms):.2f} ms"
+                        )
+                    else:
+                        message_lines.append("每步移动耗时: 无 (没有任何一次层间移动成功)")
+                elif target_id == Z_SCAN_TEST_STAGE_PLUS_CAPTURE:
+                    result = self._run_zscan_stage_plus_capture_test(
+                        started_at_s,
+                        daq_config_override=daq_config_snapshot,
+                        stop_event=stop_event,
+                    )
+                    score_min = min(result.focus_scores) if result.focus_scores else float("nan")
+                    score_max = max(result.focus_scores) if result.focus_scores else float("nan")
+                    message_lines = [
+                        "位移台 + 每层采图测试完成 (含 SML 评分)。",
+                        f"采集帧数: {result.frame_count}",
+                        f"SML 选择的最佳层: 第 {result.best_layer_index + 1} 层 / 共 {result.frame_count} 层",
+                        f"最佳层 Z: {result.best_z_um:.3f} um",
+                        f"SML 分数范围 (min/max): {score_min:.3g} / {score_max:.3g}",
+                        f"TIFF 输出: {result.output_path}",
+                        f"总耗时: {result.total_duration_s * 1000.0:.1f} ms",
+                        "提示: 测试结束后 SLM 当前 RO 仍为 z-scan RO；下一次正式 SIM9 会重新选择正式 RO。",
+                    ]
+                else:
+                    raise HardwareError(f"Unknown Z-scan test target: {target_id!r}")
+            except Exception as exc:
+                # 把挂起的警告拼入异常消息，让 signal_error 回传完整错误上下文。
+                restore_warn = self._pending_zscan_restore_warning
+                slm_warn = self._pending_zscan_slm_warning
+                self._pending_zscan_restore_warning = None
+                self._pending_zscan_slm_warning = None
+                extra = "\n".join(filter(None, [restore_warn, slm_warn]))
+                if extra:
+                    raise HardwareError(f"{exc}\n附加: {extra}") from exc
+                raise
+
+            # 成功：把 restore_warning 编码进返回字符串（sentinel + 警告 + 换行 + 消息）。
+            restore_warn = self._pending_zscan_restore_warning
+            self._pending_zscan_restore_warning = None
+            self._pending_zscan_slm_warning = None
+            message = "\n".join(message_lines)
+            if restore_warn:
+                return f"{_ZSCAN_WARN_SEP}{restore_warn}\n{message}"
+            return message
+
+        # 5) 构造 stop_event + worker + thread，保存引用，切换按钮为 "Cancel"。
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_zscan_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_zscan_test_success)
+        worker.signal_error.connect(self._on_zscan_test_error)
+        worker.signal_finished.connect(self._on_zscan_test_finished)
+        thread.started.connect(worker.run)
+
+        self._zscan_test_stop_event = stop_event
+        self._zscan_test_worker = worker
+        self._zscan_test_thread = thread
+        self.btn_zscan_test.setText("Cancel")
+        self.label_zscan_test_status.setText("测试进行中，请稍候…")
+
+        # 6) 启动 worker 线程。
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_zscan_test_success(self, msg: str) -> None:
+        if msg.startswith(_ZSCAN_WARN_SEP):
+            rest = msg[len(_ZSCAN_WARN_SEP):]
+            warning, _, message = rest.partition("\n")
+            degraded = f"测试已完成，但回起点失败。\n{message}\n警告: {warning}"
+            self.label_zscan_test_status.setText(degraded)
+            self._set_error(warning)
+            QMessageBox.warning(self, "Z-Scan Test", degraded)
+        else:
+            self._refresh_zscan_preview()
+            self.label_zscan_test_status.setText(msg)
+            self._set_error("-")
+            QMessageBox.information(self, "Z-Scan Test", msg)
+
+    @pyqtSlot(str)
+    def _on_zscan_test_error(self, err_msg: str) -> None:
+        self.label_zscan_test_status.setText(f"测试失败: {err_msg}")
+        self._set_error(err_msg)
+        QMessageBox.critical(self, "Z-Scan Test", err_msg)
+
+    @pyqtSlot()
+    def _on_zscan_test_finished(self) -> None:
+        if self._zscan_test_thread is not None:
+            self._zscan_test_thread.quit()
+            self._zscan_test_thread.wait()
+            self._zscan_test_thread = None
+        self._zscan_test_worker = None
+        self._zscan_test_stop_event = None
+        self.btn_zscan_test.setText("Run Z-Scan Test")
+        self.btn_zscan_test.setEnabled(
+            bool(self.config.z_scan.enabled) and self.combo_zscan_test_target.count() > 0
+        )
 
     def _zscan_positions_checked(self, cfg: ZScanConfig) -> list[float]:
         if self.stage_adapter is None:
@@ -1088,7 +1229,11 @@ class SimSettingsDialog(QDialog):
             )
         return [float(z) for z in positions]
 
-    def _run_zscan_stage_only_test(self, started_at_s: float) -> ZScanTestResult:
+    def _run_zscan_stage_only_test(
+        self,
+        started_at_s: float,
+        stop_event: threading.Event | None = None,
+    ) -> ZScanTestResult:
         cfg = self.config.z_scan
         positions = self._zscan_positions_checked(cfg)
         started_from_um = float(self.stage_adapter.get_position_um())
@@ -1099,6 +1244,10 @@ class SimSettingsDialog(QDialog):
         restore_ms = 0.0
         try:
             for index, z_um in enumerate(positions):
+                # 取消检查点：每次移动前检查 stop_event；已发出的单次移动无法中断，
+                # 但取消后不再发起下一次移动，finally 仍尽力回起始层（与正常完成一致）。
+                if stop_event is not None and stop_event.is_set():
+                    raise HardwareError("Z-Scan 位移台测试已取消。")
                 t0 = time.perf_counter()
                 self.stage_adapter.move_z_um(z_um)
                 started_movement = True
@@ -1139,7 +1288,8 @@ class SimSettingsDialog(QDialog):
                     restore_ms=restore_ms,
                     success=True,
                 ),
-            ]
+            ],
+            refresh_preview=False,
         )
         return ZScanTestResult(
             mode=Z_SCAN_TEST_STAGE_ONLY,
@@ -1153,7 +1303,12 @@ class SimSettingsDialog(QDialog):
             restore_ms=restore_ms,
         )
 
-    def _run_zscan_stage_plus_capture_test(self, started_at_s: float) -> ZScanTestResult:
+    def _run_zscan_stage_plus_capture_test(
+        self,
+        started_at_s: float,
+        daq_config_override: DaqLineConfig | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> ZScanTestResult:
         cfg = self.config.z_scan
         daq_config: DaqLineConfig | None = None
         was_camera_connected = False
@@ -1175,7 +1330,8 @@ class SimSettingsDialog(QDialog):
             if self.camera_adapter is None:
                 raise HardwareError("No camera adapter is available.")
 
-            daq_config = self._current_daq_config()
+            # 优先使用调用方在 GUI 线程快照的 daq_config，避免 worker 线程读 Qt 控件。
+            daq_config = daq_config_override if daq_config_override is not None else self._current_daq_config()
             validate_daq_line_config(daq_config)
             positions = self._zscan_positions_checked(cfg)
             running_orders = self.slm_adapter.list_running_orders()
@@ -1220,7 +1376,7 @@ class SimSettingsDialog(QDialog):
                 timing=self.config.timing,
                 z_scan_config=cfg,
                 waveform_builder=NIDaqWaveformBuilder(),
-                stop_event=None,
+                stop_event=stop_event,
                 on_status=_on_zscan_status,
                 keep_captured_stack=True,
             )
@@ -1312,7 +1468,8 @@ class SimSettingsDialog(QDialog):
                         tiff_write_ms=tiff_write_ms,
                         success=True,
                     ),
-                ]
+                ],
+                refresh_preview=False,
             )
             self._pending_zscan_slm_warning = None
             return ZScanTestResult(
@@ -1346,12 +1503,12 @@ class SimSettingsDialog(QDialog):
                 try:
                     self.daq_adapter.set_all_low(daq_config.device_name)
                 except Exception:
-                    pass
+                    logger.warning("Z-scan test cleanup step failed; continuing teardown.", exc_info=True)
             if camera_cleanup_needed:
                 try:
                     self._cleanup_test_camera(was_camera_connected)
                 except Exception:
-                    pass
+                    logger.warning("Z-scan test cleanup step failed; continuing teardown.", exc_info=True)
 
     def _clear_line_combos(self) -> None:
         """清空所有线位下拉（设备不可用或换设备失败时使用）。"""
@@ -1477,22 +1634,53 @@ class SimSettingsDialog(QDialog):
         try:
             self.camera_adapter.disarm()
         except Exception:
-            pass
+            logger.warning("Test camera teardown step failed; continuing.", exc_info=True)
         if self._camera_externally_owned and was_connected_before_test:
             return
         try:
             self.camera_adapter.disconnect()
         except Exception:
-            pass
+            logger.warning("Test camera teardown step failed; continuing.", exc_info=True)
 
-    def _run_camera_trigger_test(self, daq_config: DaqLineConfig) -> Path:
+    def _execute_sim_capture_sequence(
+        self,
+        daq_config: DaqLineConfig,
+        camera_config: CameraConfig,
+        plan,
+        frame_count: int = 9,
+        stop_event: threading.Event | None = None,
+    ) -> tuple[np.ndarray, list[float]]:
+        """arm → activate SLM RO → play DAQ waveform → read frames.
+
+        Shared by the SIM acquisition test and future production paths.
+        Caller is responsible for cleanup (disarm, DAQ all-low).
+        """
+        self.camera_adapter.apply_config(camera_config)
+        self.camera_adapter.arm(frame_count=frame_count)
+        self.slm_adapter.activate_prepared_patterns()
+        self.daq_adapter.play_waveform(daq_config.device_name, plan, stop_event=stop_event)
+        return self.camera_adapter.read_frame_sequence(
+            frame_count=frame_count,
+            pattern_files=list(self._loaded_pattern_result.pattern_files),
+            laser_wavelength_nm=self.config.selected_laser_nm,
+            stop_event=stop_event,
+        )
+
+    def _run_camera_trigger_test(
+        self,
+        daq_config: DaqLineConfig,
+        stop_event: threading.Event | None = None,
+    ) -> Path:
         """对相机触发线发一次 100 ms 脉冲，读单帧并保存 16 位 TIFF。"""
         # 1) 准备输出路径与目标 line index。
         output_path = self._test_capture_path("camera_pulse", "camera_trigger")
         _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
         was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
-            # 2) apply_config → arm → 发脉冲 → 读 1 帧。
+            # 2) apply_config → arm → 发脉冲 → 读 1 帧；启动前与等帧期间均可取消
+            #    （等帧是主要阻塞段，stop_event 直接透传给 read_frame_sequence）。
+            if stop_event is not None and stop_event.is_set():
+                raise HardwareError("相机触发测试已取消。")
             self.camera_adapter.apply_config(self.config.camera)
             self.camera_adapter.arm(frame_count=1)
             self.daq_adapter.pulse_line(daq_config.device_name, line_index, duration_s=0.1)
@@ -1500,6 +1688,7 @@ class SimSettingsDialog(QDialog):
                 frame_count=1,
                 pattern_files=[""],
                 laser_wavelength_nm=self.config.selected_laser_nm,
+                stop_event=stop_event,
             )
             # 3) 保存 stack[0] 为 16 位 TIFF。
             self._write_uint16_tiff(output_path, stack[0])
@@ -1510,19 +1699,29 @@ class SimSettingsDialog(QDialog):
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
 
-    def _run_laser_pulse_test(self, daq_config: DaqLineConfig, target_role: str) -> None:
+    def _run_laser_pulse_test(
+        self,
+        daq_config: DaqLineConfig,
+        target_role: str,
+        stop_event: threading.Event | None = None,
+    ) -> None:
         """对选中的激光 TTL 线输出 1 秒短脉冲，用于接线确认。"""
         line_name = getattr(daq_config, target_role)
         device_name, _, line_index = parse_line_name(line_name)
+        # 已请求取消则直接跳过脉冲；脉冲期间的取消由 pulse_line 分片 sleep 响应（提前拉低）。
+        if stop_event is not None and stop_event.is_set():
+            return
         # 默认 1 秒脉冲让肉眼足以看到激光器响应；DAQ adapter 内部把上限夹到 100 ms（仿真路径）或长脉冲（真实路径）。
-        self.daq_adapter.pulse_line(device_name, line_index, duration_s=1.0)
+        self.daq_adapter.pulse_line(device_name, line_index, duration_s=1.0, stop_event=stop_event)
 
     def _run_sim_acquisition_test(
         self,
         daq_config: DaqLineConfig,
         acquisition_started_at_s: float | None = None,
+        stop_event: threading.Event | None = None,
+        selected_laser_nm: int | None = None,
     ) -> SimAcquisitionTestResult:
         """按当前波长选 RO，执行一次 SIM9 测试采集并保存 stack 到 TIFF。"""
         # 1) 计时起点：用 ``time.perf_counter`` 精确测量端到端耗时。
@@ -1531,8 +1730,9 @@ class SimSettingsDialog(QDialog):
         # 2) 必须先连接 SLM；否则没有 RO 列表可挑。
         if not self.slm_adapter.is_connected():
             raise HardwareError("SIM采集测试前需要先连接 SLM。")
-        # 3) 同步控件，再拷贝相机/timing 配置（不修改原 self.config）。
-        self.config.selected_laser_nm = self._selected_laser_nm()
+        # 3) 使用调用方快照的波长（worker 场景），或从控件读取（GUI 线程直调场景）。
+        #    不写 self.config，避免 worker 线程与 GUI 线程同时访问共享对象。
+        laser_nm = selected_laser_nm if selected_laser_nm is not None else self._selected_laser_nm()
         camera_config = clone_app_config(self.config).camera
         # 4) 测试用固定曝光 500 ms / 帧间 50 ms，与 SLM RO 桶（≥50 ms）对齐。
         camera_config.exposure_us = SIM_ACQUISITION_TEST_EXPOSURE_US
@@ -1542,7 +1742,7 @@ class SimSettingsDialog(QDialog):
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, warnings = find_best_running_order(
             running_orders,
-            wavelength_nm=self.config.selected_laser_nm,
+            wavelength_nm=laser_nm,
             exposure_us=camera_config.exposure_us,
         )
         if ro_index is None:
@@ -1555,29 +1755,27 @@ class SimSettingsDialog(QDialog):
         exposure_ms = max(1, int(round(float(camera_config.exposure_us) / 1000.0)))
         output_path = self._test_capture_path(
             "sim_acquisition",
-            f"sim_acquisition_{self.config.selected_laser_nm}nm_{exposure_ms}ms",
+            f"sim_acquisition_{laser_nm}nm_{exposure_ms}ms",
         )
         # 7) 构建波形 plan：与正式采集走同一段代码路径，确保测试与正式一致。
         waveform_builder = NIDaqWaveformBuilder()
         plan = waveform_builder.build(
             daq_config=daq_config,
             timing=timing_config,
-            laser_wavelength_nm=self.config.selected_laser_nm,
+            laser_wavelength_nm=laser_nm,
             exposure_us=camera_config.exposure_us,
             frame_count=9,
             include_role_matrix=False,
         )
         was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
-            # 8) apply 相机 → arm → 激活 SLM RO → 播放 DAQ → 读 9 帧 stack。
-            self.camera_adapter.apply_config(camera_config)
-            self.camera_adapter.arm(frame_count=9)
-            self.slm_adapter.activate_prepared_patterns()
-            self.daq_adapter.play_waveform(daq_config.device_name, plan)
-            stack, _timestamps = self.camera_adapter.read_frame_sequence(
+            # 8) arm → 激活 SLM RO → 播放 DAQ → 读 9 帧 stack（共享 helper，与正式采集路径一致）。
+            stack, _timestamps = self._execute_sim_capture_sequence(
+                daq_config=daq_config,
+                camera_config=camera_config,
+                plan=plan,
                 frame_count=9,
-                pattern_files=list(self._loaded_pattern_result.pattern_files),
-                laser_wavelength_nm=self.config.selected_laser_nm,
+                stop_event=stop_event,
             )
             # 9) 计算实际采集耗时 + 写 TIFF；写盘**不**计入 actual_duration。
             actual_duration_s = max(0.0, time.perf_counter() - float(acquisition_started_at_s))
@@ -1593,9 +1791,14 @@ class SimSettingsDialog(QDialog):
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
 
-    def _run_slm_activation_timing_test(self, daq_config: DaqLineConfig) -> SlmActivationTimingTestResult:
+    def _run_slm_activation_timing_test(
+        self,
+        daq_config: DaqLineConfig,
+        stop_event: threading.Event | None = None,
+        selected_laser_nm: int | None = None,
+    ) -> SlmActivationTimingTestResult:
         """实测 slm_enable(EXT_RUN) 拉高 -> RO 进入 ACT 的延迟上界。
 
         流程：
@@ -1612,11 +1815,12 @@ class SimSettingsDialog(QDialog):
         # 1) 必须先连接 SLM；选 RO 沿用 SIM 采集测试的波长 + 500ms 曝光桶。
         if not self.slm_adapter.is_connected():
             raise HardwareError("SLM激活时序测试前需要先连接 SLM。")
-        self.config.selected_laser_nm = self._selected_laser_nm()
+        # 使用调用方快照的波长（worker 场景），不在 worker 线程读 Qt 控件。
+        laser_nm = selected_laser_nm if selected_laser_nm is not None else self._selected_laser_nm()
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, ro_warnings = find_best_running_order(
             running_orders,
-            wavelength_nm=self.config.selected_laser_nm,
+            wavelength_nm=laser_nm,
             exposure_us=SIM_ACQUISITION_TEST_EXPOSURE_US,
         )
         if ro_index is None:
@@ -1653,6 +1857,8 @@ class SimSettingsDialog(QDialog):
                     reached_active = True
                     enable_to_active_ms = elapsed_ms
                     break
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if elapsed_ms >= SLM_ACTIVATION_TIMING_TIMEOUT_S * 1000.0:
                     break
         finally:
@@ -1660,11 +1866,11 @@ class SimSettingsDialog(QDialog):
             try:
                 self.daq_adapter.set_line(daq_config.device_name, enable_line_index, high=False)
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
         return SlmActivationTimingTestResult(
             running_order_name=str(ro_name),
             initial_state=initial_state,
@@ -1675,29 +1881,54 @@ class SimSettingsDialog(QDialog):
         )
 
     def _run_pulse_test(self) -> None:
-        """测试按钮总入口：按 ``combo_test_target.currentData`` 分派到三类测试。"""
-        # 1) 计时起点 → 校验 DAQ 配置 → 取目标 ID。
+        """测试按钮总入口：首次点击启动 worker；测试运行中再次点击则取消。"""
+        # 如果 worker 正在运行，本次点击是取消请求。
+        if self._pulse_test_thread is not None:
+            if self._pulse_test_worker is not None:
+                self._pulse_test_worker.cancel()
+            self.btn_pulse_test.setEnabled(False)
+            return
+
+        # 1) 校验 DAQ 配置 → 取目标 ID；失败立即报错，不启动 worker。
         acquisition_started_at_s = time.perf_counter()
         try:
             daq_config = self._current_daq_config()
             validate_daq_line_config(daq_config)
-            target_id = self.combo_test_target.currentData()
-            if not target_id:
-                raise ValueError("Please select a test target.")
-            # 2) 三种分支：SIM9 完整测试 / 相机触发 + 拍单帧 / 单线激光脉冲。
+        except Exception as exc:
+            self._set_error(str(exc))
+            QMessageBox.critical(self, "Pulse Test", str(exc))
+            return
+        target_id = self.combo_test_target.currentData()
+        if not target_id:
+            self._set_error("Please select a test target.")
+            return
+
+        # 闭包捕获快照，防止 worker 运行期间主线程改写同一 DaqLineConfig 对象。
+        daq_config = copy.copy(daq_config)
+        # 在 GUI 线程快照波长，worker 线程不得读 QButtonGroup 等 Qt 控件。
+        selected_laser_nm_snapshot = self._selected_laser_nm()
+
+        # 2) 构造 worker fn 闭包；闭包捕获已校验的不可变值，不捕获 self。
+        def _test_fn(stop_event: threading.Event) -> str:
             if target_id == SIM_ACQUISITION_TEST_ID:
                 result = self._run_sim_acquisition_test(
                     daq_config,
                     acquisition_started_at_s=acquisition_started_at_s,
+                    stop_event=stop_event,
+                    selected_laser_nm=selected_laser_nm_snapshot,
                 )
-                message = (
+                return (
                     "SIM采集测试完成，16位 TIFF 已保存到:\n"
                     f"{result.output_path}\n"
                     f"SIM采集实际用时: {result.actual_acquisition_duration_s * 1000.0:.3f} ms\n"
                     f"DAQ完整播放时长: {result.daq_waveform_duration_s * 1000.0:.3f} ms"
                 )
             elif target_id == SLM_ACTIVATION_TIMING_TEST_ID:
-                timing_result = self._run_slm_activation_timing_test(daq_config)
+                timing_result = self._run_slm_activation_timing_test(
+                    daq_config,
+                    stop_event=stop_event,
+                    selected_laser_nm=selected_laser_nm_snapshot,
+                )
                 lines = [
                     f"Running Order: {timing_result.running_order_name}",
                     f"软件激活后初始状态: {timing_result.initial_state.get('name')}",
@@ -1715,20 +1946,56 @@ class SimSettingsDialog(QDialog):
                         f"超时 {SLM_ACTIVATION_TIMING_TIMEOUT_S:.1f}s 未达到 ACT(active)；"
                         "请检查 slm_enable(EXT_RUN) 接线、RO 激活方式与 R11CommLib 版本。"
                     )
-                message = "SLM激活时序测试完成:\n" + "\n".join(lines)
+                return "SLM激活时序测试完成:\n" + "\n".join(lines)
             elif target_id == "camera_trigger_line":
-                output_path = self._run_camera_trigger_test(daq_config)
-                message = f"相机测试完成，16位 TIFF 已保存到:\n{output_path}"
+                output_path = self._run_camera_trigger_test(daq_config, stop_event=stop_event)
+                return f"相机测试完成，16位 TIFF 已保存到:\n{output_path}"
             else:
-                self._run_laser_pulse_test(daq_config, str(target_id))
-                message = f"{ROLE_LABELS[str(target_id)]} 脉冲测试完成。"
-            # 3) 测试成功：清错误标签，弹"完成"对话框。
-            self._set_error("-")
-            QMessageBox.information(self, "Pulse Test", message)
-        except Exception as exc:
-            # 4) 任何失败都把错误显示到标签 + 弹错误对话框，让用户看到原因。
-            self._set_error(str(exc))
-            QMessageBox.critical(self, "Pulse Test", str(exc))
+                self._run_laser_pulse_test(daq_config, str(target_id), stop_event=stop_event)
+                return f"{ROLE_LABELS[str(target_id)]} 脉冲测试完成。"
+
+        # 3) 构造 stop_event + worker + thread。
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_test_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_pulse_test_success)
+        worker.signal_error.connect(self._on_pulse_test_error)
+        worker.signal_finished.connect(self._on_pulse_test_finished)
+        thread.started.connect(worker.run)
+
+        # 4) 保存引用，切换按钮为"Cancel"模式，刷新状态标签。
+        self._pulse_test_stop_event = stop_event
+        self._pulse_test_worker = worker
+        self._pulse_test_thread = thread
+        self._pulse_test_btn_original_text = self.btn_pulse_test.text()
+        self.btn_pulse_test.setText("Cancel")
+        self._set_error("测试进行中，请稍候…")
+
+        # 5) 启动 worker 线程。
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_pulse_test_success(self, message: str) -> None:
+        self._set_error("-")
+        QMessageBox.information(self, "Pulse Test", message)
+
+    @pyqtSlot(str)
+    def _on_pulse_test_error(self, error_message: str) -> None:
+        self._set_error(error_message)
+        QMessageBox.critical(self, "Pulse Test", error_message)
+
+    @pyqtSlot()
+    def _on_pulse_test_finished(self) -> None:
+        """Worker 完成（成功/失败/取消）后：停止 thread，恢复按钮和状态。"""
+        if self._pulse_test_thread is not None:
+            self._pulse_test_thread.quit()
+            self._pulse_test_thread.wait()
+            self._pulse_test_thread = None
+        self._pulse_test_worker = None
+        self._pulse_test_stop_event = None
+        self.btn_pulse_test.setText(self._pulse_test_btn_original_text)
+        self.btn_pulse_test.setEnabled(self.combo_test_target.count() > 0)
 
     def _save_and_accept(self) -> None:
         """保存按钮：把 UI 同步到配置 → 校验 DAQ → 保存到 JSON → 发信号 → accept。"""
@@ -1774,12 +2041,12 @@ class SimSettingsDialog(QDialog):
             try:
                 self.camera_adapter.disconnect()
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
         if not self._slm_externally_owned:
             try:
                 self.slm_adapter.disconnect()
             except Exception:
-                pass
+                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -1838,6 +2105,15 @@ class SimControlWindow(QMainWindow):
         self.current_task_id = "-"
         self.current_laser_nm = self.config.selected_laser_nm
         self.sim_last_reconstruction_result = None
+        # 初始化硬件 / 相机设置 / 相机初始化 / 图案烧录 worker 状态；None 表示没有正在运行的操作。
+        self._hw_init_thread: QThread | None = None
+        self._hw_init_worker: _PulseTestWorker | None = None
+        self._cam_settings_thread: QThread | None = None
+        self._cam_settings_worker: _PulseTestWorker | None = None
+        self._cam_init_thread: QThread | None = None
+        self._cam_init_worker: _PulseTestWorker | None = None
+        self._program_patterns_thread: QThread | None = None
+        self._program_patterns_worker: _PulseTestWorker | None = None
 
         # 7) UI 构造 → 信号连接 → 控件初值填充 → 刷新线位下拉 → 日志记录。
         self._build_ui()
@@ -2233,23 +2509,124 @@ class SimControlWindow(QMainWindow):
         path = save_app_config(self.config, self.config.config_path or DEFAULT_CONFIG_PATH)
         self._log(f"Config saved to {path}")
 
-    @_catch_to_error
     def _initialize_hardware(self) -> None:
-        """Initialize Hardware 按钮：同步 UI → 写 DAQ 配置 → controller 初始化相机/SLM。"""
+        """Initialize Hardware 按钮：同步 UI → 写 DAQ 配置 → worker 线程初始化相机/SLM。"""
+        if self._hw_init_thread is not None:
+            return
         self._sync_config_from_widgets()
-        self.controller.apply_daq_config(self.config.daq)
-        self.controller.initialize_hardware()
+        try:
+            self.controller.apply_daq_config(self.config.daq)
+        except Exception as exc:
+            self._set_error(str(exc))
+            return
 
-    @_catch_to_error
+        def _fn(stop_event: threading.Event) -> str:
+            self.controller.initialize_hardware()
+            return "硬件初始化完成。"
+
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_hw_init_success)
+        worker.signal_error.connect(self._on_hw_init_error)
+        worker.signal_finished.connect(self._on_hw_init_finished)
+        thread.started.connect(worker.run)
+        self._hw_init_worker = worker
+        self._hw_init_thread = thread
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_hw_init_success(self, message: str) -> None:
+        self._log(f"[OK] {message}")
+
+    @pyqtSlot(str)
+    def _on_hw_init_error(self, error: str) -> None:
+        self._set_error(error)
+
+    @pyqtSlot()
+    def _on_hw_init_finished(self) -> None:
+        if self._hw_init_thread is not None:
+            self._hw_init_thread.quit()
+            self._hw_init_thread.wait()
+            self._hw_init_thread = None
+        self._hw_init_worker = None
+
     def _initialize_camera(self) -> None:
-        """Initialize Camera 按钮：只触发相机初始化，便于排查 DCAM 安装问题。"""
-        self.controller.initialize_camera()
+        """Initialize Camera 按钮：worker 线程只初始化相机，便于排查 DCAM 安装问题。"""
+        if self._cam_init_thread is not None:
+            return
 
-    @_catch_to_error
+        def _fn(stop_event: threading.Event) -> str:
+            self.controller.initialize_camera()
+            return "相机初始化完成。"
+
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_cam_init_success)
+        worker.signal_error.connect(self._on_cam_init_error)
+        worker.signal_finished.connect(self._on_cam_init_finished)
+        thread.started.connect(worker.run)
+        self._cam_init_worker = worker
+        self._cam_init_thread = thread
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_cam_init_success(self, message: str) -> None:
+        self._log(f"[OK] {message}")
+
+    @pyqtSlot(str)
+    def _on_cam_init_error(self, error: str) -> None:
+        self._set_error(error)
+
+    @pyqtSlot()
+    def _on_cam_init_finished(self) -> None:
+        if self._cam_init_thread is not None:
+            self._cam_init_thread.quit()
+            self._cam_init_thread.wait()
+            self._cam_init_thread = None
+        self._cam_init_worker = None
+
     def _apply_camera_settings(self) -> None:
-        """Apply Camera Settings 按钮：同步 UI → 把相机参数下发到 DCAM。"""
+        """Apply Camera Settings 按钮：同步 UI → worker 线程把相机参数下发到 DCAM。"""
+        if self._cam_settings_thread is not None:
+            return
         self._sync_config_from_widgets()
-        self.controller.apply_camera_config(self.config.camera)
+        camera_config_snapshot = copy.copy(self.config.camera)
+
+        def _fn(stop_event: threading.Event) -> str:
+            self.controller.apply_camera_config(camera_config_snapshot)
+            return "相机参数已下发。"
+
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_cam_settings_success)
+        worker.signal_error.connect(self._on_cam_settings_error)
+        worker.signal_finished.connect(self._on_cam_settings_finished)
+        thread.started.connect(worker.run)
+        self._cam_settings_worker = worker
+        self._cam_settings_thread = thread
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_cam_settings_success(self, message: str) -> None:
+        self._log(f"[OK] {message}")
+
+    @pyqtSlot(str)
+    def _on_cam_settings_error(self, error: str) -> None:
+        self._set_error(error)
+
+    @pyqtSlot()
+    def _on_cam_settings_finished(self) -> None:
+        if self._cam_settings_thread is not None:
+            self._cam_settings_thread.quit()
+            self._cam_settings_thread.wait()
+            self._cam_settings_thread = None
+        self._cam_settings_worker = None
 
     @_catch_to_error
     def _arm_camera(self) -> None:
@@ -2261,11 +2638,48 @@ class SimControlWindow(QMainWindow):
         """Disarm Camera 按钮：退出 arm 状态，常用于调试中断。"""
         self.controller.disarm_camera()
 
-    @_catch_to_error
     def _program_patterns(self) -> None:
-        """Program Patterns 按钮：把控件中 9 个文件路径烧录到 SLM。"""
-        self._sync_config_from_widgets()
-        self.controller.prepare_patterns(self.config.pattern_files)
+        """Program Patterns 按钮：GUI 线程快照路径，worker 线程把 9 个文件烧录到 SLM。"""
+        if self._program_patterns_thread is not None:
+            return
+        try:
+            self._sync_config_from_widgets()
+        except Exception as exc:
+            self._set_error(str(exc))
+            return
+        pattern_files_snapshot = list(self.config.pattern_files)
+
+        def _fn(stop_event: threading.Event) -> str:
+            self.controller.prepare_patterns(pattern_files_snapshot)
+            return "图案已烧录到 SLM。"
+
+        stop_event = threading.Event()
+        worker = _PulseTestWorker(_fn, stop_event)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.signal_success.connect(self._on_program_patterns_success)
+        worker.signal_error.connect(self._on_program_patterns_error)
+        worker.signal_finished.connect(self._on_program_patterns_finished)
+        thread.started.connect(worker.run)
+        self._program_patterns_worker = worker
+        self._program_patterns_thread = thread
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_program_patterns_success(self, message: str) -> None:
+        self._log(f"[OK] {message}")
+
+    @pyqtSlot(str)
+    def _on_program_patterns_error(self, error: str) -> None:
+        self._set_error(error)
+
+    @pyqtSlot()
+    def _on_program_patterns_finished(self) -> None:
+        if self._program_patterns_thread is not None:
+            self._program_patterns_thread.quit()
+            self._program_patterns_thread.wait()
+            self._program_patterns_thread = None
+        self._program_patterns_worker = None
 
     def _ensure_slm_connected_for_running_order(self) -> None:
         """正式采集前检查 SLM 是否连接；未连接抛 ``HardwareError``。"""
@@ -2303,6 +2717,10 @@ class SimControlWindow(QMainWindow):
     @_catch_to_error
     def _run_single_acquisition(self) -> None:
         """Run Single 9-Frame Acquisition 按钮：执行一次正式 SIM9 采集。"""
+        # 0) 重入防护：已有活跃 task 时拒绝重复启动，防止 worker 互相竞争硬件资源。
+        if self.controller.is_busy:
+            self._set_error("采集正在进行中，请等待完成或先 Stop 后重试。")
+            return
         # 1) UI → config，确保 worker 读到一致状态。
         self._sync_config_from_widgets()
         self._ensure_slm_connected_for_running_order()

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1075</width>
-    <height>788</height>
+    <height>640</height>
    </rect>
   </property>
   <property name="minimumSize">
@@ -28,7 +28,7 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_root">
    <property name="spacing">
-    <number>8</number>
+    <number>4</number>
    </property>
    <property name="leftMargin">
     <number>20</number>
@@ -111,7 +111,7 @@
    <item>
     <widget class="QTabWidget" name="tabs">
      <property name="sizePolicy">
-      <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+      <sizepolicy hsizetype="Preferred" vsizetype="Ignored">
        <horstretch>0</horstretch>
        <verstretch>1</verstretch>
       </sizepolicy>
@@ -1240,13 +1240,13 @@
         <number>16</number>
        </property>
        <property name="topMargin">
-        <number>12</number>
+        <number>8</number>
        </property>
        <property name="rightMargin">
         <number>16</number>
        </property>
        <property name="bottomMargin">
-        <number>12</number>
+        <number>8</number>
        </property>
        <item>
         <layout class="QHBoxLayout" name="horizontalLayout_zscan_columns">
@@ -1266,21 +1266,21 @@
            <property name="title">
             <string/>
            </property>
-           <layout class="QVBoxLayout" name="verticalLayout_zscan_params">
-            <property name="spacing">
-             <number>10</number>
+            <layout class="QVBoxLayout" name="verticalLayout_zscan_params">
+             <property name="spacing">
+              <number>6</number>
             </property>
             <property name="leftMargin">
              <number>10</number>
             </property>
-            <property name="topMargin">
-             <number>12</number>
+             <property name="topMargin">
+              <number>8</number>
             </property>
             <property name="rightMargin">
              <number>10</number>
             </property>
-            <property name="bottomMargin">
-             <number>12</number>
+             <property name="bottomMargin">
+              <number>8</number>
             </property>
             <item>
              <widget class="QGroupBox" name="group_zscan_start_section">
@@ -1302,10 +1302,16 @@
               </property>
               <layout class="QGridLayout" name="gridLayout_zscan_start_section" rowstretch="1,0" columnstretch="1,0,0,1" columnminimumwidth="0,120,270,0">
                <property name="leftMargin">
-                <number>20</number>
+                <number>22</number>
                </property>
                <property name="rightMargin">
                 <number>20</number>
+               </property>
+               <property name="topMargin">
+                <number>8</number>
+               </property>
+               <property name="bottomMargin">
+                <number>8</number>
                </property>
                <property name="horizontalSpacing">
                 <number>24</number>
@@ -1517,6 +1523,12 @@
                </property>
                <property name="rightMargin">
                 <number>20</number>
+               </property>
+               <property name="topMargin">
+                <number>8</number>
+               </property>
+               <property name="bottomMargin">
+                <number>8</number>
                </property>
                <property name="horizontalSpacing">
                 <number>24</number>
@@ -1740,6 +1752,12 @@
                <property name="rightMargin">
                 <number>20</number>
                </property>
+               <property name="topMargin">
+                <number>8</number>
+               </property>
+               <property name="bottomMargin">
+                <number>8</number>
+               </property>
                <property name="horizontalSpacing">
                 <number>24</number>
                </property>
@@ -1884,6 +1902,21 @@
               </property>
               <property name="horizontalSpacing">
                <number>12</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>4</number>
+              </property>
+              <property name="leftMargin">
+               <number>8</number>
+              </property>
+              <property name="topMargin">
+               <number>8</number>
+              </property>
+              <property name="rightMargin">
+               <number>8</number>
+              </property>
+              <property name="bottomMargin">
+               <number>8</number>
               </property>
               <property name="formAlignment">
                <set>Qt::AlignHCenter|Qt::AlignVCenter</set>
@@ -2116,7 +2149,19 @@
              </property>
              <layout class="QVBoxLayout" name="verticalLayout_zscan_test">
               <property name="spacing">
-               <number>10</number>
+               <number>6</number>
+              </property>
+              <property name="leftMargin">
+               <number>8</number>
+              </property>
+              <property name="topMargin">
+               <number>8</number>
+              </property>
+              <property name="rightMargin">
+               <number>8</number>
+              </property>
+              <property name="bottomMargin">
+               <number>8</number>
               </property>
               <item>
                <layout class="QHBoxLayout" name="horizontalLayout_zscan_test_target">
@@ -2652,6 +2697,13 @@
             </item>
             <item row="0" column="2">
              <widget class="QWidget" name="widget_recon_otf_path_row">
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
               <layout class="QHBoxLayout" name="horizontalLayout_recon_otf_path">
                <property name="spacing">
                 <number>10</number>
@@ -2724,6 +2776,13 @@
             </item>
             <item row="1" column="2">
              <widget class="QWidget" name="widget_recon_background_path_row">
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
               <layout class="QHBoxLayout" name="horizontalLayout_recon_background_path">
                <property name="spacing">
                 <number>10</number>
@@ -2911,6 +2970,13 @@
             </item>
             <item row="0" column="2">
              <widget class="QWidget" name="widget_recon_output_path_row">
+              <property name="font">
+               <font>
+                <family>Arial</family>
+                <weight>75</weight>
+                <bold>true</bold>
+               </font>
+              </property>
               <layout class="QHBoxLayout" name="horizontalLayout_recon_output_path">
                <property name="spacing">
                 <number>10</number>

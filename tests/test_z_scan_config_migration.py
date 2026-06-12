@@ -15,7 +15,7 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         config = app_config_from_dict({"config_version": 3})
         payload = app_config_to_dict(config)
 
-        self.assertEqual(config.config_version, 9)
+        self.assertEqual(config.config_version, 10)
         self.assertTrue(config.z_scan.enabled)
         self.assertIsNone(config.z_scan.start_um)
         self.assertEqual(config.z_scan.direction, "positive_z")
@@ -24,7 +24,7 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         self.assertEqual(config.z_scan.exposure_preset_ms, 8)
         self.assertEqual(config.z_scan.focus_metric, "sml")
         self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
-        self.assertEqual(payload["config_version"], 9)
+        self.assertEqual(payload["config_version"], 10)
         self.assertIn("z_scan", payload)
         self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
         self.assertIn("reconstruction", payload)
@@ -51,7 +51,7 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         )
         payload = app_config_to_dict(config)
 
-        self.assertEqual(config.config_version, 9)
+        self.assertEqual(config.config_version, 10)
         self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
         self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
 

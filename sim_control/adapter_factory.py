@@ -40,7 +40,11 @@ def create_daq_adapter_for_backend(backend: BackendConfig) -> Any:
 def create_stage_adapter_for_backend(backend: BackendConfig) -> Any:
     if backend.simulation_mode:
         return SimulatedZStageAdapter()
-    return Ti2ZStageAdapter()
+    # 空字符串路径透传给 adapter 表示"沿用内部默认推导"，保持默认行为不变。
+    return Ti2ZStageAdapter(
+        dll_path=backend.ti2_dll_path or None,
+        sdk_module_path=backend.ti2_sdk_module_path or None,
+    )
 
 
 def create_adapter_bundle(backend: BackendConfig) -> AdapterBundle:

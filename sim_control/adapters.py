@@ -58,6 +58,9 @@ import numpy as np
 from .models import CameraConfig, PatternPreparationResult, Z_SCAN_EXPOSURE_PRESETS_MS
 from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE, SIM_CAMERA_ROI_STEP_PX, build_sim_camera_size_presets
 from .waveform import WaveformPlan
+# HardwareError 现集中定义在 ``errors.py``；此处导入并 re-export，保持
+# ``from sim_control.adapters import HardwareError`` 等既有调用点不变。
+from .errors import HardwareError
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +75,6 @@ except Exception:  # pragma: no cover
     AcquisitionType = None
     LineGrouping = None
     DigitalSingleChannelWriter = None
-
-
-class HardwareError(RuntimeError):
-    """本文件唯一暴露的领域异常类型。
-
-    用途：
-        所有真实硬件、SDK 调用、设备状态相关错误都通过此类抛出；GUI 据此和
-        ``AcquisitionCancelled`` 区分。控制器/worker 把它包到 ``signal_acquisition_failed``。
-    """
-    pass
 
 
 # 项目根目录（``sim_control/`` 的上一级）。SDK 默认搜索路径以它为基准。
@@ -683,6 +676,26 @@ def r11_activation_state_name(code: int | None) -> str:
     return R11_ACTIVATION_STATES.get(int(code), f"unknown(0x{int(code):02X})")
 
 
+def _interruptible_sleep(duration_s: float, stop_event: Any | None = None, slice_s: float = 0.05) -> None:
+    """可取消 sleep：``stop_event`` 置位时提前返回。
+
+    - ``stop_event is None`` 时退化为单次 ``time.sleep``，与历史行为完全一致
+      （现有 pulse_line 测试断言单次 sleep 调用，依赖该退化路径）。
+    - 提供 ``stop_event`` 时按 ``slice_s`` 算术倒计时分片；用倒计时而非
+      ``time.monotonic`` deadline，保证测试 mock ``time.sleep`` 后行为仍确定。
+    """
+    if stop_event is None:
+        time.sleep(duration_s)
+        return
+    remaining = float(duration_s)
+    while remaining > 0:
+        if stop_event.is_set():
+            return
+        step = min(remaining, slice_s)
+        time.sleep(step)
+        remaining -= step
+
+
 # DAQ adapter 是 USB-6423 的真实输出边界，负责把 WaveformPlan 播放到 port0 数字线。
 class NIDaqAdapter:
     """NI USB-6423 数字输出适配器。
@@ -711,6 +724,9 @@ class NIDaqAdapter:
             system = nidaqmx.system.System.local()
             return [device.name for device in system.devices]
         except Exception:
+            # NI 驱动损坏/服务未启动与"无设备"在 GUI 上同相（下拉为空）；记 debug
+            # 留排障线索，但保持返回 [] 不改变 GUI 行为。
+            logger.debug("Failed to enumerate NI-DAQmx devices.", exc_info=True)
             return []
 
     def list_port0_lines(self, device_name: str | None = None, default_device: str | None = None) -> list[str]:
@@ -725,6 +741,8 @@ class NIDaqAdapter:
                 return []
             return [f"{selected_device}/port0/line{i}" for i in range(16)]
         except Exception:
+            # 同 list_devices：驱动故障与无设备同相，记 debug 不改变 GUI 行为。
+            logger.debug("Failed to list NI-DAQmx port0 lines.", exc_info=True)
             return []
 
     def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None:
@@ -827,12 +845,20 @@ class NIDaqAdapter:
         except Exception as exc:
             raise HardwareError(f"Failed to set NI line {line_index} on {device_name}: {exc}") from exc
 
-    def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None:
+    def pulse_line(
+        self,
+        device_name: str,
+        line_index: int,
+        duration_s: float,
+        stop_event: Any | None = None,
+    ) -> None:
         """单线短脉冲：``0 → 1 → sleep → 0``，主要供 DAQ 测试按钮使用。
 
         参数校验：
             - ``line_index`` 必须在 [0, 31]；超出范围立刻抛 HardwareError。
             - ``duration_s`` 必须 > 0；否则即"零脉冲"无意义。
+            - ``stop_event`` 提供时分片 sleep（50 ms 粒度），置位即提前结束高电平；
+              不提供时保持单次 ``time.sleep`` 原行为。finally 始终保证拉低。
         """
         if not self._available:
             raise HardwareError("nidaqmx is not available; cannot pulse NI outputs.")
@@ -847,7 +873,7 @@ class NIDaqAdapter:
             try:
                 # 2) 拉高 → sleep → finally 拉低：完整 0/1/0 脉冲。
                 self.set_line(device_name, line_index, high=True)
-                time.sleep(duration_s)
+                _interruptible_sleep(duration_s, stop_event)
             finally:
                 self.set_line(device_name, line_index, high=False)
         except HardwareError:
@@ -893,6 +919,9 @@ class FusionBtCameraAdapter:
         self._connected_device_index = 0
         self._connected_device_label = ""
         self._connection_info: dict[str, Any] = {}
+        # 最近一次 read_frame_sequence 各帧的 DCAM 硬件时间戳（秒）；
+        # None 表示尚未采集或驱动/相机不支持 timestamp 字段（审查条目 #24）。
+        self._last_hardware_timestamps: list[float] | None = None
 
     def _initialize_dcam_api(self) -> None:
         """加载 DCAM Python 模块并初始化 SDK；若已初始化则容忍 ``ALREADYINITIALIZED``。"""
@@ -1501,7 +1530,9 @@ class FusionBtCameraAdapter:
         # 1) wait FRAMEREADY 事件；超时即抛错（GUI 会决定是否打印日志）。
         if not self._dcam_camera.wait_capevent_frameready(timeout_ms):
             raise HardwareError(f"DCAM preview wait failed: {self._dcam_camera.lasterr().name}")
-        # 2) 取最新一帧；SDK 直接返回 NumPy 视图。
+        # 2) 取最新一帧；buf_getlastframedata → buf_getframedata(-1) → buf_getframe，
+        #    每帧由 dcammisc_alloc_ndarray 新分配数组并经 dcambuf_copyframe 拷贝填充，
+        #    返回的是独立 NumPy 数组而非驱动环形缓冲视图，GUI 可安全长期持有该引用。
         frame = self._dcam_camera.buf_getlastframedata()
         if frame is False:
             raise HardwareError(f"Failed to fetch DCAM preview frame: {self._dcam_camera.lasterr().name}")
@@ -1585,6 +1616,7 @@ class FusionBtCameraAdapter:
         """
         if not self._armed:
             raise HardwareError("Camera must be armed before reading frame sequence.")
+        self._last_hardware_timestamps = None
         timestamps: list[float] = []
         captured = 0
         # 1) 计算总等待时长：取用户超时与"9 × (曝光+50ms) + 1s"中较大的一个。
@@ -1654,13 +1686,49 @@ class FusionBtCameraAdapter:
                 )
 
         # 3) 拿够 frame_count 帧后，从 buffer 中逐帧拷贝出 NumPy 数组拼成 (N, H, W) uint16。
+        #    优先用 ``buf_getframe``（一次 copyframe 同时取像素 + DCAMBUF_FRAME.timestamp 硬件
+        #    时间戳）；旧绑定/仿真对象没有该方法时回退 ``buf_getframedata``（无硬件时间戳）。
+        #    返回值第二项仍是软件消费时刻 ``time.time()``，语义不变（审查条目 #24：新增字段
+        #    而非替换）；硬件时间戳经 ``get_last_hardware_timestamps()`` 读取。
         frames = np.empty((frame_count, self._camera_config.roi_height, self._camera_config.roi_width), dtype=np.uint16)
+        buf_getframe = getattr(self._dcam_camera, "buf_getframe", None)
+        hardware_timestamps: list[float] | None = [] if buf_getframe is not None else None
         for index in range(frame_count):
-            frame = self._dcam_camera.buf_getframedata(index)
-            if frame is False:
-                raise HardwareError(f"Failed to read DCAM frame {index}: {self._dcam_camera.lasterr().name}")
+            if buf_getframe is not None:
+                frame_result = buf_getframe(index)
+                if frame_result is False:
+                    raise HardwareError(f"Failed to read DCAM frame {index}: {self._dcam_camera.lasterr().name}")
+                frame_struct, frame = frame_result
+                if hardware_timestamps is not None:
+                    try:
+                        hardware_timestamps.append(
+                            float(frame_struct.timestamp.sec) + float(frame_struct.timestamp.microsec) * 1e-6
+                        )
+                    except Exception:
+                        # 个别驱动/固件不填 timestamp 字段；整组置 None，不输出残缺列表。
+                        hardware_timestamps = None
+            else:
+                frame = self._dcam_camera.buf_getframedata(index)
+                if frame is False:
+                    raise HardwareError(f"Failed to read DCAM frame {index}: {self._dcam_camera.lasterr().name}")
             frames[index] = np.asarray(frame, dtype=np.uint16)
+        # 整组全 0 视为"驱动不填 timestamp"（DCAMBUF_FRAME 字段默认 0；不支持时间戳的
+        # 固件可能不抛异常而是留 0）——置 None 而非输出 epoch-0 假时间戳。
+        if hardware_timestamps is not None and all(value == 0.0 for value in hardware_timestamps):
+            hardware_timestamps = None
+        self._last_hardware_timestamps = hardware_timestamps
         return frames, timestamps
+
+    def get_last_hardware_timestamps(self) -> list[float] | None:
+        """最近一次 ``read_frame_sequence`` 各帧的 DCAM 硬件时间戳（秒，sec + microsec×1e-6）。
+
+        与 ``read_frame_sequence`` 第二个返回值（软件消费时刻 ``time.time()``）语义不同：
+        硬件时间戳来自 DCAMBUF_FRAME 结构，由相机/驱动在帧到达时打点，更接近真实曝光
+        时刻。返回 None 表示尚未采集、绑定不支持 ``buf_getframe`` 或 timestamp 字段缺失。
+        """
+        if self._last_hardware_timestamps is None:
+            return None
+        return list(self._last_hardware_timestamps)
 
 
 # SLM adapter 负责连接 R11、枚举/选择 Running Order，并保留手动 pattern 上传扩展点。

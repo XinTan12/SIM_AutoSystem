@@ -39,6 +39,7 @@ from typing import Any
 
 import numpy as np
 
+from .errors import HardwareError
 from .models import CameraConfig, PatternPreparationResult
 from .waveform import WaveformPlan, parse_line_name
 
@@ -72,10 +73,13 @@ class SimulatedCameraAdapter:
         被 ``SimAcquisitionController`` 通过 ``protocols.CameraAdapter`` 注入；
         测试夹具中也通过此类直接构造。
     """
-    def __init__(self):
+    def __init__(self, strict_connection: bool = False):
         # 内部状态字段：连接、arm、preview 三态分别独立，避免互相干扰。
         self._initialized = False
         self._connected = False
+        # strict_connection=True 时 read 系列在未连接时抛 HardwareError；默认 False
+        # 保持仿真测试便利。用于让"未连接被拒"回归在仿真模式下也能被测出。
+        self._strict_connection = bool(strict_connection)
         self._armed = False
         self._frame_count = 0
         self._camera_config = CameraConfig()
@@ -166,8 +170,10 @@ class SimulatedCameraAdapter:
 
     def read_preview_frame(self, timeout_ms: int = 100) -> np.ndarray:
         # 1) preview 未启动直接抛错，避免上层把 stale 数据当作真实预览帧。
+        if self._strict_connection and not self._connected:
+            raise HardwareError("Simulated camera is not connected.")
         if not self._preview_active:
-            raise RuntimeError("Simulated preview is not active.")
+            raise HardwareError("Simulated preview is not active.")
         # 2) 模拟读出延迟：把 timeout_ms 限制在 [1, 10] ms，避免 CPU 空转。
         time.sleep(min(max(timeout_ms, 1) / 1000.0, 0.01))
         # 3) 生成一帧仿真图像并返回；调用方一般立即送 LUT 显示。
@@ -193,8 +199,10 @@ class SimulatedCameraAdapter:
         stop_event: Any | None = None,
     ) -> tuple[np.ndarray, list[float]]:
         # 1) 未 arm 直接抛错；与真实 DCAM 行为一致：必须先 ``arm`` 才能拿到帧。
+        if self._strict_connection and not self._connected:
+            raise HardwareError("Simulated camera is not connected.")
         if not self._armed:
-            raise RuntimeError("Simulated camera must be armed before reading frames.")
+            raise HardwareError("Simulated camera must be armed before reading frames.")
         # 2) 预分配 stack 数组：ROI 大小 + 帧数 → ``(frame_count, H, W)`` uint16。
         height = int(self._camera_config.roi_height)
         width = int(self._camera_config.roi_width)
@@ -211,6 +219,10 @@ class SimulatedCameraAdapter:
             if frame_callback is not None:
                 frame_callback(index, timestamp)
         return frames, timestamps
+
+    def get_last_hardware_timestamps(self) -> list[float] | None:
+        """与 ``FusionBtCameraAdapter`` 对齐的扩展点；仿真路径没有硬件时间戳，恒返回 None。"""
+        return None
 
     def _generate_frame(self) -> np.ndarray:
         # 1) 取当前配置 ROI 尺寸；不允许负数（防御调用方 bug）。
@@ -237,9 +249,13 @@ class SimulatedSlmAdapter:
         与 ``SimulatedCameraAdapter`` 一道支撑 ``simulation_mode=True`` 下的端到端
         SIM 采集；正式采集走 ``select_running_order``，旧调试路径走 ``program_patterns``。
     """
-    def __init__(self):
+    def __init__(self, strict_connection: bool = False):
         self._initialized = False
         self._connected = False
+        # strict_connection=True 时 select/activate 等在未连接时抛 HardwareError，
+        # 不再自动 connect；默认 False 保持仿真测试便利。对齐真实 adapter 的
+        # "SLM 未连接应阻止采集"语义（AGENTS.md）。
+        self._strict_connection = bool(strict_connection)
         # 默认空 pattern 准备结果：``activate_prepared_patterns`` 会拒绝它。
         self._prepared = PatternPreparationResult()
         self._connection_info: dict[str, Any] = {}
@@ -285,16 +301,19 @@ class SimulatedSlmAdapter:
         return list(enumerate(SIMULATED_RUNNING_ORDERS))
 
     def select_running_order(self, ro_index: int) -> dict[str, Any]:
-        # 1) 未连接自动连接，与真实 adapter 不同（真实路径要求显式 connect），让单测更省事。
+        # 1) 未连接时：strict 模式拒绝（对齐真实 adapter 显式 connect 要求），
+        #    否则自动连接省测试样板。
         self.initialize()
         if not self._connected:
+            if self._strict_connection:
+                raise HardwareError("Simulated SLM is not connected; select running order rejected.")
             self.connect()
         ro_index = int(ro_index)
         # 2) 越界直接抛错；上层 GUI 会把异常翻译成对话框文本。
         try:
             ro_name = SIMULATED_RUNNING_ORDERS[ro_index]
         except IndexError as exc:
-            raise RuntimeError(f"Simulated running order index out of range: {ro_index}") from exc
+            raise HardwareError(f"Simulated running order index out of range: {ro_index}") from exc
         # 3) 把"RO 已选中"打包成 PatternPreparationResult，统一接口给 acquisition_core。
         self._prepared = PatternPreparationResult(
             pattern_files=[ro_name] * 9,
@@ -318,9 +337,11 @@ class SimulatedSlmAdapter:
     def program_patterns(self, pattern_files: list[str], device_path: str | None = None) -> PatternPreparationResult:
         # 1) 必须传入 9 帧 pattern；任何长度不等于 9 都拒绝。
         if len(pattern_files) != 9:
-            raise RuntimeError("Exactly 9 pattern files are required.")
-        # 2) 未连接时按需连接，方便测试一行写完。
+            raise HardwareError("Exactly 9 pattern files are required.")
+        # 2) 未连接时：strict 拒绝，否则按需连接方便测试一行写完。
         if not self._connected:
+            if self._strict_connection:
+                raise HardwareError("Simulated SLM is not connected; program patterns rejected.")
             self.connect(device_path=device_path)
         # 3) handles 用 0..8 顺序号代替真实 SDK 句柄；元数据标记仿真模式。
         self._prepared = PatternPreparationResult(
@@ -334,9 +355,11 @@ class SimulatedSlmAdapter:
     def activate_prepared_patterns(self) -> None:
         # 1) handles 为空表示从未准备过 patterns / RO，拒绝激活。
         if not self._prepared.handles:
-            raise RuntimeError("No simulated patterns or running order prepared on SLM.")
-        # 2) 自动连接；真实 adapter 不允许这样做，但仿真路径优先减少测试样板代码。
+            raise HardwareError("No simulated patterns or running order prepared on SLM.")
+        # 2) 未连接时：strict 拒绝（真实 adapter 不自动连接），否则自动连接减少样板。
         if not self._connected:
+            if self._strict_connection:
+                raise HardwareError("Simulated SLM is not connected; activation rejected.")
             self.connect()
         # 3) 仿真路径把软件激活直接视为 ACT；真实 [HWA h] RO 还需 EXT_RUN 拉高。
         self._activated = True
@@ -349,7 +372,7 @@ class SimulatedSlmAdapter:
         DAQ 线电平，因此把软件激活直接等价为 ACT，让诊断流程可离线跑通。
         """
         if not self._connected:
-            raise RuntimeError("Connect to the simulated SLM before querying activation state.")
+            raise HardwareError("Connect to the simulated SLM before querying activation state.")
         if self._activated:
             return {"code": 0x56, "name": "ACT(active)"}
         return {"code": 0x54, "name": "MHW(maintenance, hardware deactivated)"}
@@ -369,11 +392,13 @@ class SimulatedDaqAdapter:
         - ``pulse_line`` / ``set_line`` 仍调 ``parse_line_name``，以便在仿真路径下
           也能尽早发现非法线名；``set_line_calls`` 记录调用供测试断言。
     """
-    def __init__(self):
+    def __init__(self, realtime: bool = False):
         # 记录 set_line 调用 (device, line_index, high)，供 GUI/诊断测试断言时序。
         self.set_line_calls: list[tuple[str, int, bool]] = []
         # 记录 set_all_low 调用次数，供清理路径断言。
         self.set_all_low_calls = 0
+        # realtime=True 时按真实 duration 模拟播放；默认 False 截断到 100ms 保测试速度。
+        self._realtime = bool(realtime)
 
     def list_devices(self, default_device: str = "Dev1") -> list[str]:
         # 仿真模式下永远返回一个默认设备名，GUI 下拉据此渲染。
@@ -386,8 +411,17 @@ class SimulatedDaqAdapter:
         return [f"{selected_device}/port0/line{index}" for index in range(16)]
 
     def play_waveform(self, device_name: str, plan: WaveformPlan, stop_event: Any | None = None) -> None:
-        # 1) 计算一个最长 100 ms 的等待 deadline，模拟真实 DAQ 不会立即返回。
-        deadline = time.monotonic() + min(max(plan.duration_s, 0.0), 0.1)
+        """模拟 DAQ 波形播放。
+
+        默认把播放时长**截断到 100 ms** 以保持测试速度——这与真实 DAQ 可达数秒的
+        播放有意不同，因此默认仿真模式下无法复现 GUI 冻结 / 超时窗口 / 取消的真实
+        时序（审查报告 #16）。构造 ``SimulatedDaqAdapter(realtime=True)`` 可按
+        ``plan.duration_s`` 全时长模拟，仅供少数 GUI 冻结/取消类测试显式启用；
+        **不要改默认值**，否则整个测试套件会随真实波形时长显著变慢。
+        """
+        # 1) 计算等待 deadline：realtime 模式按真实 duration，否则截断到 100 ms。
+        max_wait_s = plan.duration_s if self._realtime else min(max(plan.duration_s, 0.0), 0.1)
+        deadline = time.monotonic() + max(max_wait_s, 0.0)
         # 2) 循环短睡眠（10 ms 一片），让 stop_event 设置后能尽快响应。
         while time.monotonic() < deadline:
             if stop_event is not None and stop_event.is_set():
@@ -404,8 +438,24 @@ class SimulatedDaqAdapter:
         parse_line_name(f"{device_name}/port0/line{int(line_index)}")
         self.set_line_calls.append((device_name, int(line_index), bool(high)))
 
-    def pulse_line(self, device_name: str, line_index: int, duration_s: float) -> None:
+    def pulse_line(
+        self,
+        device_name: str,
+        line_index: int,
+        duration_s: float,
+        stop_event: Any | None = None,
+    ) -> None:
         # 1) 把虚构线名喂给真实解析器，让上层在仿真路径下也能发现非法 line index。
         parse_line_name(f"{device_name}/port0/line{int(line_index)}")
         # 2) 模拟脉冲长度（最长 100 ms），避免 UI 测试中按下"测试"按钮即时返回造成误以为成功。
-        time.sleep(min(max(float(duration_s), 0.0), 0.1))
+        #    stop_event 置位时提前返回，与真实 NIDaqAdapter 的取消语义一致（算术倒计时分片）。
+        remaining = min(max(float(duration_s), 0.0), 0.1)
+        if stop_event is None:
+            time.sleep(remaining)
+            return
+        while remaining > 0:
+            if stop_event.is_set():
+                return
+            step = min(remaining, 0.02)
+            time.sleep(step)
+            remaining -= step

@@ -275,9 +275,13 @@ class BackendConfig:
     维护要点：
         - ``simulation_mode=True`` 时 controller 优先创建 ``sim_adapters.*Sim*``。
         - SDK 路径为空时 adapter 会用其内部默认搜索路径回落。
+        - ``ti2_dll_path`` / ``ti2_sdk_module_path`` 透传给 ``Ti2ZStageAdapter``；
+          空字符串表示沿用 adapter 内部默认推导路径（保证默认行为不变）。
     """
     fusion_bt_sdk_path: str = ""
     slm_sdk_path: str = ""
+    ti2_dll_path: str = ""
+    ti2_sdk_module_path: str = ""
     simulation_mode: bool = False
 
 
@@ -450,7 +454,10 @@ class AppConfig:
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     selected_running_order: str = ""
     selected_laser_nm: int = 488
-    config_version: int = 8
+    # 默认值必须与 ``config_store.CURRENT_CONFIG_VERSION`` 保持一致（由
+    # ``test_legacy_sim_config_migration`` 钉死）；写盘路径 ``app_config_to_dict``
+    # 另有强制兜底，即使此处漂移也不会写出过期版本号。
+    config_version: int = 10
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:
