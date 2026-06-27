@@ -12,7 +12,7 @@ import numpy as np
 import tifffile
 import torch
 import torch.nn.functional as F
-from scipy.io import savemat
+from scipy.io import loadmat, savemat
 
 try:
     from emd import emd as matlab_emd
@@ -72,6 +72,8 @@ class SIMWienerOptions:
     save_pseudo_tirf: bool = True
     save_param_mat: bool = True
     save_param_npy: bool = True
+    use_saved_params: bool = False
+    estimated_params_path: str = ""
     output_dtype: str = "float32"
 
     debug_save: bool = False
@@ -113,6 +115,8 @@ class SIMWienerOptions:
             cfg.debug_dir = str(Path(cfg.raw_path).parent / "debug_compare_py")
         if not cfg.timing_json_path:
             cfg.timing_json_path = str(Path(cfg.output_dir) / "timing_summary.json")
+        if not cfg.estimated_params_path:
+            cfg.estimated_params_path = str(Path(cfg.raw_path).with_name(Path(cfg.raw_path).stem + "_estimated_params.mat"))
         return cfg
 
 
@@ -122,7 +126,7 @@ def hessian_sim_wiener_default_options() -> SIMWienerOptions:
 
 def _resolve_default_otf(wavelength_nm: int, base_dir: Union[str, Path]) -> Path:
     base_dir = Path(base_dir)
-    mapping = {488: "488OTF_512.tif", 561: "561OTF_512.tif", 647: "647OTF_512.tif"}
+    mapping = {488: "488OTF_512.tif", 561: "561OTF_512.tif", 638: "638OTF_512.tif", 647: "647OTF_512.tif"}
     if wavelength_nm not in mapping:
         raise ValueError(f"No default OTF for wavelength {wavelength_nm}. Please set opts.otf_path explicitly.")
     name = mapping[wavelength_nm]
@@ -454,9 +458,28 @@ class SIMWienerGPUReconstructor:
             t1 = self._now()
             self._record_timing("step2_inputs_prepare_ms", self._ms(t0, t1))
 
-            param = self._estimate_parameters(cfg, raw_info, raw_gpu, otf_template, paths["param_prefix"])
-            recon, c6, angle6, r2_angles = self._wiener_reconstruct(cfg, raw_info, raw_gpu, otf_template, background,
-                                                                    param)
+            if cfg.use_saved_params:
+                t0 = self._now()
+                param, saved_estimates = self._load_estimated_params_file(cfg.estimated_params_path)
+                paths["estimated_params_mat"] = str(cfg.estimated_params_path)
+                t1 = self._now()
+                self._record_timing("step3_load_saved_params_ms", self._ms(t0, t1))
+            else:
+                param = self._estimate_parameters(cfg, raw_info, raw_gpu, otf_template, paths["param_prefix"])
+                saved_estimates = None
+
+            if saved_estimates is None:
+                recon, c6, angle6, r2_angles = self._wiener_reconstruct(
+                    cfg, raw_info, raw_gpu, otf_template, background, param
+                )
+            else:
+                recon, c6, angle6, r2_angles = self._wiener_reconstruct_with_saved_params(
+                    cfg, raw_info, raw_gpu, otf_template, background, param, saved_estimates
+                )
+            if not cfg.use_saved_params:
+                paths["estimated_params_mat"] = self._save_estimated_params_file(
+                    paths["param_prefix"], param, c6, angle6, r2_angles, cfg
+                )
 
             t0 = self._now()
             out_arr = _to_numpy(recon).astype(np.float32)
@@ -524,17 +547,66 @@ class SIMWienerGPUReconstructor:
         return raw_t.mean(dim=0)
 
     def _save_param_files(self, param, prefix, cfg):
+        return
+
+    def _save_estimated_params_file(self, prefix, param, c6, angle6, r2_angles, cfg):
         prefix = Path(prefix)
         zuobiaox = _to_numpy(param["zuobiaox"]).astype(np.float64)
         zuobiaoy = _to_numpy(param["zuobiaoy"]).astype(np.float64)
-        np.savetxt(str(prefix) + "_zuobiaox.txt", zuobiaox, fmt="%.16f", delimiter="\t")
-        np.savetxt(str(prefix) + "_zuobiaoy.txt", zuobiaoy, fmt="%.16f", delimiter="\t")
-        if cfg.save_param_npy:
-            np.save(str(prefix) + "_zuobiaox.npy", zuobiaox)
-            np.save(str(prefix) + "_zuobiaoy.npy", zuobiaoy)
-        if cfg.save_param_mat:
-            savemat(str(prefix) + "_zuobiaox.mat", {"zuobiaox": zuobiaox})
-            savemat(str(prefix) + "_zuobiaoy.mat", {"zuobiaoy": zuobiaoy})
+        c6_np = _to_numpy(c6).astype(np.float64)
+        angle6_np = _to_numpy(angle6).astype(np.float64)
+        r2_np = _to_numpy(r2_angles).astype(np.float64)
+        out_path = str(prefix) + "_estimated_params.mat"
+        savemat(
+            out_path,
+            {
+                "zuobiaox": zuobiaox,
+                "zuobiaoy": zuobiaoy,
+                "c6": c6_np,
+                "angle6": angle6_np,
+                "R2_angles": r2_np,
+                "n": float(_to_numpy(param["n"])),
+                "pg": float(_to_numpy(param["pg"])),
+                "fc": float(_to_numpy(param["fc"])),
+                "fanwei": float(_to_numpy(param["fanwei"])),
+            },
+            do_compression=True,
+        )
+        return out_path
+
+    def _load_estimated_params_file(self, path):
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Saved SIM-Wiener parameter file not found: {path}")
+
+        mat = loadmat(str(path))
+        required = ("zuobiaox", "zuobiaoy", "c6", "angle6", "R2_angles", "n")
+        missing = [k for k in required if k not in mat]
+        if missing:
+            raise KeyError(f"Saved parameter file is missing required field(s): {missing}")
+
+        def tensor_1d(name):
+            return torch.as_tensor(np.asarray(mat[name]).squeeze(), device=self.device, dtype=self.real_dtype).reshape(-1)
+
+        def scalar(name, default=0.0):
+            if name not in mat:
+                return float(default)
+            return float(np.asarray(mat[name]).squeeze())
+
+        param = {
+            "n": torch.tensor(scalar("n"), device=self.device, dtype=self.real_dtype),
+            "zuobiaox": tensor_1d("zuobiaox"),
+            "zuobiaoy": tensor_1d("zuobiaoy"),
+            "pg": torch.tensor(scalar("pg"), device=self.device, dtype=self.real_dtype),
+            "fc": torch.tensor(scalar("fc"), device=self.device, dtype=self.real_dtype),
+            "fanwei": torch.tensor(scalar("fanwei"), device=self.device, dtype=self.real_dtype),
+        }
+        saved_estimates = {
+            "c6": tensor_1d("c6"),
+            "angle6": tensor_1d("angle6"),
+            "R2_angles": tensor_1d("R2_angles"),
+        }
+        return param, saved_estimates
 
     def _get_xy_grid(self, hw, dtype):
         key = (hw[0], hw[1], dtype, str(self.device))
@@ -937,6 +1009,201 @@ class SIMWienerGPUReconstructor:
 
         return c6, angle6, r2_value
 
+    def _wiener_reconstruct_with_saved_params(self, cfg, raw_info, raw_gpu, otf_template, background, param, saved_estimates):
+        t_wr0 = self._now()
+        sx = raw_info["height"]
+        sy = raw_info["width"]
+        num_modes = cfg.nphases * cfg.nangles
+        ns = cfg.nangles * (cfg.nphases - 1)
+        n = int(max(512, sx, sy))
+        n = 256 if n <= 256 else 512 if n <= 512 else n
+
+        zuobiaox = param["zuobiaox"].to(self.device, dtype=self.real_dtype) * (n / float(param["n"].item()))
+        zuobiaoy = param["zuobiaoy"].to(self.device, dtype=self.real_dtype) * (n / float(param["n"].item()))
+        c6 = saved_estimates["c6"].to(self.device, dtype=self.real_dtype).reshape(-1)
+        angle6 = saved_estimates["angle6"].to(self.device, dtype=self.real_dtype).reshape(-1)
+        r2_angles = saved_estimates["R2_angles"].to(self.device, dtype=self.real_dtype).reshape(-1)
+
+        if zuobiaox.numel() != num_modes or zuobiaoy.numel() != num_modes:
+            raise ValueError(
+                f"Saved zuobiaox/zuobiaoy length must be {num_modes}, "
+                f"got {zuobiaox.numel()} and {zuobiaoy.numel()}."
+            )
+        if c6.numel() != ns or angle6.numel() != ns:
+            raise ValueError(
+                f"Saved c6/angle6 length must be {ns}, got {c6.numel()} and {angle6.numel()}."
+            )
+
+        bg = (
+            _crop_center(background, (sx, sy)).to(self.real_dtype)
+            if background is not None and cfg.use_background
+            else torch.zeros((sx, sy), device=self.device, dtype=self.real_dtype)
+        )
+
+        self._record_timing("step4a_setup_preR2_ms", 0.0)
+        self._record_timing("step4b_c6_angle_r2_ms", 0.0)
+
+        t_pc = self._now()
+        angle_pairs = angle6.view(cfg.nangles, cfg.nphases - 1)
+        c_pairs = c6.view(cfg.nangles, cfg.nphases - 1)
+        deph = torch.sign(angle_pairs[:, 0]) * (torch.abs(angle_pairs[:, 0]) + torch.abs(angle_pairs[:, 1])) * 0.5
+
+        inv_phase_all = []
+        for a in range(cfg.nangles):
+            phi = _phase_list(cfg.theta_ratio, cfg.regul, float(deph[a].item()), dtype=self.real_dtype).to(self.device)
+            one = torch.ones((), device=self.device, dtype=self.real_dtype)
+            mat = torch.stack([
+                torch.stack([
+                    torch.tensor(1 + 0j, device=self.device, dtype=self.complex_dtype),
+                    torch.polar(one, phi[0]).to(self.complex_dtype),
+                    torch.polar(one, -phi[0]).to(self.complex_dtype),
+                ]),
+                torch.stack([
+                    torch.tensor(1 + 0j, device=self.device, dtype=self.complex_dtype),
+                    torch.polar(one, phi[1]).to(self.complex_dtype),
+                    torch.polar(one, -phi[1]).to(self.complex_dtype),
+                ]),
+                torch.stack([
+                    torch.tensor(1 + 0j, device=self.device, dtype=self.complex_dtype),
+                    torch.polar(one, phi[2]).to(self.complex_dtype),
+                    torch.polar(one, -phi[2]).to(self.complex_dtype),
+                ]),
+            ], dim=0)
+            inv_phase_all.append(torch.linalg.inv(mat))
+        inv_phase_all = torch.stack(inv_phase_all, dim=0)
+
+        xishu_vals = []
+        for a in range(cfg.nangles):
+            pw = 0.5 * ((1.0 / c_pairs[a, 0]) + (1.0 / c_pairs[a, 1]))
+            xishu_vals.extend([
+                torch.tensor(1.0, device=self.device, dtype=self.real_dtype),
+                pw.to(self.real_dtype),
+                pw.to(self.real_dtype),
+            ])
+        xishu = torch.stack(xishu_vals)
+
+        plong = torch.floor(torch.sum(torch.sqrt((zuobiaox - zuobiaox[0]) ** 2 + (zuobiaoy - zuobiaoy[0]) ** 2)) / (2 * cfg.nangles))
+        fc = math.ceil(cfg.fc_recon_base * (n / 512))
+        freq_n = torch.arange(-n / 2, n / 2, device=self.device, dtype=self.real_dtype)
+        ky_n, kx_n = torch.meshgrid(freq_n, freq_n, indexing="ij")
+        kr_n = torch.sqrt(kx_n ** 2 + ky_n ** 2)
+        jiequ = (kr_n <= fc).to(self.real_dtype)
+        psf = _resize2d(otf_template, (n, n)).to(self.real_dtype)
+        h = (psf * jiequ).to(self.real_dtype)
+        h = h / torch.clamp(h.max(), min=self.eps)
+        h1 = (h != 0).to(self.real_dtype)
+        hk = _center_embed(h, (2 * n, 2 * n)).to(self.complex_dtype)
+        h1big = _center_embed(h1, (2 * n, 2 * n)).to(self.complex_dtype)
+        hk_spatial = _centered_ifft2(hk)
+        h1big_spatial = _centered_ifft2(h1big)
+
+        replc_h_test = []
+        replch_stack = []
+        kx_modes = []
+        ky_modes = []
+        for ii in range(num_modes):
+            kytest = 2 * math.pi * (float(zuobiaox[ii].item()) - n) / (2 * n)
+            kxtest = 2 * math.pi * (float(zuobiaoy[ii].item()) - n) / (2 * n)
+            ky_modes.append(kytest)
+            kx_modes.append(kxtest)
+            replc = self._shift_centered_spectrum_from_spatial(h1big_spatial, kxtest, kytest)
+            replc = (replc.abs() > 0.9).to(self.real_dtype)
+            replch = self._shift_centered_spectrum_from_spatial(hk_spatial, kxtest, kytest) * replc.to(self.complex_dtype)
+            replc_h_test.append(replc)
+            replch_stack.append(replch)
+
+        kx_modes = torch.tensor(kx_modes, device=self.device, dtype=self.real_dtype)
+        ky_modes = torch.tensor(ky_modes, device=self.device, dtype=self.real_dtype)
+        replc_h_test = torch.stack(replc_h_test, dim=0)
+        replch_complex = torch.stack(replch_stack, dim=0)
+        reh = replch_complex.abs().to(self.real_dtype)
+        re = torch.where(reh > self.eps, replch_complex, torch.full_like(replch_complex, 1e19 + 0.0j))
+        re = re / re.abs()
+        hs = torch.sum(reh ** 2, dim=0)
+
+        replc_h_b = replc_h_test.to(self.complex_dtype).view(1, num_modes, 2 * n, 2 * n)
+        reh_b = reh.to(self.complex_dtype).view(1, num_modes, 2 * n, 2 * n)
+        re_b = re.view(1, num_modes, 2 * n, 2 * n)
+        xishu_b = xishu.to(self.complex_dtype).view(1, num_modes, 1, 1)
+
+        freq_2n = torch.arange(-n, n, device=self.device, dtype=self.real_dtype)
+        ky_2n, kx_2n = torch.meshgrid(freq_2n, freq_2n, indexing="ij")
+        kr_2n = torch.sqrt(kx_2n ** 2 + ky_2n ** 2)
+        k_max = float(plong.item()) + fc
+        bhs = torch.cos(math.pi * kr_2n / (2 * k_max))
+        bhs[kr_2n > k_max] = 0
+        mask = _sigmoid_mask((sx, sy), 0.25, self.device, self.real_dtype)
+        self._record_timing("step4c_phase_compensation_setup_ms", self._ms(t_pc, self._now()))
+
+        t_loop = self._now()
+        group_frames = num_modes * cfg.reconstruct_group_stride
+        total_groups = (raw_info["num_frames"] - cfg.starframe + 1) // group_frames
+        if total_groups <= 0:
+            raise RuntimeError(
+                "No reconstruction groups available. "
+                "Please check raw frame count, starframe, and reconstruct_group_stride."
+            )
+
+        group_batch_size = max(1, int(getattr(cfg, "recon_group_batch", 1)))
+        recon_frames = []
+        group_idx = 0
+        denom_c = (hs + 0.005 * cfg.nangles * (cfg.wiener ** 2)).to(self.complex_dtype)
+        bhs_c = bhs.to(self.complex_dtype)
+        mask_b = (mask ** 3).view(1, 1, sx, sy)
+        jiequ_b = jiequ.view(1, 1, n, n).to(self.complex_dtype)
+        start0_global = cfg.starframe - 1
+        total_frames_needed = total_groups * group_frames
+        raw_recon_gpu = raw_gpu[start0_global:start0_global + total_frames_needed]
+
+        while group_idx < total_groups:
+            curr_batch = min(group_batch_size, total_groups - group_idx)
+            start_frame_0 = group_idx * group_frames
+            end_frame_0 = start_frame_0 + curr_batch * group_frames
+            d = raw_recon_gpu[start_frame_0:end_frame_0]
+            d = d.view(curr_batch, cfg.reconstruct_group_stride, num_modes, sx, sy)
+            d = d - bg.view(1, 1, 1, sx, sy)
+            d = d.mean(dim=1)
+            d = d * mask_b
+
+            d_flat = d.reshape(curr_batch * num_modes, sx, sy)
+            d_pad_flat = self._center_embed_batch(d_flat, (n, n))
+            di_bar_flat = _centered_fft2(d_pad_flat)
+            di_bar = di_bar_flat.view(curr_batch, num_modes, n, n)
+            di_group = di_bar.view(curr_batch, cfg.nangles, cfg.nphases, n, n)
+            sp_now = torch.einsum("ajk,gakxy->gajxy", inv_phase_all, di_group)
+            sp_now = sp_now.reshape(curr_batch, num_modes, n, n)
+            sp_now = sp_now * jiequ_b
+
+            sp_now_flat = sp_now.reshape(curr_batch * num_modes, n, n)
+            sp_now_big_flat = self._center_embed_batch(sp_now_flat, (2 * n, 2 * n))
+            sp_now_spatial_flat = _centered_ifft2(sp_now_big_flat)
+            kx_batch = kx_modes.view(1, num_modes).expand(curr_batch, num_modes).reshape(-1)
+            ky_batch = ky_modes.view(1, num_modes).expand(curr_batch, num_modes).reshape(-1)
+            retirff_flat = self._shift_centered_spectrum_from_spatial_batch(sp_now_spatial_flat, kx_batch, ky_batch)
+            retirff = retirff_flat.view(curr_batch, num_modes, 2 * n, 2 * n)
+            retirff = (retirff * replc_h_b) / re_b
+            tmprc1 = xishu_b * retirff * reh_b / denom_c
+            dr = tmprc1.sum(dim=1)
+            drr = dr * bhs_c
+            fimage = torch.abs(_centered_ifft2(drr))
+            frame_batch = fimage[:, n - sx:n + sx, n - sy:n + sy]
+            for gi in range(curr_batch):
+                recon_frames.append(frame_batch[gi].real.to(self.real_dtype))
+            group_idx += curr_batch
+
+        loop_end = self._now()
+        self._record_timing("step4d_recon_loop_total_ms", self._ms(t_loop, loop_end))
+        self._record_timing("step4d_recon_loop_mean_per_group_ms", self._ms(t_loop, loop_end) / max(len(recon_frames), 1))
+        self._record_timing("step4_wiener_reconstruction_total_ms", self._ms(t_wr0, loop_end))
+        if len(recon_frames) == 0:
+            raise RuntimeError(
+                "No reconstruction frames were generated. "
+                "Please check raw frame count, starframe, and reconstruct_group_stride."
+            )
+        recon = torch.stack(recon_frames, dim=0)
+        recon = torch.clamp(recon, min=0)
+        return recon, c6, angle6, r2_angles
+
     def _wiener_reconstruct(self, cfg, raw_info, raw_gpu, otf_template, background, param):
         t_wr0 = self._now()
         sx = raw_info["height"]
@@ -947,7 +1214,7 @@ class SIMWienerGPUReconstructor:
         zuobiaox = param["zuobiaox"] * (n / float(param["n"].item()))
         zuobiaoy = param["zuobiaoy"] * (n / float(param["n"].item()))
         fc_ang = math.ceil(cfg.fc_angle_base * (n / 512))
-        fc_con = math.ceil((cfg.fc_content_base_647 if cfg.wavelength_nm == 647 else cfg.fc_content_base_488_561) * (n / 512))
+        fc_con = math.ceil((cfg.fc_content_base_647 if cfg.wavelength_nm in {638, 647} else cfg.fc_content_base_488_561) * (n / 512))
         phase_matrix = _phase_matrix(cfg.theta_ratio, cfg.regul, self.device, self.complex_dtype)
         inv_phase_matrix = torch.linalg.inv(phase_matrix)
         fd = self._average_groups_from_gpu(raw_gpu, cfg.nphases, cfg.nangles, cfg.avg_groups, cfg.starframe)

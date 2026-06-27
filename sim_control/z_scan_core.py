@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .errors import HardwareError
 from .focus_metrics import sum_modified_laplacian
 from .models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
 from .waveform import NIDaqWaveformBuilder
@@ -201,4 +202,146 @@ def run_z_scan(
             logger.warning("Failed to set DAQ outputs low during z-scan cleanup.", exc_info=True)
 
 
-__all__ = ["ZFocusPoint", "ZScanResult", "ZScanCancelled", "scan_positions", "run_z_scan"]
+@dataclass(frozen=True)
+class ZScanStageMoveResult:
+    """Result of a stage-only z-scan (no camera capture / focus scoring)."""
+
+    positions_visited: list[float]
+    move_latencies_ms: list[float]
+    started_from_um: float
+
+
+def preflight_z_scan_positions(stage_adapter: Any, z_scan_config: ZScanConfig) -> list[float]:
+    """Compute and range-check z-scan target positions before any stage motion.
+
+    Qt-free port of ``SimControlWindow._zscan_positions_checked``: ensures the
+    stage adapter is connected, derives the scan positions from the *current*
+    stage position and raises before moving if any target is out of range.
+    """
+    if stage_adapter is None:
+        raise HardwareError("No Z stage adapter is available.")
+    if not getattr(stage_adapter, "is_connected", False):
+        stage_adapter.connect()
+    positions = scan_positions(z_scan_config, stage_position_um=float(stage_adapter.get_position_um()))
+    if len(positions) < 2:
+        raise ValueError("z_scan_config.num_steps must be >= 1.")
+    min_um, max_um = stage_adapter.get_z_ranges_um()
+    out_of_range = [z for z in positions if not (float(min_um) <= float(z) <= float(max_um))]
+    if out_of_range:
+        preview = ", ".join(f"{z:.3f}" for z in out_of_range[:5])
+        suffix = f" ... (共 {len(out_of_range)} 个越界)" if len(out_of_range) > 5 else ""
+        raise HardwareError(
+            f"Z-Scan 目标位置超出位移台量程 [{float(min_um):.3f}, {float(max_um):.3f}] um："
+            f"{preview}{suffix}"
+        )
+    return [float(z) for z in positions]
+
+
+def run_z_scan_stage_only(
+    *,
+    stage_adapter: Any,
+    z_scan_config: ZScanConfig,
+    stop_event: Any | None = None,
+    on_status: StatusCallback | None = None,
+) -> ZScanStageMoveResult:
+    """Move the Z stage through the scan positions without any camera capture.
+
+    Used to time / validate stage motion in isolation. Performs a full
+    out-of-range preflight before any motion, is cancellable between moves and
+    stays at the final position (does not return to the start).
+    """
+    callback = on_status or _noop_status
+    positions = preflight_z_scan_positions(stage_adapter, z_scan_config)
+    latencies: list[float] = []
+    prev_z = positions[0]
+    total_steps = len(positions) - 1
+    for index, z_um in enumerate(positions):
+        _raise_if_cancelled(stop_event)
+        from_z_um = positions[0] if index == 0 else prev_z
+        move_started_s = time.perf_counter()
+        stage_adapter.move_z_um(z_um)
+        move_ms = (time.perf_counter() - move_started_s) * 1000.0
+        latencies.append(float(move_ms))
+        callback(
+            "z_scan_stage_positioned",
+            {
+                "step_index": index,
+                "total_steps": total_steps,
+                "from_z_um": float(from_z_um),
+                "z_um": float(z_um),
+                "distance_um": abs(float(z_um) - float(from_z_um)),
+                "move_ms": float(move_ms),
+            },
+        )
+        prev_z = z_um
+    return ZScanStageMoveResult(
+        positions_visited=positions,
+        move_latencies_ms=latencies,
+        started_from_um=positions[0],
+    )
+
+
+def run_z_scan_autofocus(
+    *,
+    stage_adapter: Any,
+    camera_adapter: Any,
+    slm_adapter: Any,
+    daq_adapter: Any,
+    daq_config: DaqLineConfig,
+    camera_config: CameraConfig,
+    timing: TimingConfig,
+    z_scan_config: ZScanConfig,
+    waveform_builder: NIDaqWaveformBuilder | None = None,
+    stop_event: Any | None = None,
+    on_status: StatusCallback | None = None,
+    keep_captured_stack: bool = False,
+) -> ZScanResult:
+    """Range-check, connect-check, select the z-scan RO, then run ``run_z_scan``.
+
+    Wraps :func:`run_z_scan` with the preconditions the GUI normally enforces:
+    a full out-of-range preflight (raises before any motion), camera/SLM
+    connection checks and automatic selection of the fixed 488 nm three-phase
+    z-scan Running Order matching the configured exposure preset.
+    """
+    # ``find_z_scan_running_order`` 局部 import：``adapters`` 体量大且含 ctypes /
+    # SDK import 副作用，而本模块刻意保持 Qt-free 轻量；局部 import 同时避免
+    # ``z_scan_core`` 经 ``adapters`` 形成潜在 import 环。
+    from sim_control.adapters import find_z_scan_running_order
+
+    preflight_z_scan_positions(stage_adapter, z_scan_config)
+    if not camera_adapter.is_connected():
+        raise HardwareError("Z-Scan 拍图需要相机已连接。")
+    if not slm_adapter.is_connected():
+        raise HardwareError("Z-Scan 拍图需要 SLM 已连接。")
+    running_orders = slm_adapter.list_running_orders()
+    idx, _name, warnings = find_z_scan_running_order(running_orders, z_scan_config.exposure_preset_ms)
+    if idx is None:
+        raise HardwareError("; ".join(warnings) or "No matching z-scan running order found.")
+    slm_adapter.select_running_order(idx)
+    return run_z_scan(
+        stage_adapter=stage_adapter,
+        camera_adapter=camera_adapter,
+        slm_adapter=slm_adapter,
+        daq_adapter=daq_adapter,
+        daq_config=daq_config,
+        camera_config=camera_config,
+        timing=timing,
+        z_scan_config=z_scan_config,
+        waveform_builder=waveform_builder,
+        stop_event=stop_event,
+        on_status=on_status,
+        keep_captured_stack=keep_captured_stack,
+    )
+
+
+__all__ = [
+    "ZFocusPoint",
+    "ZScanResult",
+    "ZScanStageMoveResult",
+    "ZScanCancelled",
+    "scan_positions",
+    "run_z_scan",
+    "preflight_z_scan_positions",
+    "run_z_scan_stage_only",
+    "run_z_scan_autofocus",
+]

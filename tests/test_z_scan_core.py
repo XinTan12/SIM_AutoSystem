@@ -336,5 +336,345 @@ class ZScanCoreTests(unittest.TestCase):
         self.assertAlmostEqual(result.best_z_um, 2.0)
 
 
+class _RecordingStage:
+    """Fake Z stage recording move_z_um calls; ``is_connected`` is an attribute."""
+
+    def __init__(self, start_um: float = 0.0, min_um: float = -100.0, max_um: float = 100.0) -> None:
+        self._position_um = float(start_um)
+        self._min_um = float(min_um)
+        self._max_um = float(max_um)
+        self.is_connected = False
+        self.connect_count = 0
+        self.moves: list[float] = []
+
+    def connect(self) -> dict:
+        self.is_connected = True
+        self.connect_count += 1
+        return {"mode": "recording"}
+
+    def get_position_um(self) -> float:
+        return self._position_um
+
+    def get_z_ranges_um(self):
+        return self._min_um, self._max_um
+
+    def move_z_um(self, target_um: float) -> None:
+        target = float(target_um)
+        self.moves.append(target)
+        self._position_um = target
+
+
+class _CountingStopEvent:
+    """stop_event that reports set() only after ``trip_after`` checks."""
+
+    def __init__(self, trip_after: int) -> None:
+        self.trip_after = int(trip_after)
+        self.checks = 0
+
+    def is_set(self) -> bool:
+        self.checks += 1
+        return self.checks > self.trip_after
+
+
+class _ConnectableCamera:
+    """Fake camera/SLM-like adapter with ``is_connected`` as a METHOD."""
+
+    def __init__(self, connected: bool = True) -> None:
+        self._connected = bool(connected)
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+
+class _RoSlm(_ConnectableCamera):
+    """Fake SLM with method ``is_connected`` and RO selection recording."""
+
+    def __init__(self, connected: bool = True, running_orders=None) -> None:
+        super().__init__(connected=connected)
+        self._running_orders = running_orders if running_orders is not None else [(0, "488_3.5_2d_zscan3p_1ms")]
+        self.selected = []
+
+    def list_running_orders(self):
+        return list(self._running_orders)
+
+    def select_running_order(self, ro_index: int):
+        self.selected.append(int(ro_index))
+        return {"ro_index": int(ro_index)}
+
+
+class RunZScanStageOnlyTests(unittest.TestCase):
+    def test_positive_direction_moves_match_scan_positions(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only, scan_positions
+
+        stage = _RecordingStage(start_um=5.0, min_um=-100.0, max_um=100.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=None, direction="positive_z", step_um=0.5, num_steps=4)
+        expected = scan_positions(cfg, stage_position_um=5.0)
+
+        result = run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertEqual(stage.moves, expected)
+        self.assertEqual(result.positions_visited, expected)
+        self.assertEqual(result.started_from_um, expected[0])
+        self.assertEqual(len(result.move_latencies_ms), len(expected))
+
+    def test_negative_direction_moves_match_scan_positions(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only, scan_positions
+
+        stage = _RecordingStage(start_um=5.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=None, direction="negative_z", step_um=0.5, num_steps=4)
+        expected = scan_positions(cfg, stage_position_um=5.0)
+
+        result = run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertEqual(stage.moves, expected)
+        self.assertEqual(result.positions_visited, expected)
+
+    def test_connects_when_not_connected(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only
+
+        stage = _RecordingStage(start_um=0.0)
+        self.assertFalse(stage.is_connected)
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=3)
+
+        run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertTrue(stage.is_connected)
+        self.assertEqual(stage.connect_count, 1)
+
+    def test_out_of_range_raises_before_any_move(self):
+        from sim_control.errors import HardwareError
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only
+
+        stage = _RecordingStage(start_um=0.0, min_um=0.0, max_um=1.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=5)
+
+        with self.assertRaises(HardwareError):
+            run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertEqual(stage.moves, [])
+
+    def test_num_steps_zero_raises_value_error(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=0)
+
+        with self.assertRaises(ValueError):
+            run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertEqual(stage.moves, [])
+
+    def test_none_stage_raises_hardware_error(self):
+        from sim_control.errors import HardwareError
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only
+
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=3)
+        with self.assertRaises(HardwareError):
+            run_z_scan_stage_only(stage_adapter=None, z_scan_config=cfg)
+
+    def test_cancel_after_two_moves_stops_remaining_positions(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import ZScanCancelled, run_z_scan_stage_only
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=5)
+        # positions = [0,1,2,3,4,5]; cancel-check passes for index 0 and 1, trips at index 2.
+        stop_event = _CountingStopEvent(trip_after=2)
+
+        with self.assertRaises(ZScanCancelled):
+            run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg, stop_event=stop_event)
+
+        self.assertEqual(stage.moves, [0.0, 1.0])
+
+    def test_on_status_called_once_per_position_with_payload_fields(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only, scan_positions
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=4)
+        positions = scan_positions(cfg, stage_position_um=0.0)
+        statuses = []
+
+        run_z_scan_stage_only(
+            stage_adapter=stage,
+            z_scan_config=cfg,
+            on_status=lambda event, payload: statuses.append((event, payload)),
+        )
+
+        self.assertEqual(len(statuses), len(positions))
+        self.assertTrue(all(event == "z_scan_stage_positioned" for event, _ in statuses))
+        first_payload = statuses[0][1]
+        self.assertEqual(first_payload["step_index"], 0)
+        self.assertEqual(first_payload["total_steps"], len(positions) - 1)
+        self.assertEqual(first_payload["z_um"], positions[0])
+        self.assertEqual(first_payload["distance_um"], 0.0)
+        self.assertEqual(statuses[-1][1]["step_index"], len(positions) - 1)
+        self.assertEqual(statuses[-1][1]["z_um"], positions[-1])
+
+    def test_stays_at_final_position_not_start(self):
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import run_z_scan_stage_only, scan_positions
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        cfg = ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=4)
+        positions = scan_positions(cfg, stage_position_um=0.0)
+
+        run_z_scan_stage_only(stage_adapter=stage, z_scan_config=cfg)
+
+        self.assertEqual(stage.moves[-1], positions[-1])
+        self.assertNotEqual(stage.moves[-1], positions[0])
+        self.assertEqual(stage.get_position_um(), positions[-1])
+
+
+class RunZScanAutofocusTests(unittest.TestCase):
+    def _cfg(self):
+        from sim_control.models import ZScanConfig
+
+        return ZScanConfig(start_um=0.0, direction="positive_z", step_um=1.0, num_steps=3, exposure_preset_ms=8)
+
+    def _common_kwargs(self, stage, camera, slm):
+        from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig
+
+        return dict(
+            stage_adapter=stage,
+            camera_adapter=camera,
+            slm_adapter=slm,
+            daq_adapter=_FakeDaq(),
+            daq_config=DaqLineConfig(),
+            camera_config=CameraConfig(),
+            timing=TimingConfig(),
+            z_scan_config=self._cfg(),
+        )
+
+    def test_selects_running_order_and_delegates_to_run_z_scan(self):
+        import sim_control.adapters as adapters_mod
+        import sim_control.z_scan_core as zsc
+        from sim_control.z_scan_core import ZScanResult, run_z_scan_autofocus
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        camera = _ConnectableCamera(connected=True)
+        slm = _RoSlm(connected=True, running_orders=[(7, "488_3.5_2d_zscan3p_1ms")])
+
+        captured = {}
+        sentinel = ZScanResult(best_z_um=1.0, focus_curve=[], exposure_actual_us=1000)
+
+        def fake_run_z_scan(**kwargs):
+            captured.update(kwargs)
+            return sentinel
+
+        def fake_find(running_orders, exposure_preset_ms):
+            return 7, "488_3.5_2d_zscan3p_1ms", []
+
+        orig_run = zsc.run_z_scan
+        orig_find = adapters_mod.find_z_scan_running_order
+        zsc.run_z_scan = fake_run_z_scan
+        adapters_mod.find_z_scan_running_order = fake_find
+        try:
+            stop_event = object()
+            result = run_z_scan_autofocus(
+                **self._common_kwargs(stage, camera, slm),
+                stop_event=stop_event,
+            )
+        finally:
+            zsc.run_z_scan = orig_run
+            adapters_mod.find_z_scan_running_order = orig_find
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(slm.selected, [7])
+        self.assertIs(captured["stage_adapter"], stage)
+        self.assertIs(captured["camera_adapter"], camera)
+        self.assertIs(captured["slm_adapter"], slm)
+        self.assertIs(captured["stop_event"], stop_event)
+
+    def test_no_matching_running_order_raises_hardware_error(self):
+        import sim_control.adapters as adapters_mod
+        import sim_control.z_scan_core as zsc
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        camera = _ConnectableCamera(connected=True)
+        slm = _RoSlm(connected=True)
+
+        def fake_find(running_orders, exposure_preset_ms):
+            return None, "", ["No matching z-scan running order found."]
+
+        def fail_run_z_scan(**kwargs):
+            raise AssertionError("run_z_scan must not be called when no RO matches")
+
+        orig_run = zsc.run_z_scan
+        orig_find = adapters_mod.find_z_scan_running_order
+        zsc.run_z_scan = fail_run_z_scan
+        adapters_mod.find_z_scan_running_order = fake_find
+        try:
+            with self.assertRaises(HardwareError):
+                run_z_scan_autofocus(**self._common_kwargs(stage, camera, slm))
+        finally:
+            zsc.run_z_scan = orig_run
+            adapters_mod.find_z_scan_running_order = orig_find
+
+        self.assertEqual(slm.selected, [])
+
+    def test_camera_not_connected_raises_hardware_error(self):
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        camera = _ConnectableCamera(connected=False)
+        slm = _RoSlm(connected=True)
+
+        with self.assertRaises(HardwareError):
+            run_z_scan_autofocus(**self._common_kwargs(stage, camera, slm))
+
+        self.assertEqual(slm.selected, [])
+
+    def test_slm_not_connected_raises_hardware_error(self):
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        camera = _ConnectableCamera(connected=True)
+        slm = _RoSlm(connected=False)
+
+        with self.assertRaises(HardwareError):
+            run_z_scan_autofocus(**self._common_kwargs(stage, camera, slm))
+
+        self.assertEqual(slm.selected, [])
+
+    def test_out_of_range_raises_before_connect_checks(self):
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        # Narrow range so preflight fails; camera/SLM disconnected would also raise,
+        # but preflight runs first, so a disconnected-camera HardwareError must not mask it.
+        stage = _RecordingStage(start_um=0.0, min_um=0.0, max_um=1.0)
+        stage.connect()
+        camera = _ConnectableCamera(connected=True)
+        slm = _RoSlm(connected=True)
+
+        with self.assertRaises(HardwareError):
+            run_z_scan_autofocus(**self._common_kwargs(stage, camera, slm))
+
+        self.assertEqual(stage.moves, [])
+        self.assertEqual(slm.selected, [])
+
+
 if __name__ == "__main__":
     unittest.main()

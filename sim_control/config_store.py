@@ -22,7 +22,7 @@
       要让此值 +1，并在 ``_MIGRATIONS`` 末尾追加迁移函数。
     - ``LEGACY_CONFIG_PATH``：仓库根目录的旧 ``sim_control_config.json``，
       仅在没有新路径文件时回落使用，加载后立刻迁移到默认目录。
-    - 迁移链：``v0→v1``（640nm → 647nm 重命名）、``v1→v2``（补 simulation_mode
+    - 迁移链：``v0→v1``（640nm → 638nm 重命名）、``v1→v2``（补 simulation_mode
       默认）、``v2→v3``（补 ``selected_running_order``）。
 
 维护要点：
@@ -65,8 +65,9 @@ LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
 # 必须与 ``models.AppConfig.config_version`` 默认值保持一致。
-CURRENT_CONFIG_VERSION = 10
+CURRENT_CONFIG_VERSION = 12
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
+RECONSTRUCTION_SAVED_PARAMS_FALLBACKS = {"fail", "estimate"}
 
 
 def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
@@ -84,27 +85,45 @@ def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
     return merged
 
 
-def _migrate_v0_to_v1(payload: dict) -> dict:
-    """v0 → v1 迁移：把旧 640 nm 字段统一改名为 647 nm。
-
-    背景：
-        项目在 2026-04-23 决策日志里把第四档红激光从 ``640`` 正名为 ``647``，
-        以匹配真实激光器波长。旧配置仍可能写着 ``laser_640_line`` 或
-        ``selected_laser_nm=640``，此函数把它们改为 ``laser_647_line`` /
-        ``selected_laser_nm=647``，避免后续 ``LASER_ROLE_MAP`` 查不到键。
-    """
-    # 1) 取出 daq 子字典副本，再把旧键 ``laser_640_line`` 弹出。
+def _migrate_red_laser_aliases(payload: dict) -> dict:
+    """Normalize legacy red-laser keys/nm values to the current 638 nm schema."""
     daq = dict(payload.get("daq") or {})
-    legacy_laser_line = daq.pop("laser_640_line", "")
-    # 2) 仅在新键尚未存在时迁移旧值，避免覆盖用户已配置的 647 线名。
-    if legacy_laser_line and "laser_647_line" not in daq:
-        daq["laser_647_line"] = legacy_laser_line
-    payload["daq"] = daq
-    # 3) 顶层 ``selected_laser_nm`` 由 640 迁移到 647，否则界面下拉会读不到。
+    legacy_laser_line = ""
+    for legacy_key in ("laser_640_line", "laser_647_line"):
+        value = daq.pop(legacy_key, "")
+        if value and not legacy_laser_line:
+            legacy_laser_line = value
+    if legacy_laser_line and "laser_638_line" not in daq:
+        daq["laser_638_line"] = legacy_laser_line
+    if daq or "daq" in payload:
+        payload["daq"] = daq
+
     selected = payload.get("selected_laser_nm")
-    if selected is not None and int(selected) == 640:
-        payload["selected_laser_nm"] = 647
-    # 4) 标记迁移后版本号为 1，下一步迁移以此为起点。
+    try:
+        selected_nm = int(selected) if selected is not None else None
+    except (TypeError, ValueError):
+        selected_nm = None
+    if selected_nm in {640, 647}:
+        payload["selected_laser_nm"] = 638
+
+    if isinstance(payload.get("reconstruction"), dict):
+        reconstruction = dict(payload.get("reconstruction") or {})
+        for legacy_key, current_key in (
+            ("otf_640_path", "otf_638_path"),
+            ("otf_647_path", "otf_638_path"),
+            ("estimated_params_640_path", "estimated_params_638_path"),
+            ("estimated_params_647_path", "estimated_params_638_path"),
+        ):
+            value = reconstruction.pop(legacy_key, "")
+            if value and current_key not in reconstruction:
+                reconstruction[current_key] = value
+        payload["reconstruction"] = reconstruction
+    return payload
+
+
+def _migrate_v0_to_v1(payload: dict) -> dict:
+    """v0 -> v1 migration: rename legacy 640 nm red-laser fields to 638 nm."""
+    payload = _migrate_red_laser_aliases(payload)
     payload["config_version"] = 1
     return payload
 
@@ -229,6 +248,46 @@ def _migrate_v9_to_v10(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v10_to_v11(payload: dict) -> dict:
+    """v10 -> v11 migration: 补齐 saved-params 与异步落盘相关重建字段。
+
+    背景：
+        v11 为 SIM9 重建新增 saved-params 快路径（~45ms 热）与异步落盘控制。生产现场
+        标定好每波长 ``.mat`` 后可置 ``use_saved_params=True``；但旧配置通常还没有
+        ``.mat`` 路径。为遵守"仿真优先"硬约束、避免升级后默认配置直接无法重建，迁移时
+        若旧配置没有任何 ``estimated_params_*_path``，强制 ``use_saved_params=False``，
+        让旧配置升级后仍走 estimate 路径，由用户标定后自行开启 saved。
+    """
+    reconstruction = dict(payload.get("reconstruction") or {})
+    reconstruction.setdefault("use_saved_params", False)
+    reconstruction.setdefault("saved_params_fallback", "fail")
+    for wavelength in SUPPORTED_LASERS:
+        reconstruction.setdefault(f"estimated_params_{wavelength}_path", "")
+    reconstruction.setdefault("save_reconstruction_output", True)
+    reconstruction.setdefault("async_save_reconstruction_output", True)
+    reconstruction.setdefault("save_queue_maxsize", 4)
+    has_saved_params = any(
+        str(reconstruction.get(f"estimated_params_{wavelength}_path", "")).strip()
+        for wavelength in SUPPORTED_LASERS
+    )
+    if not has_saved_params:
+        reconstruction["use_saved_params"] = False
+    payload["reconstruction"] = reconstruction
+    payload["config_version"] = 11
+    return payload
+
+
+def _migrate_v11_to_v12(payload: dict) -> dict:
+    """v11 -> v12 migration: rename the fourth red laser from 640/647 to 638 nm."""
+    payload = _migrate_red_laser_aliases(payload)
+    reconstruction = dict(payload.get("reconstruction") or {})
+    reconstruction.setdefault("otf_638_path", "")
+    reconstruction.setdefault("estimated_params_638_path", "")
+    payload["reconstruction"] = reconstruction
+    payload["config_version"] = 12
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
@@ -241,6 +300,8 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (7, _migrate_v7_to_v8),
     (8, _migrate_v8_to_v9),
     (9, _migrate_v9_to_v10),
+    (10, _migrate_v10_to_v11),
+    (11, _migrate_v11_to_v12),
 ]
 
 
@@ -296,7 +357,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         3. 补齐 9 项 pattern_files，并强制 ``config_version`` 标到当前版本。
     """
     # 1) 用 dict 副本喂迁移链，避免修改调用方传入的对象。
-    payload = _run_migrations(dict(payload))
+    payload = _migrate_red_laser_aliases(_run_migrations(dict(payload)))
     # 2) 各子配置直接用 ``**`` 解包：缺失字段由 dataclass 默认值兜底。
     daq = DaqLineConfig(**(payload.get("daq") or {}))
     camera = CameraConfig(**(payload.get("camera") or {}))
@@ -337,7 +398,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         otf_405_path=str(reconstruction_payload.get("otf_405_path", "")),
         otf_488_path=str(reconstruction_payload.get("otf_488_path", "")),
         otf_561_path=str(reconstruction_payload.get("otf_561_path", "")),
-        otf_647_path=str(reconstruction_payload.get("otf_647_path", "")),
+        otf_638_path=str(reconstruction_payload.get("otf_638_path", "")),
         background_path=str(reconstruction_payload.get("background_path", "")),
         output_path=str(reconstruction_payload.get("output_path", DEFAULT_RECONSTRUCTION_OUTPUT_DIR)),
         wiener=float(reconstruction_payload.get("wiener", 2.0)),
@@ -345,6 +406,17 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         excitation_na=float(reconstruction_payload.get("excitation_na", 1.49)),
         theta_ratio=theta_values,
         recon_group_batch=int(reconstruction_payload.get("recon_group_batch", 1)),
+        use_saved_params=bool(reconstruction_payload.get("use_saved_params", False)),
+        saved_params_fallback=str(reconstruction_payload.get("saved_params_fallback", "fail")),
+        estimated_params_405_path=str(reconstruction_payload.get("estimated_params_405_path", "")),
+        estimated_params_488_path=str(reconstruction_payload.get("estimated_params_488_path", "")),
+        estimated_params_561_path=str(reconstruction_payload.get("estimated_params_561_path", "")),
+        estimated_params_638_path=str(reconstruction_payload.get("estimated_params_638_path", "")),
+        save_reconstruction_output=bool(reconstruction_payload.get("save_reconstruction_output", True)),
+        async_save_reconstruction_output=bool(
+            reconstruction_payload.get("async_save_reconstruction_output", True)
+        ),
+        save_queue_maxsize=int(reconstruction_payload.get("save_queue_maxsize", 4)),
     )
     # 4) pattern_files 对齐到 9，并提取顶层用户选择字段。
     pattern_files = _merge_list(payload.get("pattern_files", []))
@@ -442,10 +514,30 @@ def validate_app_config(config: AppConfig) -> list[str]:
         errors.append("reconstruction.output_path must be an output directory, not a TIFF file.")
     if tuple(reconstruction.theta_ratio) == () or any(int(value) <= 0 for value in reconstruction.theta_ratio):
         errors.append("reconstruction.theta_ratio values must be positive.")
+    if reconstruction.saved_params_fallback not in RECONSTRUCTION_SAVED_PARAMS_FALLBACKS:
+        errors.append(
+            "reconstruction.saved_params_fallback must be one of "
+            f"{sorted(RECONSTRUCTION_SAVED_PARAMS_FALLBACKS)}."
+        )
+    if reconstruction.save_queue_maxsize < 1:
+        errors.append("reconstruction.save_queue_maxsize must be >= 1.")
     if reconstruction.enabled:
         otf_field = f"otf_{int(config.selected_laser_nm)}_path"
         if not reconstruction.otf_path_for_wavelength(config.selected_laser_nm).strip():
             errors.append(f"reconstruction.{otf_field} must be set when reconstruction is enabled.")
+        # saved-params 生产档：启用 saved 时所选波长 .mat 必须配置且存在；缺失直接阻止
+        # 正式采集（不静默降级），与 saved_params_fallback="fail" 的安全语义一致。
+        if reconstruction.use_saved_params:
+            params_field = f"estimated_params_{int(config.selected_laser_nm)}_path"
+            params_path = reconstruction.estimated_params_path_for_wavelength(config.selected_laser_nm).strip()
+            if not params_path:
+                errors.append(
+                    f"reconstruction.{params_field} must be set when use_saved_params is enabled."
+                )
+            elif not Path(params_path).is_file():
+                errors.append(
+                    f"reconstruction.{params_field} file does not exist: {params_path}"
+                )
 
     # 5) 顶层用户选择：波长必须在 SUPPORTED_LASERS 中；非 RO 模式下 pattern 必须 9 项。
     if config.selected_laser_nm not in SUPPORTED_LASERS:

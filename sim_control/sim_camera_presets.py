@@ -203,6 +203,30 @@ def sim_camera_roi_origin_bounds(
     )
 
 
+def centered_sim_camera_roi_origin(
+    width: int,
+    height: int,
+    sensor_size: tuple[int, int] | None = None,
+    step_px: int = SIM_CAMERA_ROI_STEP_PX,
+    presets: Sequence[tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    """按当前完整视场计算居中 ROI 原点，full frame 固定返回 ``(0, 0)``。"""
+    roi_width, roi_height = coerce_sim_camera_size(width, height, presets)
+    if is_full_frame_sim_camera_size(roi_width, roi_height, sensor_size=sensor_size, presets=presets):
+        return 0, 0
+
+    max_x, max_y = sim_camera_roi_origin_bounds(
+        roi_width,
+        roi_height,
+        sensor_size=sensor_size,
+        presets=presets,
+    )
+    return (
+        _align_sim_camera_roi_origin(max_x // 2, max_x, step_px=step_px),
+        _align_sim_camera_roi_origin(max_y // 2, max_y, step_px=step_px),
+    )
+
+
 def _align_sim_camera_roi_origin(value: int, max_value: int, step_px: int = SIM_CAMERA_ROI_STEP_PX) -> int:
     """把 ROI 原点坐标向下对齐到步进，并裁剪到 [0, max_value] 范围内。"""
     # 1) 先夹到合法范围，避免负数或越界。

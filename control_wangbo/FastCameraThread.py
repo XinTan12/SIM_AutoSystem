@@ -10,6 +10,7 @@ import platform
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from PublicClassCamera import RingBuffer,TriggerBuffer,VideoSaver
+from roi_geometry import crop_rotated_roi
 
 class FastCameraWorker(QObject):
     #信号（signal）定义在发送类中，而槽函数定义在接收类（signal）中，然后在适当的地方进行信号和槽的连接。
@@ -345,6 +346,7 @@ class ImageProcessor(QObject):
         self.collectedROI_Y       = int(para["collectedROI_Y"])
         self.collectedROI_width   = int(para["collectedROI_width"])
         self.collectedROI_height  = int(para["collectedROI_height"])
+        self.collectedROI_angle   = float(para.get("collectedROI_angle", 0))
         self.collectedROI_noneImage = np.full((self.collectedROI_height, self.collectedROI_width),125, dtype=np.uint8)
         # flowRate ROI
         self.flowRateROI_X       = int(para["flowRateROI_X"])
@@ -368,6 +370,9 @@ class ImageProcessor(QObject):
             4: (self.collectedROI_X, self.collectedROI_Y, self.collectedROI_width, self.collectedROI_height),
             5: (self.flowRateROI_X, self.flowRateROI_Y, self.flowRateROI_width, self.flowRateROI_height), #start flowRateROI
         }
+        self.roi_angles = {
+            4: self.collectedROI_angle,
+        }
         if self.Bg_frame is not None:
             "capture和release共用一个ROI；"
             "capture时在capture区域内只有一个细胞才行"
@@ -377,7 +382,14 @@ class ImageProcessor(QObject):
                 1: (self.Bg_frame[self.trappedROI_Y:self.trappedROI_Y+self.trappedROI_height, self.trappedROI_X:self.trappedROI_X+self.trappedROI_width]),
                 2: (self.Bg_frame[self.cellFlowThroughROI_Y:self.cellFlowThroughROI_Y+self.cellFlowThroughROI_height, self.cellFlowThroughROI_X:self.cellFlowThroughROI_X+self.cellFlowThroughROI_width]),
                 3: (self.Bg_frame[self.sortROI_Y:self.sortROI_Y+self.sortROI_height, self.sortROI_X:self.sortROI_X+self.sortROI_width]),
-                4: (self.Bg_frame[self.collectedROI_Y:self.collectedROI_Y+self.collectedROI_height, self.collectedROI_X:self.collectedROI_X+self.collectedROI_width]),
+                4: crop_rotated_roi(
+                    self.Bg_frame,
+                    self.collectedROI_X,
+                    self.collectedROI_Y,
+                    self.collectedROI_width,
+                    self.collectedROI_height,
+                    self.collectedROI_angle,
+                ),
                 5: (self.Bg_frame[self.flowRateROI_Y:self.flowRateROI_Y+self.flowRateROI_height, self.flowRateROI_X:self.flowRateROI_X+self.flowRateROI_width]),
             }
         #图像算法用到运算核
@@ -415,7 +427,17 @@ class ImageProcessor(QObject):
             # 选择背景图像的对应区域ROI，已经高斯模糊后了
             roi_Bg_frame = self.roi_Bg_frames[roi_choice]
             # 提取分析帧的ROI图像
-            roi_frame = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]     
+            if roi_choice == 4:
+                roi_frame = crop_rotated_roi(
+                    frame,
+                    roi_x,
+                    roi_y,
+                    roi_w,
+                    roi_h,
+                    self.roi_angles.get(roi_choice, 0),
+                )
+            else:
+                roi_frame = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
             #参数需和UI线程的显示控件中的保持一样
             # 高斯模糊需处理16位溢出 [3,9](@ref)
             blur_roi_frame = cv2.GaussianBlur(roi_frame.astype(np.float32), 
@@ -826,6 +848,7 @@ class ImageProcessor(QObject):
 
                         ROI_para = {}
                         ROI_para["imageProcessing_way"] = 4 # 4: collected
+                        ROI_para["roi_angle"]           = self.collectedROI_angle
                         ROI_para["ID_add"]              = 0 
 
                         ROI_para["algorithm_time"]      = 0 # 其实不需要None
@@ -861,6 +884,7 @@ class ImageProcessor(QObject):
                     #发送给UI界面显示ROI的消息
                     ROI_para = {}
                     ROI_para["imageProcessing_way"] = 4 # 4: collected
+                    ROI_para["roi_angle"]           = self.collectedROI_angle
                     ROI_para["ID_add"]              = 0 
                     
                     ROI_para["algorithm_time"]      = algorithm_time  # 转换为微秒  这个算法的耗时
@@ -1100,4 +1124,4 @@ class FastCameraThread:
         self.imageProcessor_thread.quit()
         self.imageProcessor_thread.wait()
         self.camera_thread.wait()
-        self.saver_thread.wait()  
+        self.saver_thread.wait()

@@ -105,6 +105,34 @@ class RunningOrderSelectionTests(unittest.TestCase):
         # warnings 应至少有一条，便于 GUI 翻译。
         self.assertTrue(warnings)
 
+    def test_find_best_running_order_prefers_638_over_legacy_647(self):
+        """638 nm 请求应优先选择 638 RO，即使列表里也存在旧 647 命名。"""
+        from sim_control.adapters import find_best_running_order
+
+        running_orders = [
+            (0, "647_3.5_2d_10ms"),
+            (1, "638_3.5_2d_10ms"),
+        ]
+
+        index, name, warnings = find_best_running_order(running_orders, 638, 10_000)
+
+        self.assertEqual((index, name), (1, "638_3.5_2d_10ms"))
+        self.assertEqual(warnings, [])
+
+    def test_find_best_running_order_falls_back_to_647_for_638_request(self):
+        """现场 repertoire 未重命名时，638 nm 请求允许使用旧 647 RO。"""
+        from sim_control.adapters import find_best_running_order
+
+        running_orders = [
+            (0, "647_3.5_2d_10ms"),
+            (1, "647_3.5_2d_10ms_ang0"),
+        ]
+
+        index, name, warnings = find_best_running_order(running_orders, 638, 10_000)
+
+        self.assertEqual((index, name), (0, "647_3.5_2d_10ms"))
+        self.assertTrue(any("legacy 647" in warning for warning in warnings))
+
 
     def test_find_z_scan_running_order_accepts_only_488_zscan3p_presets(self):
         """Z-scan 只能选择 488 nm 专用三相位 RO，且按固定 preset 精确匹配。"""

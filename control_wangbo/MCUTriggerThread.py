@@ -32,7 +32,6 @@ class MCUTriggerWorker(QObject):
     signal_btn_triggerSort_finish    = pyqtSignal()
     signal_btn_triggerRelease_finish = pyqtSignal()
     signal_btn_triggerFunction_finish    = pyqtSignal()
-    signal_btn_triggerFunction_start    = pyqtSignal()
     signal_btn_triggerReleaseSort_finish             = pyqtSignal()
     signal_closeVideoSavingModel     = pyqtSignal()
     signal_sCMOS_enterImageProcessor = pyqtSignal() #发送信号后分析的是当前索引的前一张图像
@@ -83,14 +82,15 @@ class MCUTriggerWorker(QObject):
         无细胞:
             单次筛选:关闭筛选,状态设为-1
             连续筛选:捕获失败,直接开启release trigger,并重回步骤0, 进行下一轮的细胞捕获
-        有细胞:成功捕获,启动Function Trigger,当trigger结束后,发送sCMOS图像分析程序,将当前帧的前一帧作为分析帧。80fps的帧率大概12.5ms。
+        有细胞:成功捕获,启动Function等待；Function只作为等待时间,不向单片机发送指令。
     7. 可以通过控制判断条件实现类似手动的全细胞筛选或者放弃
         目标细胞:状态设为2,进行Release ROI分析
         非目标细胞:
             单次筛选:关闭筛选,状态设置为-1
             连续筛选:直接开启release trigger,并重回步骤0, 进行下一轮的细胞捕获
     2.  Release ROI检测,实际检测是的cell flow trough
-        无细胞时启动Release+Sort Trigger,将状态设为4 (跳过Sort ROI,直接到Collected ROI)
+        无细胞时复用手动Rel+Sort按钮时序：先长时Release, 再在releaseTime后切到Release+Sort,
+        Release+Sort真正发出后将状态设为4 (跳过Sort ROI,直接到Collected ROI)
     4. collected ROI 分析,检测目标帧数内是否出现细胞
         单次筛选:
             状态设置为-1
@@ -143,10 +143,20 @@ class MCUTriggerWorker(QObject):
                     self.signal_setImageProcessingWay_MCUThread.emit(-1) #关闭ROI筛选
                     self.signal_close_btn_runScreenCell_single_function.emit() #关闭单次筛选        
         elif imageProcessing_way == 2: # Release ROI判断,只有无细胞时才会促发这个判断
-            #目标细胞: 直接同步触发Release+Sort,不再需要Sort ROI图像分析
+            #目标细胞: 复用手动Rel.+Sort按钮的时序
+            #先长时Release, 再在releaseTime后切到Release+Sort
             self.isReleaseSaveVedio = True
-            self.triggerReleaseSort_autoVersion()
-            self.signal_setImageProcessingWay_MCUThread.emit(4) #直接开启Collected ROI的筛选
+            self.slot_btn_triggerReleaseSort()
+            QTimer.singleShot(
+                int(self.releaseTime) + 1,
+                Qt.PreciseTimer,
+                lambda: self.signal_setImageProcessingWay_MCUThread.emit(4),
+            ) # Release+Sort真正发出后再开启Collected ROI筛选
+            QTimer.singleShot(
+                int(self.releaseTime) + int(self.releaseSortTime),
+                Qt.PreciseTimer,
+                lambda: setattr(self, "isReleaseSaveVedio", False),
+            )
         elif imageProcessing_way == 4: # Collected ROI分析完成
             if self.runModel == 2: #连续筛选的情况
                 self.signal_setImageProcessingWay_MCUThread.emit(0) # 回到Trapped ROI的筛选
@@ -170,12 +180,6 @@ class MCUTriggerWorker(QObject):
 
         # 增加 min(time, 254) 防溢出保护
         self.send_data_capture  = bytes([0xFE, min(self.captureTime, 254)])
-
-        # 1ms精度下，单字节最大只能延时 254ms。大于254(254ms)则发0xFF让单片机常开，由上位机QTimer定时
-        if self.functionTime > 254:
-            self.send_data_function = bytes([0xFD, 0xFF])
-        else:
-            self.send_data_function = bytes([0xFD, self.functionTime])
 
         self.send_data_release  = bytes([0xFB, min(self.releaseTime, 254)])
         self.send_data_releaseSort = bytes([0xF3, min(self.releaseSortTime, 254)])
@@ -300,7 +304,7 @@ class MCUTriggerWorker(QObject):
 
         QTimer.singleShot(int(self.releaseTime), Qt.PreciseTimer, finish_release)
 
-    #有sCMOS的双相机版本 (不再发送function trigger硬件信号，仅等待functionTime)
+    # Function阶段只等待functionTime, 不发送任何单片机串口指令。
     @pyqtSlot()
     def slot_btn_triggerFunction(self):
         # 仅等待functionTime，不做硬件trigger
@@ -319,14 +323,6 @@ class MCUTriggerWorker(QObject):
     def slot_btn_rinseChannelCapture(self):
         """长时间的给压力"""
         self.MCUSerialPort.write(bytes([0xFE,0xFF])) #开启信号 第2个字节为不结束
-        self.MCUSerialPort.flush()  # 确保数据立即发送
-        time.sleep(0.1)
-        # 清空串口缓冲区
-        self.MCUSerialPort.clear()
-    @pyqtSlot()
-    def slot_btn_rinseChannelFunction(self):
-        """长时间的给压力"""
-        self.MCUSerialPort.write(bytes([0xFD,0xFF])) #开启信号 第2个字节为不结束
         self.MCUSerialPort.flush()  # 确保数据立即发送
         time.sleep(0.1)
         # 清空串口缓冲区
@@ -387,4 +383,3 @@ class MCUTriggerThread(QThread):
         self.quit()  # 发送退出信号
         self.wait()  # 等待线程结束
         print("关闭了线程")
-

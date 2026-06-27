@@ -111,6 +111,25 @@ class SimCameraPresetTests(unittest.TestCase):
             (1152, 1152, 268, 244),
         )
 
+    def test_centered_sim_camera_roi_origin_uses_runtime_sensor_size(self):
+        """用户选择非全幅 ROI 时，默认原点应落在当前完整视场中心。"""
+        from sim_control.sim_camera_presets import centered_sim_camera_roi_origin
+
+        presets = ((2048, 2048), (1024, 1024), (512, 512))
+
+        self.assertEqual(
+            centered_sim_camera_roi_origin(2048, 2048, sensor_size=(2048, 2048), presets=presets),
+            (0, 0),
+        )
+        self.assertEqual(
+            centered_sim_camera_roi_origin(1024, 1024, sensor_size=(2048, 2048), presets=presets),
+            (512, 512),
+        )
+        self.assertEqual(
+            centered_sim_camera_roi_origin(512, 512, sensor_size=(2048, 2048), presets=presets),
+            (768, 768),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

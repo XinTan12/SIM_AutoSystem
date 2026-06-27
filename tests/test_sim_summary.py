@@ -3,7 +3,7 @@
 作用：
     覆盖 ``summary.build_sim_settings_summary`` 五类场景：
         1. ``backend`` 段不出现在摘要里（避免暴露本机 SDK 绝对路径）；旧 640nm
-           配置经迁移后必须显示 ``cam_trigger_line`` 与 ``laser_647_line``。
+           配置经迁移后必须显示 ``cam_trigger_line`` 与 ``laser_638_line``。
         2. 给定 runtime_timing 时，``Bit Depth``、``TIMING_READOUTTIME``、
            ``SIM9_ESTIMATED_TOTAL_TIME`` 都按相机回报的实际值显示，且最后一段是
            完整的 Timing 只读区块。
@@ -37,12 +37,12 @@ class SimSettingsSummaryTests(unittest.TestCase):
     """覆盖主界面 SIM 设置摘要的字段顺序、命名迁移与总时长估算。"""
 
     def test_build_sim_settings_summary_omits_backend_block(self):
-        """旧 640 配置迁移后，摘要使用 647 命名；``backend`` 段完全不出现。"""
+        """旧 640 配置迁移后，摘要使用 638 命名；``backend`` 段完全不出现。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.summary import build_sim_settings_summary
 
         # 1) 构造一份含 ``laser_640_line`` 与 ``backend`` SDK 路径的旧配置；
-        #    经 ``app_config_from_dict`` 迁移后会变成 647 命名。
+        #    经 ``app_config_from_dict`` 迁移后会变成 638 命名。
         config = app_config_from_dict(
             {
                 "selected_laser_nm": 488,
@@ -56,15 +56,15 @@ class SimSettingsSummaryTests(unittest.TestCase):
                     "exposure_us": 10_000,
                 },
                 "daq": {
-                    "device_name": "Dev2",
-                    "slm_enable_line": "Dev2/port0/line0",
-                    "slm_trigger_line": "Dev2/port0/line1",
-                    "slm_finish_line": "Dev2/port0/line2",
-                    "camera_trigger_line": "Dev2/port0/line5",
-                    "laser_405_line": "Dev2/port0/line8",
-                    "laser_488_line": "Dev2/port0/line6",
-                    "laser_561_line": "Dev2/port0/line7",
-                    "laser_640_line": "Dev2/port0/line9",
+                    "device_name": "Dev1",
+                    "slm_enable_line": "Dev1/port0/line0",
+                    "slm_trigger_line": "Dev1/port0/line1",
+                    "slm_finish_line": "Dev1/port0/line2",
+                    "camera_trigger_line": "Dev1/port0/line8",
+                    "laser_405_line": "Dev1/port0/line9",
+                    "laser_488_line": "Dev1/port0/line10",
+                    "laser_561_line": "Dev1/port0/line11",
+                    "laser_640_line": "Dev1/port0/line12",
                 },
                 "backend": {
                     "fusion_bt_sdk_path": "E:/sdk/dcam",
@@ -79,11 +79,12 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("Laser: 488 nm", summary)
         self.assertIn("Pattern RO: (SLM 未连接)", summary)
         # 3) ``cam_trigger_line`` 别名（GUI 显示简写）替代原始字段名。
-        self.assertIn("cam_trigger_line: Dev2/port0/line5", summary)
+        self.assertIn("cam_trigger_line: Dev1/port0/line8", summary)
         self.assertNotIn("camera_trigger_line", summary)
-        # 4) 旧 640 / 新 647 命名必须互斥。
-        self.assertIn("laser_647_line: Dev2/port0/line9", summary)
+        # 4) 旧 640 / 新 638 命名必须互斥。
+        self.assertIn("laser_638_line: Dev1/port0/line12", summary)
         self.assertNotIn("laser_640_line", summary)
+        self.assertNotIn("laser_647_line", summary)
         # 5) backend SDK 路径绝不出现：避免暴露本机敏感路径。
         self.assertNotIn("Backend:", summary)
         self.assertNotIn("fusion_bt_sdk_path", summary)

@@ -5,6 +5,90 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-06-26
+
+### 决策：SIM 设置弹窗 DAQ/Recon 两页迁入主 GUI 一级模块、弹窗整体移除；DAQ 诊断测试逻辑下沉到 `sim_control/daq_testing.py`；Recon 配置跨线程下发改 queued signal（硬约束）
+- 原因：
+  操作者此前改 DAQ 接线/测试与 Recon 重建参数需进二级弹窗 `SimSettingsDialog` 再切 tab，现场不便；该弹窗的 Laser 页、Z-Scan 页此前已分别移除/迁出，仅剩 DAQ/Recon 两页，搬走后弹窗已空。用户要求把这两页全部迁到主界面一级界面、弹窗整体移除，并把 SIM 摘要栏+Load/Save 移到右侧新列、加宽主窗口。同时外部 codex 审查指出原 `control_wangbo/main.py` 在 recon worker 已存在时跨线程裸调 `set_reconstruction_config` 是潜在线程安全隐患（`pipeline.py` 注释明确该 setter 仅同线程用、GUI 跨线程须走 queued `slot_update_reconstruction_config`）。
+- 影响：
+  ① **配置唯一入口迁主 GUI**：DAQ/Recon 与已迁入的 Z-Scan 模块并列于 `grp_simConfiguration`（顺序 SLM→Z-Scan→DAQ→Recon→SIM Runtime）；SIM 摘要栏+Load/Save 移到新增右列 `grp_simSummary`；主窗口加宽 1800→2160。遵「主 GUI 控件先 `.ui` 静态定义→`pyuic5` 重生成→`main.py` 仅运行时接线」标准流程（2026-06-25 决策）。② **DAQ 测试逻辑下沉**：原 `SimSettingsDialog` 的 `_run_*_test`/`_PulseTestWorker`/结果 dataclass/常量抽到 `sim_control/daq_testing.py` 的 `DaqTestRunner`（注入共享 adapter+配置快照、worker 内不读 Qt、全路径 `set_all_low`、`camera_externally_owned` 只 disarm、选 RO 经 `exclude_indices` 排除 immediate RO 与正式采集一致），`gui.py` 重导出保 `SimControlWindow` 与既有 import 不破。后续 SIM DAQ 测试改动一律走 `daq_testing.py`，不要再写进 GUI 类。③ **弹窗移除**：删 `SimSettingsDialog` 类、`sim_settings_dialog.ui`、`ui_sim_settings_dialog.py`、`generate_ui_py.cmd`、主界面 `btn_openSimSettings` 及打开/`apply_sim_settings` 接线；`SimControlWindow`（独立 SIM 调试 GUI）保留。后续不要恢复该设置弹窗。④ **Recon 跨线程硬约束**：GUI 向常驻 recon worker 下发配置必须经 `signal_reconstruction_config_changed`(pyqtSignal)→`slot_update_reconstruction_config` 发 `ReconstructionConfig.snapshot()` 快照，**禁止跨线程裸 `set_reconstruction_config`**（与 `SimControlWindow` 既有范式一致）。⑤ **Save/Load 覆盖**：Save/Load(`apply_loaded_sim_settings_payload` 合并 sim_control payload 后回填 DAQ/Recon/Z-Scan 三模块控件 + 同步 controller + ensure recon worker)，避免配置与控件/后端状态分裂。⑥ Recon 波长下拉只切换查看/编辑哪个波长的 OTF，**绝不回写采集波长 `selected_laser_nm`**（采集波长唯一入口仍为主 GUI `cmb_sCMOS_laser`）。本决策不改 DAQ 波形/时序/RO 选择/激光安全语义（只是搬运+加 immediate RO 排除）。审查：高风险，走 Codex 双循环（方案 1 轮 / 实现 2 轮 0 blocking）+ 独立 subagent review 0 blocking 双审。
+
+## 2026-06-25
+
+### 决策：主 GUI 界面控件改为 `.ui` 静态定义、`main.py` 仅运行时接线（取代“纯运行期创建”）
+- 原因：
+  此前主 GUI（`control_wangbo` 主界面 `CellSorting`）多处控件由 `control_wangbo/main.py` 运行期编程创建（波长下拉、Z-Scan 模块、SIM Runtime 状态、Z 位置标签、SLM immediate RO 等），分散、难维护；且运行期以主窗口为父 + 绝对坐标曾引发“缩窗按钮消失”bug（同日 `btn_sim9_acquire` 静态化修复）。用户要求把主 GUI 动态控件全部改为静态组件、功能与位置不变，并确立“以后主 GUI 加控件都用静态组件”的长期规则。
+- 影响：
+  主 GUI 控件一律先在 `CellSorting_ui.ui` 静态定义、再 `pyuic5` 重生成 `CellSorting_ui.py`，`main.py` 只做运行时接线（信号、配置同步、带 `itemData` 的下拉填充、`view()` popup、`.ui` 不支持的布局参数如 `setColumnStretch`——pyuic5 5.15.11 的 `<string>` columnStretch 会误生成非法 `setColumnStretch(_translate(...))`，须删 `.ui` property 改运行时补）。**分阶段推进**：阶段 1（已完成）静态化波长下拉 `lb_sCMOS_laser`/`cmb_sCMOS_laser`、Z-Scan 模块 `grp_zscan`+10 控件，并清理 `setup_sim_runtime_status_widgets`/`setup_sim_z_position_widgets` 的动态死后备分支（控件已 `.ui` 静态、分支不可达）；`setup_sim_zscan_module` 由“创建+接线”改“静态存在则接线”（前置 group 检查 + `_zscan_module_wired` 接线后置位防重复 connect、`blockSignals+clear` 防重复 items）。阶段 2（**已完成** 2026-06-25）静态化 SLM 连接区 2×2：`.ui` `gridLayout_SLMConnection` 重排 device(0,0)110/connect(0,1)154/refresh(1,0)90/新增 `cmb_SLM_immediateRO`(1,1)154，`lbl_SLM_status` 移到 layout 外作 hidden 子（`grid.indexOf==-1`）；`main.py` 删 removeWidget/addWidget 重排、只补 `setColumnMinimumWidth`/`setColumnStretch`（同 `columnStretch` 不被 pyuic5 静态生成、运行时补）、`view()` popup 宽（`QComboBox.view()` 运行时对象、`.ui` 无法表达）、tooltip/信号；测试 `test_runtime_slm_immediate_ro_layout` 改名 `test_static_slm_2x2_layout_and_wiring`、删字体度量敏感的 `grp.minimumSizeHint<=288` 护栏改用 `grid.minimumSize<=288`（顺带修复该预存失败），全量 409 OK。**至此主 GUI 控件静态化全部完成**（btn_sim9 + 波长/Z-Scan + SLM）。本决策**取代** `PROJECT_MEMORY` 此前多条“纯 `control_wangbo/main.py` 运行期、不改 `.ui`/`CellSorting_ui.py`”做法（那是为避免动队友生成文件的临时约束，现因方向转变失效）。规则写入 `AGENTS.md`「关键约束」。
+
+### 决策：多波长找样品 immediate RO 采用旧 `647` 红光命名并由 `638 nm` GUI 入口兼容
+- 原因：
+  现场主 GUI 和 DAQ 配置已统一把第四路红光显示/控制为 `638 nm`，但当前 R11 repertoire 内红光图片和正式 RO 仍沿用旧 `647` 文件/RO 命名。用户要求在模仿 488 immediate RO 时生成 `405/561/647` immediate RO；若只生成 `647_..._imm_*` 而不扩展 immediate-live 波长匹配，当前 `638 nm` GUI 入口会把这些 RO 当作波长不匹配而禁用。
+- 影响：
+  `patterns/2d_3.5.repz11` 的找样品 immediate RO 覆盖 `405/488/561/647` 四个前导波长；红光 RO 名保留 `647_3.5_2d_imm_f1..f9/_3dir` 以复用现有 repertoire 图片命名。immediate-live 波长匹配规则为：前导波长与当前选择严格相等，或当前选择为 `638` 且 RO 前导波长为旧 `647`；该兼容只对红光单向生效，`647` RO 不可用于 405/488/561。实际点灯仍走当前配置的 `LASER_ROLE_MAP[638] -> laser_638_line`。所有新增 RO 继续遵守 2026-06-24 决策：只复用既有 `A+`/`A-` Lit Pair sequence、每个图案正反相成对、不新增 sequence/image、不启用 SPI RO Selection，Python 只写 `.rep` 骨架，最终 `ACT_IMMEDIATE` activation type 必须由 MetroCon GUI 设置、编译并发送到 board。
+
+### 决策：codex 双循环审查从“每次实质修改强制”改为按复杂度/风险分级触发
+- 原因：
+  用户为降低每轮响应延迟、避免简单改动也被 codex 多轮审查拖慢，要求把 codex 双循环从“对 `sim_control/`、`config/*.json`、`tests/`、波形/时序、`ui_*` 的每次实质修改都强制”放宽为“按改动风险分级——只有复杂任务才调用 codex review”。属对 2026-06-24 所立强制流程的方向性放宽。
+- 影响：
+  `AGENTS.md`「Codex 双循环审查工作流」节副标题由“代码修改强制流程”改为“代码修改的分级审查流程”；适用范围改为：①只有**复杂任务**（需拆解为多子任务、跨多文件/模块、含非平凡逻辑或行为变化，与“任务执行方式（并行子代理）”章节“复杂任务”界定一致）才走完整双循环；②简单/单步/低风险改动默认豁免双循环、仅走“修改后 subagent review”；③**安全阀**——涉及硬件控制（相机/SLM/DAQ）、波形/时序、安全或破坏性操作的改动即使简单也按复杂任务对待、仍走双循环（第二循环可直接升级 `/codex:adversarial-review`），复杂度拿不准时从严走双循环。原“必须走双循环”的文件覆盖面降级为“判定对象范围”。**未变**：触发主体仍限定 Claude Code；“修改后 subagent review”机制不受本次分级影响（但其与 codex 双循环“无条件叠加”的关系已由同日「codex 实现审查后免除非高风险 subagent review」决策改为“有条件去重”，详见该条）；codex 会话连续性/串行处理/承载方式等执行细则不变。本条规则文本修改本身按“文档微调＋用户显式指令”豁免 codex 双循环（已向用户说明），仅走独立 subagent review。
+
+### 决策：codex 实现审查后免除非高风险改动的独立 subagent review（审查去重）
+- 原因：
+  原「Codex 双循环审查工作流」与「修改后审查机制」对同一份实现叠加双审——codex 第二循环（实现验证）审一遍、独立 subagent review 再审一遍。用户要求去掉这层重复：codex 已对“执行的修改结果”（第二循环）审查并通过后，不必再单独做独立 subagent review。
+- 影响：
+  `AGENTS.md`「修改后审查机制」新增去重与兜底两条、codex 节首互补条改为指向去重、「判定终止降级」条改为以实际执行的审查 blocking 为准。**去重规则**：本次改动已完成 codex 第二循环并通过时，**非高风险**改动免独立 subagent review；**高风险**改动（硬件相机/SLM/DAQ、波形/时序、安全/破坏性，判据同适用范围安全阀）即使 codex 通过**仍做一次** subagent review 双保险（经 AskUserQuestion 用户确认）。**兜底硬约束**：简单/低风险改动、文档记忆类、codex 降级不可用、仅走第一循环 等无 codex 实现审查的情形仍必做 subagent review——任何实质改动至少经一种实现审查，**绝不允许 codex 第二循环与 subagent review 两者都跳过**；两者同时执行时任一 blocking 都不算完成、冲突以更严格者为准。本条覆盖同日「分级触发」决策中“subagent review 仍对每次改动执行”的旧表述。本规则文本修改本身属文档/记忆类、豁免 codex 双循环，仅走独立 subagent review。
+
+### 决策：Z-Scan 操作主入口迁到主 GUI、移除设置对话框 Z-Scan 页、SIM9 采集由「是否开启 Z-Scan」开关门控
+- 原因：
+  操作者此前需进二级设置弹窗才能配置/运行 Z-Scan，现场不便；且主 GUI「SIM9帧采集」按钮长期硬编码不做 z-scan（`z_scan_enabled=False`），与「采集前自动对焦」诉求脱节。用户要求把 Z-Scan 主功能搬到主 GUI 一级界面、对话框页整页移除，并让 Z-Scan 与 SIM9 采集联动。
+- 影响：
+  ① **可复用纯函数下沉**：Z-Scan「仅移动」与「完整自动对焦」核心抽到 `sim_control/z_scan_core.py` 的 `run_z_scan_stage_only` / `run_z_scan_autofocus`（共享 `preflight_z_scan_positions` 做移动前全量越界预检），供主 GUI 后台 worker 复用；正式采集 worker 的 z-scan 分支仍独立、仅共享底层 `run_z_scan`。后续 Z-Scan 相关改动优先走 `z_scan_core.py`，不要再把编排逻辑写进 GUI。② **对话框不再承载 Z-Scan**：`SimSettingsDialog` 移除 `tab_zscan` 与全部 z-scan 代码，`_sync_config_from_widgets` 不再写 `config.z_scan`（z_scan 仅由主 GUI 编辑、对话框保存时原样保留）；改 UI 仍须改 `.ui` 后 `pyuic5` 重生成。③ **主 GUI 为 Z-Scan 唯一交互入口**：`control_wangbo/main.py` 运行期编程式建 Z-Scan 模块（方向/步进 nm/步数/曝光/「是否开启」开关/「拍图」开关/「运行」按钮），后台经 `_ConnectWorker`+QThread 执行、进度经 pyqtSignal 回主线程；「运行 Z-Scan」拍图 OFF=仅移动停终点、ON=完整对焦移到最佳焦面；移动越界预检在发起任何移动前 raise。④ **SIM9 联动**：「SIM9帧采集」的 `z_scan_enabled` 改读 `z_scan.enabled`（沿用 2026-05-25 的 enabled 语义）——ON 先完整 Z-Scan 选焦面再采 9 帧、OFF 直接采。⑤ **API 约束记录**：camera/SLM 适配器 `is_connected()` 是方法、stage 的 `is_connected` 是布尔属性，z-scan 连接校验须区分调用形式。本决策不改既有 z-scan RO/波形/时序约束（5/8/14/20ms preset、488 三相位、FINISH 语义等）。
+
+## 2026-06-24
+
+### 决策：R11 找样品 immediate RO 的实现约束（DC 平衡成对 + 序列上限 12 + 激活类型由 MetroCon GUI 设）
+- 原因：
+  为“实时找样品”（相机 free-run、不发 DAQ 触发，需 SLM 持续出图让光透过 MASK）需要 immediate 激活 + 循环显示的 RO。把 `488-3.5mm-9frame-tset.repz11` 的 RO 脚本合并进 `2d_3.5.repz11` 时 MetroCon 报 `sequence number (16) out of range`，深入 SDK（`AN0028BA Introduction to the R11 System`、`QXGA Sequence Catalogue`、各序列 timing report）后厘清了 R11 repertoire 三条硬约束。
+- 影响：
+  ① **R11 序列上限**：序列槽 0-15，叠加 `2d_3.5.repz11` zip 内 ~20 个 orphan `.seq11`，实际加第 13 个 SEQUENCES 别名一被 RO 引用即撞上限——找样品/预览 RO 必须**复用现有 12 个别名，绝不加新序列**（与 2026-05-20 z-scan “不用 H±” 同源）。② **DC 平衡硬约束**：R11 FLC 微显示净 DC 必须=0、否则物理损坏液晶（`AN0028BA` §3.3.1.2 p.14）；`48030 Lit Pair` 的 `+`/`-` 是同一图案的正/反相（Data `b0` // `/b0`，属 “Deferred Balanced”），**必须在 RO 里成对 `(A+,n) (A-,n)`**、绝不能单独 `(A+,n)` 长期 loop；`Lit Balanced`（48088 等）是自平衡序列、可单帧，但加它会撞序列上限。③ **激活类型由 MetroCon GUI 设、编译进 `.repc`**：`.rep` 文本的 `[HWA ]`(无 h) 在官方 HWRO Example 里其实是 hardware-select（配 `RO_SELECT`、占 SPI 破坏 TRIGGER/FINISH），脚本改 `.rep` 控制不了 immediate；loop 用 `.rep` 多帧列表表达。④ **落地**：`tools/add_preview_ro.py` 只在 `.rep` 追加 RO 骨架（复用 `A+`/`A-`=48030 成对、引用现有 488 图案全局 9-17、`[HWA ]` 骨架、不加序列/图、token 间带空格 + 结尾 ` >`），用户在 MetroCon GUI 把激活类型设 immediate 后编译烧录。后续找样品/预览 RO 相关改动遵循这些约束；正式采集的 `[HWA h]`+FINISH（SPI_1/SPI_2）语义不受影响、不得引入占 SPI 的 `RO_SELECT`。
+
+### 决策：引入 Codex 双循环审查工作流作为代码修改强制流程
+- 原因：
+  用户要求把“Claude 出方案 → codex 审查方案 → 改 → 循环到通过 → 执行 → codex 验证实现 → 改 → 循环到通过”的双循环固化为长期规则，且明确要求用 OpenAI 官方 Codex 插件实现。本机已通过 `npm install -g @openai/codex` 装好 PATH 版 `codex-cli 0.142.0`（复用 `~/.codex` 现有 ChatGPT 登录；正式版支持 `service_tier="priority"`，无需改 `~/.codex/config.toml`），官方 Codex 插件（marketplace `openai-codex` / plugin `codex`）`setup` 复检 `ready:true`，具备以 `/codex:rescue`（方案审查）与 `/codex:review`（实现验证）做外部交叉审查的条件。
+- 影响：
+  `AGENTS.md` 新增“Codex 双循环审查工作流（代码修改强制流程）”节：对 `sim_control/` 源码、`config/*.json`、`tests/`、波形/时序、重新生成的 `ui_*` 等实质性修改必须走双循环；纯记忆文件回写与文档微调可豁免双循环但不豁免 subagent review。通过判定以 codex 的 blocking 项清零为准（codex 按 blocking/non-blocking/待确认三类输出），各循环默认上限 5 轮、到限交用户裁决；codex 全程只读、所有修改由 Claude 执行；diff 审查范围限定为本次任务对照基线的改动；codex 误判可附理由申辩复审一次；用户显式授权或 codex 不可用经确认时可降级并记入摘要；stop-time review gate 默认不启用。本规则与既有“修改后审查机制”（subagent review）叠加，任一存在 blocking 都不算完成。该工作流规则本身已用 codex 跑两轮方案审查定稿（v1→18 点意见，v2→0 blocking）。
+  （2026-06-24 同日细化）**codex 会话连续性**：同一任务所有审查在同一 codex 会话内（首次 `/codex:rescue --fresh`、后续每轮 `--resume`），不同任务各自 `--fresh`；第二循环主审查从 `/codex:review` 改为 `/codex:rescue --resume`（让 codex 对照它已批准的方案、基于 `git diff <基线 ref>` 审实现），`/codex:review --base` 降为可选独立复审。**限制**：本插件 `--resume` 实为 `task --resume-last`（只续“最近一次”codex 调用、不能按任务 id 寻址），故必须串行处理任务、不在同一 Claude 会话交错多任务，否则 `--resume` 会接错会话——此点由独立 subagent review 抓出（连同节内残留旧句“实现验证统一用 `/codex:review`”的自相矛盾）并已修正。（同日再细化）**承载方式**：同一任务的 codex review（不论第几轮）必须由主 agent 在主对话用 `/codex:rescue` 串行承载，**不得**用 Workflow/并行/后台 spawn 跑需要多轮续接的 codex review（会另开独立会话、`--resume-last` 接不回主线；reconstruction 验证曾误用 Workflow 跑 codex、仅因 0 blocking 单轮未暴露），并行多视角只用 Claude subagent 旁路。
+  （2026-06-25 澄清）**触发主体限定为 Claude Code**：本工作流只在 Claude Code 对本工作区做实质性代码/配置修改、或产出方案时触发，由 codex 外部审查；用户直接用 Codex 或其他 AI 工具**直接**改代码时**不触发本工作流、不强制 codex 自审**（codex 自审自己的方案会丧失“外部交叉”的独立性）。原 `AGENTS.md` 标题“代码修改强制流程”与适用范围未限定主体，导致 Codex 读 `AGENTS.md` 时把双循环套到自己头上自审方案——本次在标题、节首新增“触发主体”条、适用范围三处补齐 Claude Code 主体限定予以修正。
+
+### 决策：新增 immediate-RO 实时找样品链路，激光安全以"先确认预览再点灯 + set_line 整 port 互锁"为硬约束；采集波长唯一入口迁到主 GUI
+- 原因：
+  正式 SIM9 用的 `[HWA h]` RO 是外触发，实时预览（相机 free-run、不发 DAQ 触发）下 SLM 不出图、画面黑，操作者无法据图调样品位置。需要一条"用 immediate（软件激活即显示）RO + 持续开激光"的找样品链路集成进主界面，替代以前手动换 repertoire + 厂商相机软件的土办法。同时把采集波长从设置弹窗 Laser 页挪到主界面便于操作。关键硬件约束：`NIDaqAdapter.set_line()` 是**整 port0 写入**，拉高一路会把其余所有 SIM TTL 写 0，故找样品激光绝不能与正式采集/诊断波形并存。
+- 影响：
+  immediate RO 识别**只认硬件激活类型 `ACT_IMMEDIATE`(0x01)**（R11 `rpc.h` 枚举：IMMEDIATE=0x01/SOFTWARE=0x02/HARDWARE=0x04），`activation_type=None` fail-closed（绝不按名字猜）；正式 RO 选择 `find_best_running_order` 经 `exclude_indices` 显式排除 immediate（且须经 **worker payload** 与 `select_running_order_for_task` 两条路径都传入）。激光安全状态机长期约束：①激光只在收到 `preview_started`（真正出帧）后点亮，**绝不用早置位的 `sim_preview_active`/`controller.active` 作凭据**，未确认走两阶段 pending（`QTimer.singleShot` 捕获 token、bump-token 失配忽略、点灯前再验相机已连+下拉仍选同 RO）；②`activate_immediate_running_order` **先记 arming line 再 set_line 高**，任何失败 best-effort `set_all_low` 后清态；③`stop_immediate_live` 未激活严格 no-op（不写整 port），并在停 Live/开 SIM9/断 SLM/换波长/开设置弹窗/关窗口/异常/preview error 全部入口强制调用；④`preview_stopped` 区分 planned restart（ROI/曝光内部重启保激光 + reconfirm 看门狗）与异常停止（关激光）；⑤连接前 best-effort 冷启动 `set_all_low`。后续任何改动不得：把激光点亮凭据退回 `sim_preview_active`；在采集/诊断波形期间调 `set_line`/`set_all_low` 之外的整 port 写；恢复设置弹窗 Laser 页作为采集波长入口（采集波长唯一主入口为主 GUI `cmb_sCMOS_laser`，弹窗 Recon 波长下拉仅配 OTF、不回写 `selected_laser_nm`）。immediate RO 命名须用前导波长且不撞正式正则（如 `488_3.5_2d_live_imm`），与正式 `{wl}_{pitch}_{mode}_{exp}ms` RO 同存于 `patterns/2d_3.5.repz11`。immediate-live 运行态只作 controller/GUI 私有，不进 `AppConfig`/JSON（除非将来加 `allow_immediate_live` 配置项）。真机仍须确认 `ACT_IMMEDIATE` 选中是否即显/是否需 `R11_RpcRoActivate`/是否真不需 EXT_RUN（若需则改"一次写多路组合 mask"静态写）。
+
+## 2026-06-22
+
+### 决策：默认 DAQ 接线改为 `Dev1` 新线位，并将第四路红光统一迁移为 `638 nm`
+- 原因：
+  当前实际 Oxxius L4CC 红光通道标称为 638 nm，现场 DAQ Wiring 也已按 `Dev1/port0/line12` 连接红光数字输入；继续使用旧 `647` 命名和旧 `0/1/2/5/8/6/7/9` 线位会让 GUI、配置、波形输出、重建参数与真实硬件不一致。
+- 影响：
+  `config_version` 升到 v12；`DaqLineConfig` 使用 `laser_638_line`，默认线位固定为 `slm_enable=0`、`slm_trigger=1`、`slm_finish=2`、`camera_trigger=8`、`laser_405=9`、`laser_488=10`、`laser_561=11`、`laser_638=12`；`SUPPORTED_LASERS=(405,488,561,638)`，`LASER_ROLE_MAP[638]="laser_638_line"`；`ReconstructionConfig` 使用 `otf_638_path` 与 `estimated_params_638_path`。配置迁移必须把旧 `laser_640_line`/`laser_647_line`、`selected_laser_nm=640/647`、`otf_640_path`/`otf_647_path`、`estimated_params_640_path`/`estimated_params_647_path` 统一迁移到 638 字段。GUI、摘要、DAQ 测试、Recon 下拉和配置文件对外显示 `638 nm` / `Laser 638`。SLM Running Order 选择对 638 nm 优先匹配 `638` RO；若现场 repertoire 仍只有旧 `647` 命名，638 请求允许 fallback 到 `647` RO，避免未重命名文件时采集失败。
+
+## 2026-06-16
+
+### 决策：SIM9 GPU Wiener 重建稳定接口从 `reconstruction.sim_wiener` 迁移到 `sim_control/sim_reconstruction.py`，并改为进程内常驻"热"重建
+- 原因：
+  队友交付的新版 GPU 重建（`reconstruction/` 下 4 个 .py）把 `reconstruction/sim_wiener.py` 变成 import 即执行整段重建、含硬编码 `F:\` 路径的计时 demo，不能再作为库被 pipeline import。同时实测显示"第一次调用慢、第二次快"，根因是进程级一次性 GPU 预热（CUDA context、cuFFT plan 按 shape+dtype 缓存、cuSOLVER、PyTorch caching-allocator、torch/EMD import），这些缓存在进程内跨调用、跨新建 reconstructor 实例都保留，仅进程退出丢失。项目流程是"捕获一个细胞→拍9帧→重建一次→等下一个细胞"，若每次新起进程或每次新建实例就只能拿冷速度；只要重建跑在常驻 GUI 进程并复用同一引擎实例，启动后只有第一个细胞冷、其余皆热。
+- 影响：
+  新增 `sim_control/sim_reconstruction.py` 作为项目内**唯一**依赖重建引擎私有方法的集成层，只 import 引擎模块 `sim_wiener_gpu_emdapp_batchInGroup_batchBetGroup`、绝不 import demo `sim_wiener.py`；`_load_backend` 幂等并校验后端 API。`WarmSIMReconstructor` 进程内常驻、跨细胞复用同一 `InMemorySIMWienerReconstructor`（自复刻引擎流程、不调引擎 `reconstruct()`、不写 `.mat`、内存注入 `(9,H,W) uint16`），保留 cuFFT plan/allocator/网格缓存，自动按首帧形状预热；`ReconstructionWorker` 持有该热实例，并改为**先 emit 结果再异步落盘**（有界单 writer 线程；落盘失败非致命，只经 `signal_reconstruction_saved` 通知，不回滚已下发结果），避免磁盘 I/O 拖慢决策回传。新增 saved-params 快路径（~45ms）与 estimate 路径（~287ms）双路可切换，`saved_params_fallback=fail|estimate`。`reconstruction/*.py` 由本项目侧保持不修改（引擎为队友交付，PROJECT_MEMORY 旧"保持不改"表述更新为"队友更新版、本项目侧不改"）。后续 SIM 重建相关改动一律走 `sim_control/sim_reconstruction.py`，不要恢复从 `reconstruction.sim_wiener` import 稳定接口。
+
+### 决策：重建配置升 schema v11，生产默认 saved-params 但仓库默认 estimate（仿真优先），缺 `.mat` 不静默降级
+- 原因：
+  saved-params（~45ms）依赖固定 SLM Running Order + 光路 + 每波长标定 `.mat`，是真实实验现场的快路径；estimate（~287ms）稳健、无需标定，适合仿真/开发/标定/质量复核。两条路径速度差是实时分选的关键，需可配置切换。但"仿真优先"是项目硬约束：仓库默认配置必须无 `.mat` 也能启动与重建。
+- 影响：
+  `ReconstructionConfig` 新增 `use_saved_params`/`saved_params_fallback`/`estimated_params_{405,488,561,647}_path`/`save_reconstruction_output`/`async_save_reconstruction_output`/`save_queue_maxsize`，`config_version` 10→11，`_migrate_v10_to_v11` setdefault 新字段且旧配置无任何 `estimated_params_*_path` 时强制 `use_saved_params=false`（升级不破坏重建）。`validate_app_config` 在 `use_saved_params=true` 且所选波长 `.mat` 缺失/不存在时报错并阻止正式采集（不静默回退）。仓库 `config/sim_control_config.json` 默认 `use_saved_params=false`；现场生产档为单独的 `config/sim_control_config.production.example.json`（saved+fail），用法见 `docs/reconstruction_saved_params.md`。后续如调整默认值或迁移逻辑，必须同时维持"仓库/仿真默认可无 `.mat` 启动"这一约束。
+
 ## 2026-06-11
 
 ### 决策：preview stop(wait=True) 弃用 processEvents 泵循环，改为 worker 侧 threading.Event 等待 + generation 代数过滤
@@ -189,7 +273,7 @@
 - 影响：
   后续每次发生项目修改时，至少更新 `PROJECT_MEMORY.md` 的“最近更新”部分；如果修改影响项目状态、约束、接口、依赖、硬件接入或待办，也要同步更新对应章节。长期决策变化时再额外更新本决策日志。
 
-### 决策：NI USB-6423 在项目内固定采用 `0/1/2/5/8/6/7/9` 线位，并将第四路红光统一命名为 `647`
+### 决策：NI USB-6423 在项目内固定采用 `0/1/2/5/8/6/7/9` 线位，并将第四路红光统一命名为 `647`（已由 2026-06-22 决策取代）
 - 原因：
   当前实际接线已明确为 `slm_enable=0`、`slm_trigger=1`、`slm_finish=2`、`camera_trigger=5`、`405=8`、`488=6`、`561=7`、`647=9`；继续保留原先连续 `0..7` 的默认映射和 `640` 命名会造成 GUI 默认值、配置文件和真实硬件之间的偏差。
 - 影响：

@@ -22,11 +22,11 @@
     - ``DAQ_ROLE_ORDER``：DAQ 8 路角色的固定排列，决定波形构建器中 role →
       line 索引的对应顺序，**绝对不可改顺序**，否则会和真实接线错位。
     - ``DEFAULT_DAQ_LINE_INDICES``：项目唯一固定的 USB-6423 端口/线位映射，
-      与硬件实际接线一致（slm_enable=0/trigger=1/finish=2/cam=5/
-      405=8/488=6/561=7/647=9）。
+      与硬件实际接线一致（slm_enable=0/trigger=1/finish=2/cam=8/
+      405=9/488=10/561=11/638=12）。
     - ``DEFAULT_INTER_FRAME_GAP_US = 50_000``：SIM9 正式采集帧间隔默认 50 ms，
       只有相机推荐值（recommended_inter_frame_gap_us）小于该值时才能覆盖。
-    - ``SUPPORTED_LASERS = (405, 488, 561, 647)``：项目唯一支持的四档波长。
+    - ``SUPPORTED_LASERS = (405, 488, 561, 638)``：项目唯一支持的四档波长。
     - 9 帧 pattern：``pattern_files`` 列表始终 9 槽位长度，Running Order
       模式下槽位值由元数据覆盖（实际由 SLM 端 RO 控制）。
 
@@ -40,6 +40,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,7 @@ DAQ_ROLE_ORDER = [
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
-    "laser_647_line",
+    "laser_638_line",
 ]
 
 # 项目唯一规范化的 USB-6423 port0 线位号。任何修改都必须经过硬件验收。
@@ -66,11 +67,11 @@ DEFAULT_DAQ_LINE_INDICES = {
     "slm_enable_line": 0,
     "slm_trigger_line": 1,
     "slm_finish_line": 2,
-    "camera_trigger_line": 5,
-    "laser_405_line": 8,
-    "laser_488_line": 6,
-    "laser_561_line": 7,
-    "laser_647_line": 9,
+    "camera_trigger_line": 8,
+    "laser_405_line": 9,
+    "laser_488_line": 10,
+    "laser_561_line": 11,
+    "laser_638_line": 12,
 }
 
 
@@ -105,7 +106,7 @@ LASER_ROLE_MAP = {
     405: "laser_405_line",
     488: "laser_488_line",
     561: "laser_561_line",
-    647: "laser_647_line",
+    638: "laser_638_line",
 }
 
 # 项目支持的 4 档激光波长，UI 下拉、波形 builder 校验都从这里取。
@@ -185,7 +186,7 @@ class DaqLineConfig:
     """保存 USB-6423 设备名和各 SIM TTL 角色对应的物理线位。
 
     职责：
-        - 8 个角色字段（``slm_enable_line`` ... ``laser_647_line``）记录线名。
+        - 8 个角色字段（``slm_enable_line`` ... ``laser_638_line``）记录线名。
         - 提供 ``line_map()`` 把字段重新组织为角色→线名字典，供波形 builder 与
           adapter 直接使用。
 
@@ -201,7 +202,7 @@ class DaqLineConfig:
     laser_405_line: str = default_daq_line_name("Dev1", "laser_405_line")
     laser_488_line: str = default_daq_line_name("Dev1", "laser_488_line")
     laser_561_line: str = default_daq_line_name("Dev1", "laser_561_line")
-    laser_647_line: str = default_daq_line_name("Dev1", "laser_647_line")
+    laser_638_line: str = default_daq_line_name("Dev1", "laser_638_line")
 
     def line_map(self) -> dict[str, str]:
         """把 dataclass 字段重新组织成采集核心需要的角色→线名字典。
@@ -417,7 +418,7 @@ class ReconstructionConfig:
     otf_405_path: str = ""
     otf_488_path: str = ""
     otf_561_path: str = ""
-    otf_647_path: str = ""
+    otf_638_path: str = ""
     background_path: str = ""
     output_path: str = "data/reconstruction"
     wiener: float = 2.0
@@ -425,10 +426,31 @@ class ReconstructionConfig:
     excitation_na: float = 1.49
     theta_ratio: tuple[int, int, int] = (1, 1, 1)
     recon_group_batch: int = 1
+    # 参数策略：默认每帧重新估计（~287ms 热，开箱即用，遵守"仿真优先"——无 .mat
+    # 也能跑通）。真实实验现场标定好每波长 .mat 后置 use_saved_params=True 走 ~45ms
+    # 热路径（见 docs/reconstruction_saved_params.md 与 production 模板）。
+    use_saved_params: bool = False
+    saved_params_fallback: str = "fail"  # fail | estimate
+    estimated_params_405_path: str = ""
+    estimated_params_488_path: str = ""
+    estimated_params_561_path: str = ""
+    estimated_params_638_path: str = ""
+    # 异步落盘：先发结果再后台有界单 writer 写盘，避免拖慢 重建→特征→决策 回传。
+    save_reconstruction_output: bool = True
+    async_save_reconstruction_output: bool = True
+    save_queue_maxsize: int = 4
 
     def otf_path_for_wavelength(self, wavelength_nm: int) -> str:
         """Return the configured OTF path for a supported laser wavelength."""
         return str(getattr(self, f"otf_{int(wavelength_nm)}_path", ""))
+
+    def estimated_params_path_for_wavelength(self, wavelength_nm: int) -> str:
+        """Return the configured saved-parameter (.mat) path for a laser wavelength."""
+        return str(getattr(self, f"estimated_params_{int(wavelength_nm)}_path", ""))
+
+    def snapshot(self) -> "ReconstructionConfig":
+        """Return a deep copy for safe cross-thread hand-off via Qt queued signals."""
+        return copy.deepcopy(self)
 
 
 @dataclass
@@ -457,7 +479,7 @@ class AppConfig:
     # 默认值必须与 ``config_store.CURRENT_CONFIG_VERSION`` 保持一致（由
     # ``test_legacy_sim_config_migration`` 钉死）；写盘路径 ``app_config_to_dict``
     # 另有强制兜底，即使此处漂移也不会写出过期版本号。
-    config_version: int = 10
+    config_version: int = 12
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

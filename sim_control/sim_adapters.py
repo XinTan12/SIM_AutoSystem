@@ -3,7 +3,7 @@
 作用：
     本文件实现与真实 ``adapters.py`` 完全相同接口的仿真版本：
         - ``SimulatedCameraAdapter``：生成可重复的 ``uint16`` 9 帧 stack 与预览帧。
-        - ``SimulatedSlmAdapter``：列出虚构的 36 个 Running Order，并支持普通
+        - ``SimulatedSlmAdapter``：列出虚构的 Running Order，并支持普通
           pattern 编程，让正式 SIM 采集流程在无 R11 硬件时仍可端到端跑通。
         - ``SimulatedDaqAdapter``：记录 ``play_waveform`` / ``pulse_line``
           调用，但不向真实 USB-6423 输出。
@@ -20,9 +20,9 @@
     - ``np.random.default_rng(12345)``：固定随机数种子保证 ``_generate_frame``
       在同一进程内可重复（便于 visual diff 与回归测试）。
     - ``SIMULATED_RUNNING_ORDERS``：覆盖 4 波长 × 3 曝光 × {normal, _ang0}
-      共 24 个名字（注意 ``647/3.5/2d/1ms`` 这类）。它们的命名格式与真实
-      R11 repertoire 保持一致，因此 ``adapters.find_best_running_order`` 在
-      仿真路径下也能正常工作。
+      的 24 个正式名字（注意 ``638/3.5/2d/1ms`` 这类），再追加 z-scan
+      和 immediate 找样品 RO。它们的命名格式与真实 R11 repertoire 保持一致，
+      因此 ``adapters.find_best_running_order`` 在仿真路径下也能正常工作。
 
 维护要点：
     - 仿真生成的帧 dtype 必须保持 ``uint16``，否则 ``acquisition_core``
@@ -48,12 +48,20 @@ from .waveform import WaveformPlan, parse_line_name
 # 顺序刻意先按波长聚类，再按曝光、再按 angle，便于在 GUI 下拉中分组浏览。
 SIMULATED_RUNNING_ORDERS = [
     f"{wavelength}_3.5_2d_{exposure}{suffix}"
-    for wavelength in (405, 488, 561, 647)
+    for wavelength in (405, 488, 561, 638)
     for exposure in ("10ms", "1ms", "50ms")
     for suffix in ("", "_ang0")
 ] + [
     f"488_3.5_2d_zscan3p_{preset}ms"
     for preset in (5, 8, 14, 20)
+] + [
+    # immediate 段保持 488 既有 f1..f9/3dir 顺序，再追加新增波长块；0..27 索引不变。
+    name
+    for wavelength in (488, 405, 561, 647)
+    for name in [
+        *(f"{wavelength}_3.5_2d_imm_f{i}" for i in range(1, 10)),
+        f"{wavelength}_3.5_2d_imm_3dir",
+    ]
 ]
 # 仿真相机支持的 bit depth；与真实 Hamamatsu Fusion BT 的常用集合保持一致。
 SIMULATED_CAMERA_BIT_DEPTHS = [8, 12, 16]
@@ -300,6 +308,23 @@ class SimulatedSlmAdapter:
         self.initialize()
         return list(enumerate(SIMULATED_RUNNING_ORDERS))
 
+    def list_running_orders_with_activation(self) -> list[dict]:
+        # 合成激活方式：找样品 ``_imm_f*`` / ``_imm_3dir`` 报 ACT_IMMEDIATE(0x01)，其余报 ACT_HARDWARE(0x04)。
+        # 与 list_running_orders 一致只要求 initialize（不强制 connect），便于离线扫描测试。
+        self.initialize()
+        results: list[dict] = []
+        for index, name in enumerate(SIMULATED_RUNNING_ORDERS):
+            activation_type = 0x01 if "_3.5_2d_imm_" in name else 0x04
+            results.append(
+                {
+                    "index": index,
+                    "name": name,
+                    "activation_type": activation_type,
+                    "is_immediate": activation_type == 0x01,
+                }
+            )
+        return results
+
     def select_running_order(self, ro_index: int) -> dict[str, Any]:
         # 1) 未连接时：strict 模式拒绝（对齐真实 adapter 显式 connect 要求），
         #    否则自动连接省测试样板。
@@ -330,6 +355,7 @@ class SimulatedSlmAdapter:
         return {
             "running_order_index": ro_index,
             "running_order_name": ro_name,
+            "activation_type": 0x01 if "_3.5_2d_imm_" in ro_name else 0x04,
             "pattern_result": self._prepared,
             "simulation": True,
         }

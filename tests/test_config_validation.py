@@ -67,6 +67,20 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertFalse(any("pattern_files" in error for error in errors))
 
+    def test_validate_app_config_rejects_legacy_647_laser_selection(self):
+        """647 nm 已迁移为旧值；当前配置只能直接选择 638 nm。"""
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            selected_laser_nm=647,
+            reconstruction=ReconstructionConfig(enabled=False),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertTrue(any("selected_laser_nm" in error for error in errors))
+
     def test_validate_app_config_requires_current_laser_otf_when_reconstruction_enabled(self):
         """启用真实重建时，当前波长必须配置对应 OTF 路径。"""
         from sim_control.config_store import validate_app_config
@@ -143,6 +157,34 @@ class ConfigValidationTests(unittest.TestCase):
             controller.shutdown()
 
         self.assertEqual(emitted_payloads, [])
+
+    def test_controller_allows_task_level_reconstruction_disabled_override(self):
+        """raw-only SIM9 可用任务级配置关闭重建校验，不修改 controller 全局 fail-closed 行为。"""
+        from sim_control.controller import SimAcquisitionController
+        from sim_control.models import BackendConfig, ReconstructionConfig, SimTaskConfig
+
+        controller = SimAcquisitionController(BackendConfig(simulation_mode=True))
+        emitted_payloads = []
+        try:
+            try:
+                controller.signal_start_worker.disconnect()
+            except TypeError:
+                pass
+            controller.signal_start_worker.connect(lambda payload: emitted_payloads.append(payload))
+            controller.pattern_result.handles = list(range(9))
+            controller.reconstruction_config = ReconstructionConfig(enabled=True)
+
+            task = SimTaskConfig(laser_wavelength_nm=488)
+            task_id = controller.start_single_acquisition(
+                task,
+                reconstruction_config=ReconstructionConfig(enabled=False),
+            )
+        finally:
+            controller.shutdown()
+
+        self.assertEqual(len(emitted_payloads), 1)
+        self.assertEqual(emitted_payloads[0]["task_id"], task_id)
+        self.assertEqual(emitted_payloads[0]["task"].laser_wavelength_nm, 488)
 
 
 if __name__ == "__main__":

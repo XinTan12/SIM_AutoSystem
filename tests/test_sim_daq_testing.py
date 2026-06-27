@@ -2,11 +2,11 @@
 
 作用：
     覆盖三类与 DAQ 测试相关的小型回归：
-        1. ``build_daq_test_target_items``：测试目标下拉的项目顺序与 647nm 命名
-           （旧 640 配置经迁移后必须显示为 ``Laser 647``）。
+        1. ``build_daq_test_target_items``：测试目标下拉的项目顺序与 638nm 命名
+           （旧 640 配置经迁移后必须显示为 ``Laser 638``）。
         2. 默认 ``DaqLineConfig`` 必须使用 USB-6423 稀疏映射
-           ``slm_enable=0/trigger=1/finish=2/cam=5/405=8/488=6/561=7/647=9``。
-        3. ``NIDaqWaveformBuilder`` 在迁移 640→647 配置后仍正确使用 ``laser_647_line``，
+           ``slm_enable=0/trigger=1/finish=2/cam=8/405=9/488=10/561=11/638=12``。
+        3. ``NIDaqWaveformBuilder`` 在迁移 640/647→638 配置后仍正确使用 ``laser_638_line``，
            且 packed port 波形的 bit 模式与稀疏线位匹配。
         4. ``NIDaqAdapter.pulse_line`` 通过 mock nidaqmx 测试：先写 0 → 写位掩码 → 等待 →
            最终写 0；目标位是 ``1 << line_index``。
@@ -18,7 +18,7 @@
           ``sim_control.adapters.NIDaqAdapter``。
 
 维护要点：
-    - 测试中"647 命名迁移"覆盖 ``640 → 647`` 历史改动；该迁移逻辑由
+    - 测试中"638 命名迁移"覆盖 ``640/647 → 638`` 历史改动；该迁移逻辑由
       ``_migrate_v0_to_v1`` 完成，删除该迁移前请保留本测试。
     - DAQ 线位约定改变（不太可能）时需同步本测试与 ``models.DEFAULT_DAQ_LINE_INDICES``。
 """
@@ -35,10 +35,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class DaqTestTargetTests(unittest.TestCase):
-    """覆盖 DAQ 测试目标下拉、默认线位映射与波形 647 名称迁移。"""
+    """覆盖 DAQ 测试目标下拉、默认线位映射与波形 638 名称迁移。"""
 
-    def test_build_daq_test_target_items_uses_647_labels_and_appends_sim_entry(self):
-        """旧 640 配置迁移后，测试下拉显示 ``Laser 647``，末尾追加 ``SIM采集`` 与 ``SLM激活时序``。"""
+    def test_build_daq_test_target_items_uses_638_labels_and_appends_sim_entry(self):
+        """旧 640 配置迁移后，测试下拉显示 ``Laser 638``，末尾追加 ``SIM采集`` 与 ``SLM激活时序``。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.gui import (
             SIM_ACQUISITION_TEST_ID,
@@ -50,15 +50,15 @@ class DaqTestTargetTests(unittest.TestCase):
         config = app_config_from_dict(
             {
                 "daq": {
-                    "device_name": "Dev2",
-                    "slm_enable_line": "Dev2/port0/line0",
-                    "slm_trigger_line": "Dev2/port0/line1",
-                    "slm_finish_line": "Dev2/port0/line2",
-                    "camera_trigger_line": "Dev2/port0/line5",
-                    "laser_405_line": "Dev2/port0/line8",
-                    "laser_488_line": "Dev2/port0/line6",
-                    "laser_561_line": "Dev2/port0/line7",
-                    "laser_640_line": "Dev2/port0/line9",
+                    "device_name": "Dev1",
+                    "slm_enable_line": "Dev1/port0/line0",
+                    "slm_trigger_line": "Dev1/port0/line1",
+                    "slm_finish_line": "Dev1/port0/line2",
+                    "camera_trigger_line": "Dev1/port0/line8",
+                    "laser_405_line": "Dev1/port0/line9",
+                    "laser_488_line": "Dev1/port0/line10",
+                    "laser_561_line": "Dev1/port0/line11",
+                    "laser_640_line": "Dev1/port0/line12",
                 },
                 "selected_laser_nm": 640,
             }
@@ -70,11 +70,11 @@ class DaqTestTargetTests(unittest.TestCase):
         self.assertEqual(
             items,
             [
-                ("camera_trigger_line", "Camera Trigger + Capture -> Dev2/port0/line5"),
-                ("laser_405_line", "Laser 405 -> Dev2/port0/line8"),
-                ("laser_488_line", "Laser 488 -> Dev2/port0/line6"),
-                ("laser_561_line", "Laser 561 -> Dev2/port0/line7"),
-                ("laser_647_line", "Laser 647 -> Dev2/port0/line9"),
+                ("camera_trigger_line", "Camera Trigger + Capture -> Dev1/port0/line8"),
+                ("laser_405_line", "Laser 405 -> Dev1/port0/line9"),
+                ("laser_488_line", "Laser 488 -> Dev1/port0/line10"),
+                ("laser_561_line", "Laser 561 -> Dev1/port0/line11"),
+                ("laser_638_line", "Laser 638 -> Dev1/port0/line12"),
                 (SIM_ACQUISITION_TEST_ID, "SIM采集"),
                 (SLM_ACTIVATION_TIMING_TEST_ID, "SLM激活时序"),
             ],
@@ -90,33 +90,34 @@ class DaqTestTargetTests(unittest.TestCase):
         self.assertEqual(config.slm_enable_line, "Dev1/port0/line0")
         self.assertEqual(config.slm_trigger_line, "Dev1/port0/line1")
         self.assertEqual(config.slm_finish_line, "Dev1/port0/line2")
-        self.assertEqual(config.camera_trigger_line, "Dev1/port0/line5")
-        self.assertEqual(config.laser_405_line, "Dev1/port0/line8")
-        self.assertEqual(config.laser_488_line, "Dev1/port0/line6")
-        self.assertEqual(config.laser_561_line, "Dev1/port0/line7")
-        # ``laser_647_line`` 必须存在，旧 ``laser_640_line`` 必须不存在。
-        self.assertEqual(getattr(config, "laser_647_line", None), "Dev1/port0/line9")
+        self.assertEqual(config.camera_trigger_line, "Dev1/port0/line8")
+        self.assertEqual(config.laser_405_line, "Dev1/port0/line9")
+        self.assertEqual(config.laser_488_line, "Dev1/port0/line10")
+        self.assertEqual(config.laser_561_line, "Dev1/port0/line11")
+        # ``laser_638_line`` 必须存在，旧 ``laser_640_line`` / ``laser_647_line`` 必须不存在。
+        self.assertEqual(getattr(config, "laser_638_line", None), "Dev1/port0/line12")
         self.assertFalse(hasattr(config, "laser_640_line"))
+        self.assertFalse(hasattr(config, "laser_647_line"))
 
-    def test_waveform_builder_uses_647_role_name_and_sparse_line_bits(self):
-        """旧 640 配置迁移后，波形 builder 选用 ``laser_647_line`` 并产出正确位掩码。"""
+    def test_waveform_builder_uses_638_role_name_and_sparse_line_bits(self):
+        """旧 640 配置迁移后，波形 builder 选用 ``laser_638_line`` 并产出正确位掩码。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.models import TimingConfig
         from sim_control.waveform import NIDaqWaveformBuilder
 
-        # 1) 与上面相同的 v0 旧配置；经 from_dict 迁移后内部已是 647 命名。
+        # 1) 与上面相同的 v0 旧配置；经 from_dict 迁移后内部已是 638 命名。
         config = app_config_from_dict(
             {
                 "daq": {
-                    "device_name": "Dev2",
-                    "slm_enable_line": "Dev2/port0/line0",
-                    "slm_trigger_line": "Dev2/port0/line1",
-                    "slm_finish_line": "Dev2/port0/line2",
-                    "camera_trigger_line": "Dev2/port0/line5",
-                    "laser_405_line": "Dev2/port0/line8",
-                    "laser_488_line": "Dev2/port0/line6",
-                    "laser_561_line": "Dev2/port0/line7",
-                    "laser_640_line": "Dev2/port0/line9",
+                    "device_name": "Dev1",
+                    "slm_enable_line": "Dev1/port0/line0",
+                    "slm_trigger_line": "Dev1/port0/line1",
+                    "slm_finish_line": "Dev1/port0/line2",
+                    "camera_trigger_line": "Dev1/port0/line8",
+                    "laser_405_line": "Dev1/port0/line9",
+                    "laser_488_line": "Dev1/port0/line10",
+                    "laser_561_line": "Dev1/port0/line11",
+                    "laser_640_line": "Dev1/port0/line12",
                 },
                 "selected_laser_nm": 640,
             }
@@ -137,11 +138,11 @@ class DaqTestTargetTests(unittest.TestCase):
             frame_count=1,
         )
 
-        # 3) 元数据应反映迁移后的 647 角色。
-        self.assertEqual(plan.metadata["active_laser_role"], "laser_647_line")
-        # 4) packed value = bit0(SLM enable) + bit1(SLM trigger) + bit5(camera) + bit9(647 laser)
-        #    = 1 + 2 + 32 + 512 = 547。该值证明位掩码按稀疏线位正确合成。
-        self.assertEqual(int(plan.packed_port_values[1]), 547)
+        # 3) 元数据应反映迁移后的 638 角色。
+        self.assertEqual(plan.metadata["active_laser_role"], "laser_638_line")
+        # 4) packed value = bit0(SLM enable) + bit1(SLM trigger) + bit8(camera) + bit12(638 laser)
+        #    = 1 + 2 + 256 + 4096 = 4355。该值证明位掩码按稀疏线位正确合成。
+        self.assertEqual(int(plan.packed_port_values[1]), 4355)
 
 
 class NIDaqAdapterPulseTests(unittest.TestCase):
@@ -354,7 +355,7 @@ class SlmActivationTimingTestFlowTests(unittest.TestCase):
     def test_activation_timing_test_reaches_active_and_returns_enable_low(self):
         """诊断流程应到达 ACT，并在 finally 中把 enable 拉低 + DAQ 全 0。"""
         from sim_control.config_store import app_config_from_dict
-        from sim_control.gui import SimSettingsDialog
+        from sim_control.daq_testing import DaqTestRunner
         from sim_control.sim_adapters import SimulatedDaqAdapter, SimulatedSlmAdapter
 
         app_config = app_config_from_dict({"config_version": 9})
@@ -362,19 +363,16 @@ class SlmActivationTimingTestFlowTests(unittest.TestCase):
         slm.connect()
         daq = SimulatedDaqAdapter()
 
-        class HostStub:
-            """duck-typed ``self``：只提供 handler 用到的属性/方法。"""
-
-            def __init__(self):
-                self.slm_adapter = slm
-                self.daq_adapter = daq
-                self.config = app_config
-
-            def _selected_laser_nm(self):
-                return 488
-
-        host = HostStub()
-        result = SimSettingsDialog._run_slm_activation_timing_test(host, app_config.daq)
+        # DAQ 测试逻辑已从 SimSettingsDialog 迁到可复用的 DaqTestRunner（注入共享 adapter +
+        # 配置快照）；行为不变，这里直接构造 runner 调同名方法。
+        runner = DaqTestRunner(
+            camera_adapter=None,
+            slm_adapter=slm,
+            daq_adapter=daq,
+            config=app_config,
+            selected_laser_nm=488,
+        )
+        result = runner._run_slm_activation_timing_test(app_config.daq)
 
         self.assertTrue(result.reached_active)
         self.assertIsNotNone(result.enable_to_active_ms)

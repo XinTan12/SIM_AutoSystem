@@ -225,7 +225,7 @@ def build_sim_settings_summary(
         f"  laser_405_line: {daq.laser_405_line}",
         f"  laser_488_line: {daq.laser_488_line}",
         f"  laser_561_line: {daq.laser_561_line}",
-        f"  laser_647_line: {daq.laser_647_line}",
+        f"  laser_638_line: {daq.laser_638_line}",
         "",
         "Timing:",
         f"  sample_rate_hz: {timing.sample_rate_hz}",

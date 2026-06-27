@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import threading
 import traceback
 from typing import Any
@@ -49,8 +50,10 @@ from .acquisition_core import AcquisitionCancelled, run_single_acquisition
 from .adapter_factory import create_adapter_bundle
 from .adapters import (
     HardwareError,
+    R11_ACTIVATION_TYPE_NAMES,
     find_best_running_order,
     find_z_scan_running_order,
+    is_immediate_activation_type,
 )
 from .config_store import validate_app_config
 from .models import (
@@ -58,6 +61,7 @@ from .models import (
     BackendConfig,
     CameraConfig,
     DaqLineConfig,
+    LASER_ROLE_MAP,
     PatternPreparationResult,
     ReconstructionConfig,
     SimTaskConfig,
@@ -65,10 +69,43 @@ from .models import (
     effective_inter_frame_gap_us,
     new_task_id,
 )
-from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
+from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
 
 
 logger = logging.getLogger(__name__)
+
+_IMMEDIATE_LIVE_RO_RE = re.compile(r"^(?P<wavelength>\d+)_3\.5_2d_imm_(?P<slot>f[1-9]|3dir)$")
+
+
+def _parse_immediate_live_ro_name(name: str) -> dict[str, Any] | None:
+    match = _IMMEDIATE_LIVE_RO_RE.match(str(name))
+    if not match:
+        return None
+    return {"wavelength_nm": int(match.group("wavelength")), "slot": match.group("slot")}
+
+
+def immediate_live_wavelength_matches(parsed_wavelength_nm: Any, selected_wavelength_nm: Any) -> bool:
+    """判断 immediate RO 名前导波长是否兼容当前选择的激光波长。
+
+    红光兼容是单向的：当前选择 638 nm 激光时允许使用旧 647 前缀 immediate RO；
+    其它波长仍必须严格等值匹配。
+    """
+    try:
+        parsed = int(parsed_wavelength_nm)
+        selected = int(selected_wavelength_nm)
+    except (TypeError, ValueError):
+        return False
+    return parsed == selected or (selected == 638 and parsed == 647)
+
+
+def _activation_type_label(value: Any) -> str:
+    if value is None:
+        return "None"
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{R11_ACTIVATION_TYPE_NAMES.get(numeric, f'0x{numeric:02X}')} (0x{numeric:02X})"
 
 
 def _acquisition_summary_payload(batch: Any) -> dict[str, Any]:
@@ -185,6 +222,9 @@ class SimAcquisitionWorker(QObject):
                     running_orders,
                     wavelength_nm=int(task.laser_wavelength_nm),
                     exposure_us=int(task.camera.exposure_us),
+                    # 排除找样品 immediate RO（索引集合随 payload 从 controller 带入），
+                    # 否则正式 9 帧采集可能误选 ACT_IMMEDIATE RO。
+                    exclude_indices=set(payload.get("immediate_ro_indices") or ()),
                 )
                 if ro_index is None:
                     # 没匹配到 RO → 抛错让 GUI 提示用户检查 SLM 烧录内容。
@@ -385,6 +425,17 @@ class SimAcquisitionController(QObject):
         self._shutdown_requested = False
         self._active_stop_events: dict[str, threading.Event] = {}
         self._current_stop_event: threading.Event | None = None
+        # 7a) immediate-live（找样品）运行态——仅 controller 私有，不落盘（见决策）。
+        #     `_immediate_ro_scan` 缓存连接时一次性扫描的全部 RO+激活类型；
+        #     `_immediate_ro_indices` 是其中 ACT_IMMEDIATE 的索引集合，供正式选择排除；
+        #     `_immediate_live_ro_indices` 进一步收口到 `*_imm_f1..f9/3dir` 命名，供找样品点灯。
+        #     `_immediate_live_active` / `_immediate_live_line` 跟踪激光线状态：
+        #     先记 line（arming）再 set_line 高，任何失败都能据此 best-effort 拉低。
+        self._immediate_ro_scan: list[dict[str, Any]] = []
+        self._immediate_ro_indices: set[int] = set()
+        self._immediate_live_ro_indices: set[int] = set()
+        self._immediate_live_active = False
+        self._immediate_live_line: tuple[str, int] | None = None
 
         # 8) 创建独立 QThread + worker，绑定一组信号路由，再启动线程。
         self._thread = QThread(self)
@@ -539,6 +590,17 @@ class SimAcquisitionController(QObject):
 
     def disconnect_slm(self) -> None:
         """断开 SLM；GUI 据此切按钮颜色 + 阻止后续 RO 选择。"""
+        # 先关找样品激光（no-op 安全），再清缓存的 immediate 扫描结果——否则陈旧 immediate
+        # index 会继续喂给正式选择的 exclude_indices（即便 GUI 也会清，这里保证 controller 自洽）。
+        # 关光失败（DAQ 拉低异常）不应阻断 SLM 断开（激光线在 DAQ 侧，断 SLM 不影响它）；
+        # 记录后继续，stop_immediate_live 内部已保留状态供后续入口重试拉低。
+        try:
+            self.stop_immediate_live()
+        except Exception as stop_error:  # noqa: BLE001
+            logger.warning("stop_immediate_live failed during SLM disconnect (laser may still be ON): %s", stop_error)
+        self._immediate_ro_scan = []
+        self._immediate_ro_indices = set()
+        self._immediate_live_ro_indices = set()
         self.slm_adapter.disconnect()
         self.signal_status_changed.emit("slm_disconnected", {})
 
@@ -582,12 +644,13 @@ class SimAcquisitionController(QObject):
         抛出：
             ``HardwareError``：没匹配到 RO 或 SLM 未连接时；GUI 据此弹错误对话框。
         """
-        # 1) 枚举 SLM 上烧录的 RO 列表 → 调命名解析器找出最佳匹配。
+        # 1) 枚举 SLM 上烧录的 RO 列表 → 调命名解析器找出最佳匹配；显式排除找样品 immediate RO。
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, warnings = find_best_running_order(
             running_orders,
             wavelength_nm=int(wavelength_nm),
             exposure_us=int(exposure_us),
+            exclude_indices=set(self._immediate_ro_indices),
         )
         if ro_index is None:
             raise HardwareError("; ".join(warnings) or "No matching SLM running order found.")
@@ -601,6 +664,220 @@ class SimAcquisitionController(QObject):
         self.signal_status_changed.emit("running_order_selected", payload)
         return payload
 
+    # ---- immediate-live（找样品）支持 -------------------------------------
+    # 注意：以下 4 个方法只驱动「找样品」用的 immediate RO + 激光线，绝不能与正式
+    # 采集/诊断波形并存——``NIDaqAdapter.set_line`` 是整 port 写入（拉高一路会把其余
+    # SIM TTL 写 0）。调用方（主 GUI）负责在采集/诊断入口先 ``stop_immediate_live``。
+
+    def refresh_immediate_running_orders(self) -> list[dict[str, Any]]:
+        """连接后扫描全部 RO+激活类型并缓存；返回可用于找样品的 ``ACT_IMMEDIATE`` 列表。
+
+        只在后台连接 worker 里调用（逐个 select 读 activation type，有 USB 往返）。
+        缓存供 GUI 线程纯读（``list_immediate_running_orders``）与正式选择排除使用。
+        """
+        scan = list(self.slm_adapter.list_running_orders_with_activation())
+        self._immediate_ro_scan = scan
+        self._immediate_ro_indices = {
+            int(item["index"]) for item in scan if item.get("is_immediate")
+        }
+        self._immediate_live_ro_indices = {
+            int(item["index"])
+            for item in scan
+            if item.get("is_immediate")
+            and _parse_immediate_live_ro_name(str(item.get("name", ""))) is not None
+        }
+        return self._immediate_running_orders_from_cache()
+
+    def _preview_ro_item_from_scan(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        name = str(item.get("name", ""))
+        parsed = _parse_immediate_live_ro_name(name)
+        if parsed is None:
+            return None
+        enriched = dict(item)
+        enriched["parsed_wavelength_nm"] = int(parsed["wavelength_nm"])
+        enriched["preview_slot"] = str(parsed["slot"])
+        enriched["selectable"] = bool(item.get("is_immediate"))
+        if not item.get("is_immediate"):
+            enriched["diagnostic"] = (
+                f"{name}: activation_type={_activation_type_label(item.get('activation_type'))}, "
+                "not ACT_IMMEDIATE; set this Running Order to immediate in MetroCon, "
+                "then compile and Send to board."
+            )
+        return enriched
+
+    def _immediate_running_orders_from_cache(self, *, include_inactive_preview: bool = False) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for item in self._immediate_ro_scan:
+            enriched = self._preview_ro_item_from_scan(item)
+            if enriched is None:
+                continue
+            if not include_inactive_preview and not item.get("is_immediate"):
+                continue
+            items.append(enriched)
+        return items
+
+    def list_immediate_running_orders(self, wavelength_nm: int | None = None) -> list[dict[str, Any]]:
+        """纯读缓存返回可用于找样品的 immediate RO 列表；不在此重新访问 SLM。
+
+        每项附 ``parsed_wavelength_nm``（前导波长，解析不出为 None）。传 ``wavelength_nm``
+        时附 ``selectable``（当前波长匹配才为 True；638 可接受旧 647 RO），由 GUI 决定 enable/disable；
+        解析不出波长的项 ``selectable=False``（不可激活，避免错配激光线）。
+        """
+        items = self._immediate_running_orders_from_cache()
+        if wavelength_nm is None:
+            return items
+        target = int(wavelength_nm)
+        for item in items:
+            parsed = item.get("parsed_wavelength_nm")
+            item["selectable"] = bool(item.get("is_immediate")) and immediate_live_wavelength_matches(
+                parsed,
+                target,
+            )
+        return items
+
+    def list_immediate_dropdown_running_orders(self) -> list[dict[str, Any]]:
+        """返回找样品下拉的展示项，包含命名正确但未烧成 immediate 的诊断项。"""
+        return self._immediate_running_orders_from_cache(include_inactive_preview=True)
+
+    def immediate_running_order_warnings(self, wavelength_nm: int | None = None) -> list[str]:
+        """列出命名正确但当前不可用于找样品的 RO，供 GUI 连接成功后提示。"""
+        warnings: list[str] = []
+        target = int(wavelength_nm) if wavelength_nm is not None else None
+        for item in self.list_immediate_dropdown_running_orders():
+            parsed = item.get("parsed_wavelength_nm")
+            if target is not None and not immediate_live_wavelength_matches(parsed, target):
+                continue
+            diagnostic = item.get("diagnostic")
+            if diagnostic:
+                warnings.append(str(diagnostic))
+        return warnings
+
+    @property
+    def is_immediate_live_active(self) -> bool:
+        return bool(self._immediate_live_active)
+
+    @property
+    def is_immediate_live_engaged(self) -> bool:
+        """controller 是否仍可能持有"已写高/已 arming"的找样品激光线（fail-safe 权威判定）。
+
+        = 激活态 ``OR`` 仍记着 arming line。后者覆盖"激活失败但清理拉低也失败、保留 line 待
+        重试"的情形：此时 ``_immediate_live_active`` 仍为 False，但激光线可能已写高且未拉低。
+        正式采集互锁必须据本判定 fail-safe 拦截（GUI active 标志不足以反映该残留态）。
+        等价于 ``stop_immediate_live`` no-op 守卫条件的逻辑反面。
+        """
+        return bool(self._immediate_live_active or self._immediate_live_line is not None)
+
+    def activate_immediate_running_order(self, ro_index: int, wavelength_nm: int) -> dict[str, Any]:
+        """选中并激活 immediate RO，并把对应波长激光线拉高（持续照明找样品）。
+
+        controller 级校验（不依赖 GUI 过滤）：``ro_index`` 必须在命名正确且缓存确认为
+        immediate-live 的索引内，且其前导波长必须与 ``wavelength_nm`` 兼容（638 可用旧 647 RO）。选中 RO 后会
+        再读取本次 ``activation_type``，确认仍为 ``ACT_IMMEDIATE`` 才点灯。先记 line
+        （arming）再 set_line 高；任何失败都 best-effort 拉低并清状态后再抛出，杜绝
+        「激光开着但状态没记上」。
+        """
+        ro_index = int(ro_index)
+        wavelength_nm = int(wavelength_nm)
+        if ro_index not in self._immediate_live_ro_indices:
+            raise HardwareError(f"RO index {ro_index} is not an immediate running order.")
+        entry = next(
+            (item for item in self._immediate_ro_scan if int(item.get("index", -1)) == ro_index),
+            None,
+        )
+        ro_name = str((entry or {}).get("name", ""))
+        parsed = _parse_immediate_live_ro_name(ro_name)
+        parsed_wavelength = None if parsed is None else int(parsed["wavelength_nm"])
+        if not immediate_live_wavelength_matches(parsed_wavelength, wavelength_nm):
+            raise HardwareError(
+                f"Immediate RO '{ro_name}' wavelength ({parsed_wavelength}) does not match "
+                f"selected {wavelength_nm} nm; refusing to drive laser."
+            )
+        role = LASER_ROLE_MAP.get(wavelength_nm)
+        if role is None:
+            raise HardwareError(f"Unsupported laser wavelength: {wavelength_nm} nm.")
+        device, _port, line_index = parse_line_name(getattr(self.daq_config, role))
+        result = self.slm_adapter.select_running_order(ro_index)
+        selected_name = str(result.get("running_order_name", ro_name))
+        if selected_name != ro_name:
+            self._immediate_live_ro_indices.discard(ro_index)
+            raise HardwareError(
+                f"Immediate RO index {ro_index} changed from '{ro_name}' to '{selected_name}'; "
+                "refresh SLM Running Orders before driving laser."
+            )
+        activation_type = result.get("activation_type")
+        try:
+            activation_type_value = int(activation_type) if activation_type is not None else None
+        except (TypeError, ValueError):
+            activation_type_value = None
+        if not is_immediate_activation_type(activation_type_value):
+            self._immediate_ro_indices.discard(ro_index)
+            self._immediate_live_ro_indices.discard(ro_index)
+            if entry is not None:
+                entry["activation_type"] = activation_type_value
+                entry["is_immediate"] = False
+            raise HardwareError(
+                f"Immediate RO '{ro_name}' is no longer ACT_IMMEDIATE "
+                f"(activation_type={_activation_type_label(activation_type_value)}); "
+                "set it to immediate in MetroCon, compile, Send to board, then reconnect SLM."
+            )
+        # 先记意图（arming）：即使 set_line 写高后抛错，stop_immediate_live 也能据此拉低。
+        self._immediate_live_line = (device, int(line_index))
+        try:
+            self.slm_adapter.activate_prepared_patterns()
+            self.daq_adapter.set_line(device, int(line_index), high=True)
+        except Exception:
+            # best-effort 拉低（整 port），再清状态，最后上抛让 GUI 回退下拉。
+            reset_ok = False
+            try:
+                self.daq_adapter.set_all_low(device)
+                reset_ok = True
+            except Exception as reset_error:  # noqa: BLE001 - 收尾失败只记日志
+                logger.error(
+                    "Failed to reset DAQ low after immediate activate error; keeping arming line for retry: %s",
+                    reset_error,
+                )
+            self._immediate_live_active = False
+            # 关键安全：仅在确认拉低成功后才清 arming line；拉低失败时保留 _immediate_live_line，
+            # 使后续 stop_immediate_live 能据此重试拉低（激光线可能已写高，不能丢失该信息）。
+            if reset_ok:
+                self._immediate_live_line = None
+            raise
+        self._immediate_live_active = True
+        self.signal_status_changed.emit(
+            "immediate_live_activated",
+            {"running_order_index": ro_index, "running_order_name": ro_name, "wavelength_nm": wavelength_nm},
+        )
+        return {"running_order_index": ro_index, "running_order_name": ro_name, "wavelength_nm": wavelength_nm}
+
+    def stop_immediate_live(self) -> None:
+        """关掉 immediate-live 激光（整 port 拉低）并清状态；未 active 且无 arming line 时严格 no-op。
+
+        no-op 很关键：正式采集/诊断入口会无条件调本方法，若此时并无 immediate-live，
+        绝不能写 port（否则会干扰即将/正在播放的波形）。
+        """
+        if not self._immediate_live_active and self._immediate_live_line is None:
+            return
+        device = self._immediate_live_line[0] if self._immediate_live_line else self.daq_config.device_name
+        try:
+            self.daq_adapter.set_all_low(device)
+        except Exception as reset_error:  # noqa: BLE001
+            # 关键安全：拉低失败时绝不清状态——否则下次 stop 撞 no-op、无法重试，激光可能卡高。
+            # 保留 active/line 供后续入口重试，并以 HardwareError 向上暴露硬件风险。
+            logger.error(
+                "Failed to set DAQ low while stopping immediate live; keeping state for retry: %s",
+                reset_error,
+            )
+            raise HardwareError(
+                f"Failed to pull laser line low while stopping immediate live: {reset_error}"
+            ) from reset_error
+        self._immediate_live_active = False
+        self._immediate_live_line = None
+        self.signal_status_changed.emit("immediate_live_stopped", {})
+
+    def reset_all_daq_low(self) -> None:
+        """把 DAQ 全 port 拉低（冷启动安全复位）；调用方负责 best-effort 包裹与空闲判定。"""
+        self.daq_adapter.set_all_low(self.daq_config.device_name)
+
     def start_single_acquisition(
         self,
         task: SimTaskConfig,
@@ -611,6 +888,7 @@ class SimAcquisitionController(QObject):
         apply_camera_config: bool = False,
         z_scan_config: ZScanConfig | None = None,
         z_scan_enabled: bool | None = None,
+        reconstruction_config: ReconstructionConfig | None = None,
     ) -> str:
         """启动单次 SIM9 正式采集；返回新分配的 ``task_id``。"""
         return self._start_worker_task(
@@ -622,6 +900,7 @@ class SimAcquisitionController(QObject):
             prepare_only=False,
             z_scan_config=z_scan_config,
             z_scan_enabled=z_scan_enabled,
+            reconstruction_config=reconstruction_config,
         )
 
     def start_prepare_experiment(
@@ -654,6 +933,7 @@ class SimAcquisitionController(QObject):
         prepare_only: bool,
         z_scan_config: ZScanConfig | None = None,
         z_scan_enabled: bool | None = None,
+        reconstruction_config: ReconstructionConfig | None = None,
     ) -> str:
         """``start_*`` 系列的统一实现：组装 payload、做配置校验、生成 task_id、投递信号。"""
         # 1) 防御：非 RO 路径要求 controller.pattern_result.handles 已就绪。
@@ -669,6 +949,7 @@ class SimAcquisitionController(QObject):
         )
         if prepare_only:
             selected_z_scan_enabled = False
+        selected_reconstruction_config = reconstruction_config or self.reconstruction_config
         # 3) 选定的 pattern_result：RO 路径稍后由 worker 重新生成；非 RO 路径用 controller 持有的。
         pattern_result = self.pattern_result if not prepare_running_order else PatternPreparationResult()
         pattern_files = list(task.pattern_files)
@@ -687,7 +968,7 @@ class SimAcquisitionController(QObject):
             timing=task.timing,
             backend=self.backend,
             z_scan=selected_z_scan_config,
-            reconstruction=self.reconstruction_config,
+            reconstruction=selected_reconstruction_config,
             pattern_files=pattern_files,
             selected_running_order=selected_running_order,
             selected_laser_nm=task.laser_wavelength_nm,
@@ -726,6 +1007,8 @@ class SimAcquisitionController(QObject):
             "apply_daq_config": bool(apply_daq_config),
             "apply_camera_config": bool(apply_camera_config),
             "prepare_only": bool(prepare_only),
+            # immediate（找样品）RO 索引快照：worker 正式选 FINISH RO 时据此排除。
+            "immediate_ro_indices": set(self._immediate_ro_indices),
         }
         # 7) 通过跨线程信号投递给 worker；本函数立即返回，GUI 不会被阻塞。
         self.signal_start_worker.emit(payload)

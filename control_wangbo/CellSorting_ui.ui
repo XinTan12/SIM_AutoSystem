@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1800</width>
+    <width>2202</width>
     <height>1000</height>
    </rect>
   </property>
@@ -252,13 +252,13 @@
         <number>0</number>
        </property>
        <property name="minimum">
-        <double>1.000000000000000</double>
-       </property>
-       <property name="maximum">
-        <double>60000.000000000000000</double>
-       </property>
-       <property name="singleStep">
-        <double>10.000000000000000</double>
+       <double>1.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>600000.000000000000000</double>
+      </property>
+      <property name="singleStep">
+       <double>10.000000000000000</double>
        </property>
        <property name="value">
         <double>1000.000000000000000</double>
@@ -493,8 +493,8 @@
      </rect>
     </property>
     <layout class="QGridLayout" name="gridLayout_3">
-     <item row="0" column="3">
-      <widget class="QLabel" name="label_23">
+      <item row="0" column="3">
+       <widget class="QLabel" name="label_23">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
          <horstretch>0</horstretch>
@@ -1075,8 +1075,8 @@
        </property>
       </widget>
      </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="label_22">
+      <item row="0" column="2">
+       <widget class="QLabel" name="label_22">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
          <horstretch>0</horstretch>
@@ -1776,394 +1776,6 @@
        </property>
        <property name="value">
         <number>50</number>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </widget>
-  </widget>
-  <widget class="QGroupBox" name="grp_sortROI">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>660</y>
-     <width>291</width>
-     <height>69</height>
-    </rect>
-   </property>
-   <property name="font">
-    <font>
-     <family>Times New Roman</family>
-     <pointsize>14</pointsize>
-    </font>
-   </property>
-   <property name="title">
-    <string>Sort ROI</string>
-   </property>
-   <widget class="QWidget" name="layoutWidget">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>20</y>
-      <width>276</width>
-      <height>49</height>
-     </rect>
-    </property>
-    <layout class="QGridLayout" name="gridLayout_6">
-     <item row="0" column="0">
-      <widget class="QLabel" name="label_34">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>ROI_X</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="label_35">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>ROI_Y</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="label_36">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Width</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="3">
-      <widget class="QLabel" name="label_37">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Height</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="0">
-      <widget class="QSpinBox" name="spb_sortROI_X">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>0</number>
-       </property>
-       <property name="maximum">
-        <number>816</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>0</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QSpinBox" name="spb_sortROI_Y">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>0</number>
-       </property>
-       <property name="maximum">
-        <number>624</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>0</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="2">
-      <widget class="QSpinBox" name="spb_sortROI_width">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>1</number>
-       </property>
-       <property name="maximum">
-        <number>816</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>40</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="3">
-      <widget class="QSpinBox" name="spb_sortROI_height">
-       <property name="enabled">
-        <bool>true</bool>
-       </property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="minimum">
-        <number>1</number>
-       </property>
-       <property name="maximum">
-        <number>624</number>
-       </property>
-       <property name="singleStep">
-        <number>1</number>
-       </property>
-       <property name="stepType">
-        <enum>QAbstractSpinBox::DefaultStepType</enum>
-       </property>
-       <property name="value">
-        <number>40</number>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="4">
-      <widget class="QPushButton" name="btn_sortROI_view">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>100</horstretch>
-         <verstretch>30</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>View</string>
        </property>
       </widget>
      </item>
@@ -3464,637 +3076,6 @@
        </property>
        <property name="text">
         <string>None</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </widget>
-  </widget>
-  <widget class="QGroupBox" name="grp_sortROIView">
-   <property name="geometry">
-    <rect>
-     <x>600</x>
-     <y>680</y>
-     <width>201</width>
-     <height>141</height>
-    </rect>
-   </property>
-   <property name="minimumSize">
-    <size>
-     <width>0</width>
-     <height>0</height>
-    </size>
-   </property>
-   <property name="maximumSize">
-    <size>
-     <width>666</width>
-     <height>666</height>
-    </size>
-   </property>
-   <property name="font">
-    <font>
-     <family>Times New Roman</family>
-     <pointsize>14</pointsize>
-    </font>
-   </property>
-   <property name="title">
-    <string>Sort ROI View</string>
-   </property>
-   <widget class="QWidget" name="layoutWidget">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>80</y>
-      <width>191</width>
-      <height>59</height>
-     </rect>
-    </property>
-    <layout class="QGridLayout" name="gridLayout_26">
-     <item row="0" column="0">
-      <widget class="QLabel" name="lb_cameraState_61">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>ID:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="lb_sortCell_id">
-       <property name="minimumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="lb_cameraState_27">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Area:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="3">
-      <widget class="QLabel" name="lb_sortCellArea">
-       <property name="minimumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="4">
-      <widget class="QLabel" name="lb_cameraState_29">
-       <property name="minimumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>X:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="5">
-      <widget class="QLabel" name="lb_sortCell_X">
-       <property name="minimumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="0">
-      <widget class="QLabel" name="lb_cameraState_77">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Algo.:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QLabel" name="lb_sortCell_algorithmTime">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="2">
-      <widget class="QLabel" name="lb_cameraState_65">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Inter.:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="3">
-      <widget class="QLabel" name="lb_sortCell_intervalTime">
-       <property name="minimumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="4">
-      <widget class="QLabel" name="lb_cameraState_36">
-       <property name="minimumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Y:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="5">
-      <widget class="QLabel" name="lb_sortCell_Y">
-       <property name="minimumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="0">
-      <widget class="QLabel" name="lb_cameraState_37">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Total:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="1">
-      <widget class="QLabel" name="lb_sortCell_total">
-       <property name="minimumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="2">
-      <widget class="QLabel" name="lb_cameraState_39">
-       <property name="minimumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>27</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Miss:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="3">
-      <widget class="QLabel" name="lb_sortCell_miss">
-       <property name="minimumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>30</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="4">
-      <widget class="QLabel" name="lb_cameraState_42">
-       <property name="minimumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>25</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>State</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="5">
-      <widget class="QLabel" name="lb_sortROI_state">
-       <property name="minimumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>20</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>8</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>None</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </widget>
-   <widget class="QWidget" name="layoutWidget">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>30</y>
-      <width>164</width>
-      <height>52</height>
-     </rect>
-    </property>
-    <layout class="QGridLayout" name="gridLayout_13">
-     <item row="0" column="0">
-      <widget class="QLabel" name="lb_sortROIView_original">
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>14</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="frameShape">
-        <enum>QFrame::StyledPanel</enum>
-       </property>
-       <property name="text">
-        <string />
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="lb_sortROIView_processed">
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>14</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="frameShape">
-        <enum>QFrame::StyledPanel</enum>
-       </property>
-       <property name="text">
-        <string />
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="lb_sortROIView_target">
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>50</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>14</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="frameShape">
-        <enum>QFrame::StyledPanel</enum>
-       </property>
-       <property name="text">
-        <string />
        </property>
       </widget>
      </item>
@@ -5960,7 +4941,7 @@
     <rect>
      <x>1480</x>
      <y>40</y>
-     <width>300</width>
+     <width>372</width>
      <height>930</height>
     </rect>
    </property>
@@ -5978,145 +4959,11 @@
      <rect>
       <x>10</x>
       <y>30</y>
-      <width>288</width>
+      <width>360</width>
       <height>891</height>
      </rect>
     </property>
     <layout class="QVBoxLayout" name="verticalLayout_simConfiguration">
-     <item>
-      <widget class="QPushButton" name="btn_openSimSettings">
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>30</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="text">
-        <string>SIM采集设置...</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QGroupBox" name="grp_hardvareConnection_SLM">
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="title">
-        <string>Hardvare Connection (SLM)</string>
-       </property>
-       <layout class="QGridLayout" name="gridLayout_SLMConnection">
-        <item row="0" column="0">
-         <widget class="QComboBox" name="cmb_SLM_device">
-          <property name="minimumSize">
-           <size>
-            <width>170</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>170</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="font">
-           <font>
-            <family>Times New Roman</family>
-            <pointsize>12</pointsize>
-           </font>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <widget class="QPushButton" name="btn_SLM_refresh">
-          <property name="minimumSize">
-           <size>
-            <width>90</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>90</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="font">
-           <font>
-            <family>Times New Roman</family>
-            <pointsize>12</pointsize>
-           </font>
-          </property>
-          <property name="text">
-           <string>Refresh</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="0">
-         <widget class="QPushButton" name="btn_SLM_connection">
-          <property name="minimumSize">
-           <size>
-            <width>150</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>170</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="font">
-           <font>
-            <family>Times New Roman</family>
-            <pointsize>12</pointsize>
-           </font>
-          </property>
-          <property name="text">
-           <string>Connect SLM</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
-         <widget class="QLabel" name="lbl_SLM_status">
-          <property name="minimumSize">
-           <size>
-            <width>90</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>120</width>
-            <height>25</height>
-           </size>
-          </property>
-          <property name="font">
-           <font>
-            <family>Times New Roman</family>
-            <pointsize>12</pointsize>
-           </font>
-          </property>
-          <property name="visible">
-           <bool>false</bool>
-          </property>
-          <property name="text">
-           <string />
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </widget>
-     </item>
      <item>
       <widget class="QGroupBox" name="grp_simRuntime">
        <property name="font">
@@ -6345,6 +5192,1235 @@
       </widget>
      </item>
      <item>
+      <widget class="QGroupBox" name="grp_hardvareConnection_SLM">
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="title">
+        <string>Hardvare Connection (SLM)</string>
+       </property>
+       <layout class="QGridLayout" name="gridLayout_SLMConnection">
+        <property name="leftMargin">
+         <number>6</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>6</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <property name="horizontalSpacing">
+         <number>6</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>4</number>
+        </property>
+        <item row="0" column="0">
+         <widget class="QComboBox" name="cmb_SLM_device">
+          <property name="minimumSize">
+           <size>
+            <width>110</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>110</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QPushButton" name="btn_SLM_connection">
+          <property name="minimumSize">
+           <size>
+            <width>154</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>154</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Connect SLM</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QPushButton" name="btn_SLM_refresh">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Refresh</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="cmb_SLM_immediateRO">
+          <property name="minimumSize">
+           <size>
+            <width>154</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>154</width>
+            <height>25</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+       </layout>
+       <widget class="QLabel" name="lbl_SLM_status">
+        <property name="geometry">
+         <rect>
+          <x>0</x>
+          <y>0</y>
+          <width>10</width>
+          <height>10</height>
+         </rect>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>90</width>
+          <height>25</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>120</width>
+          <height>25</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <family>Times New Roman</family>
+          <pointsize>12</pointsize>
+         </font>
+        </property>
+        <property name="visible">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="grp_zscan">
+       <property name="title">
+        <string>Z-Scan</string>
+       </property>
+       <layout class="QGridLayout" name="gridLayout_zscan">
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <property name="horizontalSpacing">
+         <number>2</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>3</number>
+        </property>
+        <item row="0" column="0" colspan="5">
+         <widget class="QCheckBox" name="chk_main_zscan_enabled">
+         <property name="font">
+          <font>
+           <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+          </font>
+         </property>
+          <property name="toolTip">
+           <string>When enabled, SIM9 acquisition runs a full Z-Scan autofocus before capturing 9 frames; when disabled, it captures 9 frames directly.</string>
+          </property>
+          <property name="text">
+           <string>Enable Z-Scan</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="lbl_zscan_direction">
+         <property name="font">
+          <font>
+           <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+          </font>
+         </property>
+          <property name="text">
+           <string>Direction</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="lbl_zscan_step">
+         <property name="font">
+          <font>
+           <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+          </font>
+         </property>
+          <property name="text">
+           <string>Step (nm)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="2">
+         <widget class="QLabel" name="lbl_zscan_num">
+         <property name="font">
+          <font>
+           <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+          </font>
+         </property>
+          <property name="text">
+           <string>Steps</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLabel" name="lbl_zscan_exposure">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Exposure (ms)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QComboBox" name="cmb_main_zscan_direction">
+          <property name="minimumSize">
+           <size>
+            <width>80</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>80</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QDoubleSpinBox" name="spb_main_zscan_step_nm">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="decimals">
+           <number>0</number>
+          </property>
+          <property name="minimum">
+           <double>1.000000000000000</double>
+          </property>
+          <property name="maximum">
+           <double>100000.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>10.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="2">
+         <widget class="QSpinBox" name="spb_main_zscan_num_steps">
+          <property name="minimumSize">
+           <size>
+            <width>80</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>80</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>1000</number>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="3">
+         <widget class="QComboBox" name="cmb_main_zscan_exposure">
+          <property name="minimumSize">
+           <size>
+            <width>80</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>80</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0" colspan="5">
+         <layout class="QHBoxLayout" name="hbox_zscan_run">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
+          <item>
+           <widget class="QCheckBox" name="chk_main_zscan_capture">
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="toolTip">
+             <string>Checked: Test Z-Scan runs full focusing (move + capture + select focus plane); unchecked: move the Z stage only.</string>
+            </property>
+            <property name="text">
+             <string>Select Focus Plane</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_main_zscan_run">
+            <property name="minimumSize">
+             <size>
+              <width>100</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>100</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>Test Z-Scan</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="hspacer_zscan_run">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item row="4" column="0" colspan="5">
+         <widget class="QLabel" name="lbl_main_zscan_status">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="grp_daq">
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="title">
+        <string>DAQ</string>
+       </property>
+       <layout class="QGridLayout" name="gridLayout_daq">
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <property name="horizontalSpacing">
+         <number>2</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>3</number>
+        </property>
+        <item row="0" column="0" colspan="2">
+         <layout class="QHBoxLayout" name="hbox_daq_device">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
+          <item>
+           <widget class="QComboBox" name="cmb_main_daq_device">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>12</pointsize>
+             </font>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_main_daq_refresh">
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>Refresh</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="lbl_main_daq_slm_enable">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>SLM Enable</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="lbl_main_daq_laser_405">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Laser 405</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QComboBox" name="cmb_main_daq_slm_enable">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QComboBox" name="cmb_main_daq_laser_405">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="lbl_main_daq_slm_trigger">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>SLM Trigger</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLabel" name="lbl_main_daq_laser_488">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Laser 488</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QComboBox" name="cmb_main_daq_slm_trigger">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QComboBox" name="cmb_main_daq_laser_488">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="5" column="0">
+         <widget class="QLabel" name="lbl_main_daq_slm_finish">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>SLM Finish</string>
+          </property>
+         </widget>
+        </item>
+        <item row="5" column="1">
+         <widget class="QLabel" name="lbl_main_daq_laser_561">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Laser 561</string>
+          </property>
+         </widget>
+        </item>
+        <item row="6" column="0">
+         <widget class="QComboBox" name="cmb_main_daq_slm_finish">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="6" column="1">
+         <widget class="QComboBox" name="cmb_main_daq_laser_561">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="7" column="0">
+         <widget class="QLabel" name="lbl_main_daq_camera_trigger">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Cam Trig</string>
+          </property>
+         </widget>
+        </item>
+        <item row="7" column="1">
+         <widget class="QLabel" name="lbl_main_daq_laser_638">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Laser 638</string>
+          </property>
+         </widget>
+        </item>
+        <item row="8" column="0">
+         <widget class="QComboBox" name="cmb_main_daq_camera_trigger">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="8" column="1">
+         <widget class="QComboBox" name="cmb_main_daq_laser_638">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="9" column="0" colspan="2">
+         <layout class="QHBoxLayout" name="hbox_daq_test">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="lbl_main_daq_test">
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>Test</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="cmb_main_daq_test_target">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>12</pointsize>
+             </font>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_main_daq_test">
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>Pulse Test</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="10" column="0" colspan="2">
+         <widget class="QLabel" name="lbl_main_daq_status">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="grp_recon">
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="title">
+        <string>Recon</string>
+       </property>
+       <layout class="QGridLayout" name="gridLayout_recon">
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <property name="horizontalSpacing">
+         <number>2</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>3</number>
+        </property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="lbl_main_recon_wiener">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Wiener Para</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QDoubleSpinBox" name="spb_main_recon_wiener">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="decimals">
+           <number>4</number>
+          </property>
+          <property name="minimum">
+           <double>0.000100000000000</double>
+          </property>
+          <property name="maximum">
+           <double>1000.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>0.100000000000000</double>
+          </property>
+          <property name="value">
+           <double>2.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="2">
+         <widget class="QLabel" name="lbl_main_recon_na">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Illum NA</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="3">
+         <widget class="QDoubleSpinBox" name="spb_main_recon_na">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="decimals">
+           <number>2</number>
+          </property>
+          <property name="minimum">
+           <double>0.100000000000000</double>
+          </property>
+          <property name="maximum">
+           <double>2.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>0.010000000000000</double>
+          </property>
+          <property name="value">
+           <double>1.490000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="lbl_main_recon_pixel">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Pixel(nm)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QDoubleSpinBox" name="spb_main_recon_pixel_nm">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="decimals">
+           <number>2</number>
+          </property>
+          <property name="minimum">
+           <double>1.000000000000000</double>
+          </property>
+          <property name="maximum">
+           <double>1000.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>1.000000000000000</double>
+          </property>
+          <property name="value">
+           <double>65.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="2">
+         <widget class="QLabel" name="lbl_main_recon_wavelength">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Ex(nm)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="3">
+         <widget class="QComboBox" name="cmb_main_recon_wavelength">
+          <property name="minimumSize">
+           <size>
+            <width>90</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="lbl_main_recon_otf">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>OTF</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1" colspan="2">
+         <widget class="QLineEdit" name="edit_main_recon_otf">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="3">
+         <widget class="QPushButton" name="btn_main_recon_browse_otf">
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="lbl_main_recon_background">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Backgr.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1" colspan="2">
+         <widget class="QLineEdit" name="edit_main_recon_background">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="3">
+         <widget class="QPushButton" name="btn_main_recon_browse_background">
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="lbl_main_recon_output">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>Output</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1" colspan="2">
+         <widget class="QLineEdit" name="edit_main_recon_output">
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="3">
+         <widget class="QPushButton" name="btn_main_recon_browse_output">
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Times New Roman</family>
+            <pointsize>10</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <spacer name="verticalSpacer_simConfiguration">
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>20</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="grp_simSummary">
+   <property name="geometry">
+    <rect>
+     <x>1882</x>
+     <y>40</y>
+     <width>300</width>
+     <height>930</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <family>Times New Roman</family>
+     <pointsize>14</pointsize>
+    </font>
+   </property>
+   <property name="title">
+    <string>SIM Summary</string>
+   </property>
+   <widget class="QWidget" name="layoutWidget_simSummary">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>30</y>
+      <width>280</width>
+      <height>891</height>
+     </rect>
+    </property>
+    <layout class="QVBoxLayout" name="verticalLayout_simSummary">
+     <item>
       <widget class="QPlainTextEdit" name="pte_simSummary">
        <property name="font">
         <font>
@@ -6400,6 +6476,25 @@
      </item>
     </layout>
    </widget>
+  </widget>
+  <widget class="QPushButton" name="btn_sim9_acquire">
+   <property name="geometry">
+    <rect>
+     <x>1290</x>
+     <y>158</y>
+     <width>160</width>
+     <height>36</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <family>Times New Roman</family>
+     <pointsize>12</pointsize>
+    </font>
+   </property>
+   <property name="text">
+    <string>SIM9帧采集</string>
+   </property>
   </widget>
   <widget class="QGroupBox" name="grp_rinseChannel">
    <property name="geometry">
@@ -6492,37 +6587,6 @@
       </widget>
      </item>
      <item row="1" column="0">
-      <widget class="QPushButton" name="btn_rinseChannelFunction">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>70</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>70</width>
-         <height>30</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="text">
-        <string>Function</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
       <widget class="QPushButton" name="btn_rinseChannelSort">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -6591,7 +6655,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>800</y>
+     <y>730</y>
      <width>291</width>
      <height>190</height>
     </rect>
@@ -7475,7 +7539,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>730</y>
+     <y>660</y>
      <width>291</width>
      <height>69</height>
     </rect>
@@ -7492,9 +7556,9 @@
    <widget class="QWidget" name="layoutWidget_4">
     <property name="geometry">
      <rect>
-      <x>10</x>
+      <x>5</x>
       <y>20</y>
-      <width>281</width>
+      <width>286</width>
       <height>49</height>
      </rect>
     </property>
@@ -7509,13 +7573,13 @@
        </property>
        <property name="minimumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
@@ -7542,13 +7606,13 @@
        </property>
        <property name="minimumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
@@ -7575,13 +7639,13 @@
        </property>
        <property name="minimumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
@@ -7608,13 +7672,13 @@
        </property>
        <property name="minimumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>50</width>
+         <width>42</width>
          <height>15</height>
         </size>
        </property>
@@ -7627,7 +7691,40 @@
         </font>
        </property>
        <property name="text">
-        <string>Height</string>
+       <string>Height</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="4">
+      <widget class="QLabel" name="label_collectedROI_angle">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>42</width>
+         <height>15</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>42</width>
+         <height>15</height>
+        </size>
+       </property>
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>10</pointsize>
+         <weight>50</weight>
+         <bold>false</bold>
+        </font>
+       </property>
+       <property name="text">
+        <string>Angle</string>
        </property>
       </widget>
      </item>
@@ -7643,14 +7740,14 @@
         </sizepolicy>
        </property>
        <property name="minimumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
@@ -7691,14 +7788,14 @@
         </sizepolicy>
        </property>
        <property name="minimumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
@@ -7739,14 +7836,14 @@
         </sizepolicy>
        </property>
        <property name="minimumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
@@ -7787,14 +7884,14 @@
         </sizepolicy>
        </property>
        <property name="minimumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
-        <size>
-         <width>50</width>
+       <size>
+         <width>42</width>
          <height>25</height>
         </size>
        </property>
@@ -7824,6 +7921,54 @@
       </widget>
      </item>
      <item row="1" column="4">
+      <widget class="QSpinBox" name="spb_collectedROI_angle">
+       <property name="enabled">
+        <bool>true</bool>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>42</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>42</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>12</pointsize>
+         <weight>50</weight>
+         <bold>false</bold>
+        </font>
+       </property>
+       <property name="minimum">
+        <number>-180</number>
+       </property>
+       <property name="maximum">
+        <number>180</number>
+       </property>
+       <property name="singleStep">
+        <number>1</number>
+       </property>
+       <property name="stepType">
+        <enum>QAbstractSpinBox::DefaultStepType</enum>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="5">
       <widget class="QPushButton" name="btn_collectedROI_view">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -7832,14 +7977,14 @@
         </sizepolicy>
        </property>
        <property name="minimumSize">
-        <size>
-         <width>55</width>
+       <size>
+         <width>46</width>
          <height>25</height>
         </size>
        </property>
        <property name="maximumSize">
-        <size>
-         <width>55</width>
+       <size>
+         <width>46</width>
          <height>25</height>
         </size>
        </property>
@@ -9605,20 +9750,20 @@
        </property>
       </widget>
      </item>
-     <item row="2" column="1">
-      <widget class="QLabel" name="lb_cameraState_49">
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>15</height>
-        </size>
-       </property>
+      <item row="2" column="1">
+       <widget class="QLabel" name="lb_cameraState_49">
+        <property name="minimumSize">
+         <size>
+          <width>85</width>
+          <height>15</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>85</width>
+          <height>15</height>
+         </size>
+        </property>
        <property name="font">
         <font>
          <family>Times New Roman</family>
@@ -9627,40 +9772,16 @@
          <bold>false</bold>
         </font>
        </property>
-       <property name="text">
-        <string>Collected</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="2">
-      <widget class="QLabel" name="lb_cameraState_48">
-       <property name="minimumSize">
-        <size>
-         <width>40</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>40</width>
-         <height>15</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>10</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Sort</string>
-       </property>
-      </widget>
-     </item>
-     <item row="3" column="0">
-      <widget class="QLabel" name="lb_trappedROIView_BgDiff_Bi">
+        <property name="text">
+         <string>Collected</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lb_trappedROIView_BgDiff_Bi">
        <property name="minimumSize">
         <size>
          <width>85</width>
@@ -9689,38 +9810,8 @@
        </property>
       </widget>
      </item>
-     <item row="3" column="1">
-      <widget class="QLabel" name="lb_sortROIView_BgDiff_Bi">
-       <property name="minimumSize">
-        <size>
-         <width>85</width>
-         <height>85</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>85</width>
-         <height>85</height>
-        </size>
-       </property>
-       <property name="font">
-        <font>
-         <family>Times New Roman</family>
-         <pointsize>14</pointsize>
-         <weight>50</weight>
-         <bold>false</bold>
-        </font>
-       </property>
-       <property name="frameShape">
-        <enum>QFrame::StyledPanel</enum>
-       </property>
-       <property name="text">
-        <string />
-       </property>
-      </widget>
-     </item>
-     <item row="3" column="2">
-      <widget class="QLabel" name="lb_collectedROIView_BgDiff_Bi">
+      <item row="3" column="1">
+       <widget class="QLabel" name="lb_collectedROIView_BgDiff_Bi">
        <property name="minimumSize">
         <size>
          <width>85</width>
@@ -10698,6 +10789,47 @@
      </rect>
     </property>
     <layout class="QGridLayout" name="gridLayout_32">
+     <item row="2" column="1">
+      <widget class="QLabel" name="lb_sCMOS_laser">
+       <property name="minimumSize">
+        <size>
+         <width>55</width>
+         <height>15</height>
+        </size>
+       </property>
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>10</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>Laser(nm)</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QComboBox" name="cmb_sCMOS_laser">
+       <property name="minimumSize">
+        <size>
+         <width>60</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>80</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="font">
+        <font>
+         <family>Times New Roman</family>
+         <pointsize>11</pointsize>
+        </font>
+       </property>
+      </widget>
+     </item>
      <item row="0" column="2" colspan="2">
       <widget class="QLabel" name="label_74">
        <property name="sizePolicy">
@@ -11161,19 +11293,6 @@
     <rect>
      <x>10</x>
      <y>729</y>
-     <width>291</width>
-     <height>1</height>
-    </rect>
-   </property>
-   <property name="orientation">
-    <enum>Qt::Horizontal</enum>
-   </property>
-  </widget>
-  <widget class="Line" name="line_24">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>799</y>
      <width>291</width>
      <height>1</height>
     </rect>

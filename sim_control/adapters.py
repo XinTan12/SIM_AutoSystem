@@ -113,7 +113,7 @@ def parse_running_order_name(name: str) -> dict[str, Any] | None:
     输入示例：
         ``"488_3.5_2d_10ms"`` → ``{wavelength_nm: 488, pitch: "3.5",
         mode: "2d", exposure_ms: 10, single_angle: False}``。
-        ``"647_3.5_2d_1ms_ang0"`` → ``single_angle=True``，会被 SIM 选择逻辑排除。
+        ``"638_3.5_2d_1ms_ang0"`` → ``single_angle=True``，会被 SIM 选择逻辑排除。
 
     返回：
         正确解析时返回 dict；命名不符合约定时返回 ``None`` 让调用方跳过。
@@ -200,17 +200,37 @@ def find_z_scan_running_order(
     return None, "", warnings
 
 
+def parse_leading_wavelength_nm(name: str) -> int | None:
+    """从 RO 名前导数字解析波长（nm）；解析不出返回 None。
+
+    用途：
+        immediate（找样品）RO 故意命名成不撞 ``parse_running_order_name`` 全正则的
+        形式（如 ``488_3.5_2d_imm_f1``），但仍以波长开头；本函数只取前导
+        ``^(\\d+)_`` 数字，供 immediate 下拉按当前波长过滤 / 激活前校验。
+    """
+    match = re.match(r"^(\d+)_", str(name))
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
 def find_best_running_order(
     running_orders: list[tuple[int, str]],
     wavelength_nm: int,
     exposure_us: int,
+    exclude_indices: set[int] | None = None,
 ) -> tuple[int | None, str, list[str]]:
     """按当前波长 + 相机曝光选择最匹配的预烧录 Running Order。
 
     输入：
         running_orders: SLM ``list_running_orders()`` 返回的 ``(index, name)`` 列表。
-        wavelength_nm: 当前任务波长，必须在 405/488/561/647 中。
+        wavelength_nm: 当前任务波长，必须在 405/488/561/638 中。
         exposure_us: 当前任务曝光（微秒），决定走 1ms/10ms/50ms 桶。
+        exclude_indices: 需排除的 RO 索引集合（正式采集用它显式排除 ``ACT_IMMEDIATE``
+            找样品 RO，避免命名巧合时误选；为 None 表示不排除）。
 
     返回：
         ``(ro_index, ro_name, warnings)``：未匹配时 index=None、name 为空、
@@ -219,27 +239,41 @@ def find_best_running_order(
     # 1) 归类目标曝光桶；后续筛选都用这一档 ms 比较。
     target_exposure_ms = _target_running_order_exposure_ms(exposure_us)
     warnings: list[str] = []
-    candidates: list[tuple[int, str]] = []
-    # 2) 遍历所有 RO，按命名解析逐条筛选：必须是 ``_ang0`` 之外、3.5/2d、波长匹配、曝光桶匹配。
-    for index, name in running_orders:
-        parsed = parse_running_order_name(name)
-        if parsed is None:
-            continue
-        if parsed["single_angle"]:
-            continue
-        if parsed["wavelength_nm"] != int(wavelength_nm):
-            continue
-        if parsed["pitch"] != "3.5":
-            continue
-        if parsed["mode"] != "2d":
-            continue
-        if parsed["exposure_ms"] != target_exposure_ms:
-            continue
-        candidates.append((int(index), str(name)))
+    requested_wavelength_nm = int(wavelength_nm)
+    wavelength_candidates = [requested_wavelength_nm]
+    if requested_wavelength_nm == 638:
+        wavelength_candidates.append(647)
+    excluded = {int(i) for i in exclude_indices} if exclude_indices else set()
 
-    # 3) 若有候选，直接取第一个（同一组多个候选时按 RO 编号顺序）。
-    if candidates:
-        return candidates[0][0], candidates[0][1], warnings
+    # 2) 遍历所有 RO，按命名解析逐条筛选：必须是 ``_ang0`` 之外、3.5/2d、波长匹配、曝光桶匹配。
+    for candidate_wavelength_nm in wavelength_candidates:
+        candidates: list[tuple[int, str]] = []
+        for index, name in running_orders:
+            # 显式排除 immediate（找样品）RO，命名 + activation type 双保险。
+            if int(index) in excluded:
+                continue
+            parsed = parse_running_order_name(name)
+            if parsed is None:
+                continue
+            if parsed["single_angle"]:
+                continue
+            if parsed["wavelength_nm"] != candidate_wavelength_nm:
+                continue
+            if parsed["pitch"] != "3.5":
+                continue
+            if parsed["mode"] != "2d":
+                continue
+            if parsed["exposure_ms"] != target_exposure_ms:
+                continue
+            candidates.append((int(index), str(name)))
+
+        # 3) 若有候选，直接取第一个（同一组多个候选时按 RO 编号顺序）。
+        if candidates:
+            if candidate_wavelength_nm != requested_wavelength_nm:
+                warnings.append(
+                    "Using legacy 647 nm SLM running order for requested 638 nm laser."
+                )
+            return candidates[0][0], candidates[0][1], warnings
 
     # 4) 没有候选 → 把"找不到 RO"作为 warning 返回，让上层翻译成对话框文本。
     warnings.append(
@@ -479,6 +513,11 @@ class _R11CommLib:
         self.dll.R11_RpcRoGetSelected.restype = ctypes.c_int
         self.dll.R11_RpcRoSetSelected.argtypes = [ctypes.c_uint16]
         self.dll.R11_RpcRoSetSelected.restype = ctypes.c_int
+        # ``R11_RpcRoSetSelectedBlind`` 是无副作用的"只选中不激活"扫描入口（rpc.h:55）；
+        # 旧版本 DLL 可能缺失，缺失时 wrapper 回退普通 set_selected。
+        if hasattr(self.dll, "R11_RpcRoSetSelectedBlind"):
+            self.dll.R11_RpcRoSetSelectedBlind.argtypes = [ctypes.c_uint16]
+            self.dll.R11_RpcRoSetSelectedBlind.restype = ctypes.c_int
         # ``R11_RpcRoGetActivationType`` 是新版 R11CommLib 才有的函数；旧版本不绑。
         if hasattr(self.dll, "R11_RpcRoGetActivationType"):
             self.dll.R11_RpcRoGetActivationType.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
@@ -591,6 +630,17 @@ class _R11CommLib:
         """把指定 RO 选中（仍需 ``activate_running_order`` 才会真正运行）。"""
         self._check(self.dll.R11_RpcRoSetSelected(ctypes.c_uint16(int(index))), "R11_RpcRoSetSelected")
 
+    def set_selected_running_order_blind(self, index: int) -> bool:
+        """无副作用地把指定 RO 选中（仅用于扫描激活方式），DLL 不支持时返回 False。
+
+        返回 True 表示走了 ``R11_RpcRoSetSelectedBlind``；返回 False 表示旧版 DLL
+        无此函数，调用方应回退到普通 ``set_selected_running_order``。
+        """
+        if not hasattr(self.dll, "R11_RpcRoSetSelectedBlind"):
+            return False
+        self._check(self.dll.R11_RpcRoSetSelectedBlind(ctypes.c_uint16(int(index))), "R11_RpcRoSetSelectedBlind")
+        return True
+
     def get_running_order_name(self, index: int) -> str:
         """读取第 ``index`` 个 RO 的可读名。"""
         buffer = ctypes.create_string_buffer(128)
@@ -651,6 +701,37 @@ class _R11CommLib:
     def burn_flash_page(self, page_address: int) -> None:
         """把 SDK 内部 buffer 的 page 真正烧到目标 page_address。"""
         self._check(self.dll.R11_FlashBurn(page_address), "R11_FlashBurn")
+
+
+# R11 RO 激活方式枚举（rpc.h ACT_* 位标志）：找样品下拉只筛 ACT_IMMEDIATE。
+# ACT_IMMEDIATE=0x01 选中即生效（无需 ROActivate / EXT_RUN）；
+# ACT_SOFTWARE=0x02 需软件 ROActivate；ACT_HARDWARE=0x04 需外部硬件触发（[HWA h]）。
+R11_ACTIVATION_TYPE_IMMEDIATE = 0x01
+R11_ACTIVATION_TYPE_SOFTWARE = 0x02
+R11_ACTIVATION_TYPE_HARDWARE = 0x04
+
+# 可选的激活方式名映射，仅用于日志可读性；未知值由调用方按 0x%02X 兜底打印。
+R11_ACTIVATION_TYPE_NAMES = {
+    R11_ACTIVATION_TYPE_IMMEDIATE: "IMMEDIATE",
+    R11_ACTIVATION_TYPE_SOFTWARE: "SOFTWARE",
+    R11_ACTIVATION_TYPE_HARDWARE: "HARDWARE",
+}
+# R11_RpcRoSetSelectedBlind/SetSelected 后，部分 R11 固件/USB 栈会在紧接着
+# 查询 R11_RpcRoGetActivationType 时返回上一个 RO 的激活类型。连接时扫描和
+# RO 选择 metadata 读取都不在实时采集路径上，给 SDK 一个很短的 settle 窗口，
+# 避免把 ACT_IMMEDIATE 误报为 HARDWARE，同时仍然只信任 SDK 最终返回的激活类型。
+R11_RO_SELECTION_SETTLE_S = 0.05
+
+
+def is_immediate_activation_type(value: int | None) -> bool:
+    """仅当激活方式 == ACT_IMMEDIATE(0x01) 时返回 True；None 一律 False（fail-closed）。
+
+    用途：
+        找样品 immediate-RO 下拉只接受硬件确证的 ACT_IMMEDIATE；绝不按名字猜测，
+        也不把 ACT_SOFTWARE/ACT_HARDWARE 当 immediate。激活方式查询失败（None）时
+        返回 False，让上层 fail-closed 把该 RO 排除出 immediate 列表。
+    """
+    return value == R11_ACTIVATION_TYPE_IMMEDIATE
 
 
 # AN0027AD §3.26 (p.33) R11_RpcRoGetActivationState 状态码表。
@@ -1839,6 +1920,87 @@ class KopinSlmAdapter:
             for index in range(running_order_count)
         ]
 
+    def list_running_orders_with_activation(self) -> list[dict]:
+        """逐个 RO 扫描激活方式，返回 ``{index,name,activation_type,is_immediate}`` 列表。
+
+        实现：
+            - 优先用 ``set_selected_running_order_blind`` 做无副作用选中；DLL 不支持
+              时回退普通 ``set_selected_running_order``，并打一次 ``fallback scan`` 警告。
+            - 每选中一个 RO 即用 ``get_running_order_activation_type`` 读「当前选中」RO
+              的激活方式，``is_immediate`` 仅当 == ACT_IMMEDIATE(0x01)。
+            - 激活方式查询返回 None（旧版 SDK 缺函数 / 查询失败）时 fail-closed：
+              ``is_immediate=False`` 并记 warning，**绝不按名字猜测**。
+            - ``try/finally`` 无论成败都恢复原选中 RO（best-effort，恢复失败只记日志）。
+
+        ⚠️ 真机确认：扫描只 select 不 activate；真机需确认 SetSelectedBlind 无副作用
+        （不出图、不触发激光）；无 Blind 回退到普通 select 时是否有副作用同样需真机确认。
+        """
+        if not self._initialized:
+            self.initialize()
+        if not self._device_open:
+            raise HardwareError("Connect to an SLM before scanning running order activation types.")
+        running_orders = self.list_running_orders()
+        # 记录原选中 RO；best-effort，读失败不影响扫描（仅无法恢复到原选中）。
+        original: int | None = None
+        try:
+            original = self._sdk.get_selected_running_order()
+        except Exception:
+            logger.warning("Failed to read the originally selected running order before scan; restore may be skipped.", exc_info=True)
+        fallback_logged = False
+        results: list[dict] = []
+        try:
+            for index, name in running_orders:
+                try:
+                    # 优先无副作用 blind select；DLL 不支持则回退普通 select（仅警告一次）。
+                    if not self._sdk.set_selected_running_order_blind(index):
+                        if not fallback_logged:
+                            logger.warning("fallback scan: R11_RpcRoSetSelectedBlind unavailable; scan uses plain select")
+                            fallback_logged = True
+                        self._sdk.set_selected_running_order(index)
+                    time.sleep(R11_RO_SELECTION_SETTLE_S)
+                    activation_type = self._sdk.get_running_order_activation_type()
+                except Exception as scan_error:  # noqa: BLE001
+                    # 单个 RO 选中/查询失败 → fail-closed：该 RO activation_type=None、
+                    # is_immediate=False，记 warning 并继续扫描其余 RO，绝不中断整次扫描
+                    #（否则一个坏 RO 会让全部 immediate RO 不可用，与方案"查询失败只 warning、
+                    # 该 RO 排除"不一致）。
+                    logger.warning(
+                        "RO %d (%s): activation scan failed; treating as non-immediate (fail-closed): %s",
+                        index,
+                        name,
+                        scan_error,
+                    )
+                    activation_type = None
+                if activation_type is None:
+                    # fail-closed：查询失败的 RO 不进 immediate 列表，绝不按名字猜测。
+                    is_immediate = False
+                    logger.warning(
+                        "RO %d (%s): activation type unavailable; treating as non-immediate (fail-closed).",
+                        index,
+                        name,
+                    )
+                else:
+                    is_immediate = is_immediate_activation_type(activation_type)
+                    type_name = R11_ACTIVATION_TYPE_NAMES.get(activation_type, f"0x{activation_type:02X}")
+                    logger.info("RO %d (%s): activation_type=%s (0x%02X)", index, name, type_name, activation_type)
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "activation_type": activation_type,
+                        "is_immediate": is_immediate,
+                    }
+                )
+        finally:
+            # 无论扫描成败都尝试恢复原选中 RO，让正式采集路径回到正确选中态。
+            if original is not None:
+                try:
+                    if not self._sdk.set_selected_running_order_blind(original):
+                        self._sdk.set_selected_running_order(original)
+                except Exception:
+                    logger.warning("Failed to restore the originally selected running order after scan.", exc_info=True)
+        return results
+
     def select_running_order(self, ro_index: int) -> dict[str, Any]:
         """选择预烧录 Running Order，并返回采集核心需要的 PatternPreparationResult。"""
         if not self._initialized:
@@ -1849,6 +2011,7 @@ class KopinSlmAdapter:
         # 1) 把目标 RO 写到 SDK；后续 ``activate_running_order`` 才会让 SLM 真正运行。
         self._sdk.set_selected_running_order(ro_index)
         ro_name = self._sdk.get_running_order_name(ro_index)
+        time.sleep(R11_RO_SELECTION_SETTLE_S)
         activation_type = self._sdk.get_running_order_activation_type()
         # 2) 用统一的 PatternPreparationResult 表达"RO 模式"：handles=[-1]，metadata 标 mode。
         self._prepared = PatternPreparationResult(

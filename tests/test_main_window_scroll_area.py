@@ -75,7 +75,7 @@ class MainWindowScrollAreaTests(unittest.TestCase):
         self.assertIsInstance(scroll_area, QtWidgets.QScrollArea)
         self.assertIs(scroll_area.widget(), content_widget)
         # 4) content_widget 必须保留旧 UI 的最小尺寸约束。
-        self.assertEqual(content_widget.minimumWidth(), 1800)
+        self.assertEqual(content_widget.minimumWidth(), 2202)
         self.assertEqual(content_widget.minimumHeight(), 1000)
 
         # 5) 把 host 调小，触发滚动条出现；``processEvents`` 让 Qt 完成 layout 计算。
