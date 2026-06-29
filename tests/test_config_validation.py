@@ -67,12 +67,13 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertFalse(any("pattern_files" in error for error in errors))
 
-    def test_validate_app_config_rejects_legacy_647_laser_selection(self):
-        """647 nm 已迁移为旧值；当前配置只能直接选择 638 nm。"""
+    def test_validate_app_config_rejects_647_selection_on_638_machine(self):
+        """638 机器（``red_laser_nm=638``）选 647 非法：647 不在本机四档内。"""
         from sim_control.config_store import validate_app_config
         from sim_control.models import AppConfig, ReconstructionConfig
 
         config = AppConfig(
+            red_laser_nm=638,
             selected_laser_nm=647,
             reconstruction=ReconstructionConfig(enabled=False),
         )
@@ -80,6 +81,52 @@ class ConfigValidationTests(unittest.TestCase):
         errors = validate_app_config(config)
 
         self.assertTrue(any("selected_laser_nm" in error for error in errors))
+
+    def test_validate_app_config_accepts_647_selection_on_647_machine(self):
+        """647 机器（``red_laser_nm=647``）选 647 合法：通过校验无任何错误。"""
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            red_laser_nm=647,
+            selected_laser_nm=647,
+            reconstruction=ReconstructionConfig(enabled=False),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertFalse(any("selected_laser_nm" in error for error in errors))
+        self.assertFalse(any("red_laser_nm" in error for error in errors))
+
+    def test_validate_app_config_rejects_638_selection_on_647_machine(self):
+        """647 机器选 638 非法：638 不在本机四档 ``(405, 488, 561, 647)`` 内。"""
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            red_laser_nm=647,
+            selected_laser_nm=638,
+            reconstruction=ReconstructionConfig(enabled=False),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertTrue(any("selected_laser_nm" in error for error in errors))
+
+    def test_validate_app_config_rejects_invalid_red_laser_nm(self):
+        """``red_laser_nm`` 必须 ∈ ``RED_LASER_CHOICES=(638, 647)``；非法值（如 999）应报错。"""
+        from sim_control.config_store import validate_app_config
+        from sim_control.models import AppConfig, ReconstructionConfig
+
+        config = AppConfig(
+            red_laser_nm=999,
+            selected_laser_nm=488,
+            reconstruction=ReconstructionConfig(enabled=False),
+        )
+
+        errors = validate_app_config(config)
+
+        self.assertTrue(any("red_laser_nm" in error for error in errors))
 
     def test_validate_app_config_requires_current_laser_otf_when_reconstruction_enabled(self):
         """启用真实重建时，当前波长必须配置对应 OTF 路径。"""

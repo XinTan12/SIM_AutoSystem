@@ -87,7 +87,9 @@ class EfficiencyOptimizationTests(unittest.TestCase):
             self.assertEqual(len(saved), 1)
             self.assertEqual(saved[0][0], "raw task:1")
             saved_path = Path(saved[0][1])
-            self.assertEqual(saved_path.parent, output_dir)
+            # 落盘改为按当天日期(%Y%m%d)归档：文件落在 output_dir/<YYYYMMDD>/ 子目录下。
+            self.assertEqual(saved_path.parent.parent, output_dir)
+            self.assertRegex(saved_path.parent.name, r"^\d{8}$")
             # 新命名规则：采集波长_直径_曝光_图像大小(WxH)_时间戳(YYYYMMDDHHMMSS).tif
             self.assertRegex(saved_path.name, r"^488_3\.5_10ms_5x4_\d{14}\.tif$")
             self.assertTrue(saved_path.exists())
@@ -126,11 +128,14 @@ class EfficiencyOptimizationTests(unittest.TestCase):
                     )
                 )
 
-            written_files = list(output_dir.glob("*.tif"))
+            written_files = list(output_dir.rglob("*.tif"))
+            output_dir_created = output_dir.exists()
 
         self.assertEqual(saved, [])
         self.assertEqual([task_id for task_id, _message in failed], ["bad-shape", "bad-dtype"])
         self.assertEqual(written_files, [])
+        # 坏 stack 在校验阶段提前 return，不应创建任何目录（含按日期归档的空子目录）。
+        self.assertFalse(output_dir_created)
 
     def test_raw_stack_filename_follows_wavelength_pitch_exposure_size_timestamp(self):
         """命名规则护栏：采集波长_直径_曝光(ms)_图像大小(WxH)_时间戳(14 位).tif。"""
@@ -199,6 +204,69 @@ class EfficiencyOptimizationTests(unittest.TestCase):
             p2.write_bytes(b"x")
             p3 = _unique_output_path(output_dir, name)
             self.assertEqual(p3.name, "488_3.5_10ms_5x4_20260625143022_3.tif")
+
+    def test_dated_output_dir_appends_today(self):
+        """``_dated_output_dir`` 在 base 下追加 ``%Y%m%d`` 日期子目录；用传入的时间快照，不依赖墙钟。"""
+        from datetime import datetime as real_datetime
+
+        from sim_control.pipeline import _dated_output_dir
+
+        base = Path("data") / "sim_9frames"
+        when = real_datetime(2026, 6, 29, 15, 40, 23)
+        dated = _dated_output_dir(base, when)
+        self.assertEqual(dated, base / "20260629")
+        self.assertEqual(dated.parent, base)
+
+    def test_raw_stack_save_reuses_existing_date_dir(self):
+        """同一天连续两次保存复用同一日期子目录；同秒同名由 ``_unique_output_path`` 加 ``_2`` 兜底、不覆盖。"""
+        from datetime import datetime as real_datetime
+        from tempfile import TemporaryDirectory
+
+        from sim_control import pipeline
+        from sim_control.models import AcquisitionBatch
+        from sim_control.pipeline import RawStackSaveWorker
+
+        stack = np.zeros((9, 4, 5), dtype=np.uint16)
+        saved = []
+        failed = []
+        fixed = real_datetime(2026, 6, 29, 15, 40, 23)
+
+        def _make_batch(task_id):
+            return AcquisitionBatch(
+                task_id=task_id,
+                stack=stack,
+                timestamps=[],
+                laser_wavelength_nm=488,
+                exposure_us=10_000,
+                pattern_files=[],
+                metadata={"running_order_name": "488_3.5_2d_10ms"},
+            )
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "sim_9frames"
+            worker = RawStackSaveWorker(output_dir=output_dir)
+            worker.signal_stack_saved.connect(lambda task_id, path: saved.append((task_id, path)))
+            worker.signal_stack_save_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            # 锁定 datetime.now() 到同一秒：save_time 与文件名时间戳共用 fixed，逼出同名碰撞。
+            with mock.patch.object(pipeline, "datetime") as mock_dt:
+                mock_dt.now.return_value = fixed
+                worker.slot_save(_make_batch("raw-1"))
+                worker.slot_save(_make_batch("raw-2"))
+
+            self.assertEqual(failed, [])
+            self.assertEqual(len(saved), 2)
+            p1 = Path(saved[0][1])
+            p2 = Path(saved[1][1])
+            date_dir = output_dir / "20260629"
+            # 两次都落在同一个当天日期子目录（复用，不重复新建）。
+            self.assertEqual(p1.parent, date_dir)
+            self.assertEqual(p2.parent, date_dir)
+            # 同秒同名：第二个由 _unique_output_path 追加 _2，不覆盖第一个。
+            self.assertEqual(p1.name, "488_3.5_10ms_5x4_20260629154023.tif")
+            self.assertEqual(p2.name, "488_3.5_10ms_5x4_20260629154023_2.tif")
+            self.assertTrue(p1.exists())
+            self.assertTrue(p2.exists())
 
     def test_ni_daq_play_waveform_reuses_uint32_packed_array(self):
         """``play_waveform`` 必须把 ``plan.packed_port_values`` 原对象传给 writer，不复制。"""

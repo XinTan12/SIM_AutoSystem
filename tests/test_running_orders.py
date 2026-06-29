@@ -120,7 +120,7 @@ class RunningOrderSelectionTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_find_best_running_order_falls_back_to_647_for_638_request(self):
-        """现场 repertoire 未重命名时，638 nm 请求允许使用旧 647 RO。"""
+        """现场 repertoire 未重命名时，638 nm 请求允许 fallback 到 647 RO（双向红光兜底）。"""
         from sim_control.adapters import find_best_running_order
 
         running_orders = [
@@ -131,7 +131,41 @@ class RunningOrderSelectionTests(unittest.TestCase):
         index, name, warnings = find_best_running_order(running_orders, 638, 10_000)
 
         self.assertEqual((index, name), (0, "647_3.5_2d_10ms"))
-        self.assertTrue(any("legacy 647" in warning for warning in warnings))
+        # 文案按实际命中方向动态生成（不再有写死的 "legacy 647" 字样）。
+        self.assertTrue(
+            any("Using 647 nm" in warning and "requested 638 nm" in warning for warning in warnings)
+        )
+
+    def test_find_best_running_order_prefers_647_over_638(self):
+        """647 nm 请求应优先选择 647 RO，即使列表里也存在新 638 命名（与 638 优先对称）。"""
+        from sim_control.adapters import find_best_running_order
+
+        running_orders = [
+            (0, "638_3.5_2d_10ms"),
+            (1, "647_3.5_2d_10ms"),
+        ]
+
+        index, name, warnings = find_best_running_order(running_orders, 647, 10_000)
+
+        self.assertEqual((index, name), (1, "647_3.5_2d_10ms"))
+        self.assertEqual(warnings, [])
+
+    def test_find_best_running_order_falls_back_to_638_for_647_request(self):
+        """647 nm 请求在只有 638 RO 时 fallback 到 638（与 638→647 fallback 对称）。"""
+        from sim_control.adapters import find_best_running_order
+
+        running_orders = [
+            (0, "638_3.5_2d_10ms"),
+            (1, "638_3.5_2d_10ms_ang0"),
+        ]
+
+        index, name, warnings = find_best_running_order(running_orders, 647, 10_000)
+
+        self.assertEqual((index, name), (0, "638_3.5_2d_10ms"))
+        # fallback 方向反过来：命中 638、请求 647。
+        self.assertTrue(
+            any("Using 638 nm" in warning and "requested 647 nm" in warning for warning in warnings)
+        )
 
 
     def test_find_z_scan_running_order_accepts_only_488_zscan3p_presets(self):

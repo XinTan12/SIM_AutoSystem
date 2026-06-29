@@ -112,6 +112,18 @@ class MainWindowReconModuleTests(unittest.TestCase):
         finally:
             host.close()
 
+    def test_wavelength_combo_items_for_647_machine(self):
+        # 647 红光机器：recon 波长下拉第四档随 red_laser_nm 变为 647（前三档不变）。
+        cfg = AppConfig()
+        cfg.red_laser_nm = 647
+        host = _ReconHost(app_config=cfg)
+        try:
+            host.setup_sim_recon_module()
+            combo = host.ui.cmb_main_recon_wavelength
+            self.assertEqual([combo.itemData(i) for i in range(combo.count())], [405, 488, 561, 647])
+        finally:
+            host.close()
+
     def test_init_loads_params_and_otf_for_selected_wavelength(self):
         cfg = AppConfig()
         cfg.selected_laser_nm = 488

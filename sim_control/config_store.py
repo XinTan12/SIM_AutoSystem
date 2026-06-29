@@ -44,6 +44,9 @@ from .models import (
     BackendConfig,
     CameraConfig,
     DaqLineConfig,
+    DEFAULT_RED_LASER_NM,
+    RED_EQUIVALENT_WAVELENGTHS,
+    RED_LASER_CHOICES,
     ReconstructionConfig,
     SLM_ENABLE_GUARD_RECOMMENDED_US,
     SUPPORTED_LASERS,
@@ -52,6 +55,7 @@ from .models import (
     Z_SCAN_EXPOSURE_PRESETS_MS,
     Z_SCAN_FOCUS_METRICS,
     ZScanConfig,
+    supported_lasers_for,
 )
 from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE
 
@@ -65,7 +69,7 @@ LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
 # 必须与 ``models.AppConfig.config_version`` 默认值保持一致。
-CURRENT_CONFIG_VERSION = 12
+CURRENT_CONFIG_VERSION = 13
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 RECONSTRUCTION_SAVED_PARAMS_FALLBACKS = {"fail", "estimate"}
 
@@ -86,39 +90,76 @@ def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
 
 
 def _migrate_red_laser_aliases(payload: dict) -> dict:
-    """Normalize legacy red-laser keys/nm values to the current 638 nm schema."""
-    daq = dict(payload.get("daq") or {})
-    legacy_laser_line = ""
-    for legacy_key in ("laser_640_line", "laser_647_line"):
-        value = daq.pop(legacy_key, "")
-        if value and not legacy_laser_line:
-            legacy_laser_line = value
-    if legacy_laser_line and "laser_638_line" not in daq:
-        daq["laser_638_line"] = legacy_laser_line
-    if daq or "daq" in payload:
-        payload["daq"] = daq
+    """归一**最老的错误红光命名 640** 到默认 638；**不再**触碰 647 与 DAQ 线键。
 
+    双机红光（638/647）说明：638 与 647 都是真实、合法的机器红光波长身份，历史上"统一
+    压成 638"的逻辑会丢失 647 机器身份，已废除。本函数只处理最老的错误命名 ``640``
+    （既不是 638 也不是 647 的合法身份，是早期笔误），把 ``selected_laser_nm`` 与
+    ``otf_640_path``/``estimated_params_640_path`` 归一到默认红光 638。
+
+    DAQ 红光线键的中性化（``laser_638/647/640_line`` → ``laser_red_line``）以及 647 身份
+    的推断/保留，统一交给 ``_migrate_v12_to_v13``——这里**刻意不动 DAQ**，以免在迁移链
+    早期（v0→v1 / v11→v12）就把 ``laser_647_line`` 证据消耗掉，导致 v13 无法据它推断红光。
+    """
     selected = payload.get("selected_laser_nm")
     try:
         selected_nm = int(selected) if selected is not None else None
     except (TypeError, ValueError):
         selected_nm = None
-    if selected_nm in {640, 647}:
+    if selected_nm == 640:
         payload["selected_laser_nm"] = 638
 
     if isinstance(payload.get("reconstruction"), dict):
         reconstruction = dict(payload.get("reconstruction") or {})
         for legacy_key, current_key in (
             ("otf_640_path", "otf_638_path"),
-            ("otf_647_path", "otf_638_path"),
             ("estimated_params_640_path", "estimated_params_638_path"),
-            ("estimated_params_647_path", "estimated_params_638_path"),
         ):
             value = reconstruction.pop(legacy_key, "")
             if value and current_key not in reconstruction:
                 reconstruction[current_key] = value
         payload["reconstruction"] = reconstruction
     return payload
+
+
+def _infer_red_laser_nm(payload: dict) -> int:
+    """从 payload 推断机器第四路红光波长（638/647）。
+
+    优先级：① 显式 ``red_laser_nm``（校验 ∈ RED_LASER_CHOICES，否则默认）；
+    ② 647 证据（``selected_laser_nm==647`` / daq 非空 ``laser_647_line`` /
+    reconstruction 非空 ``otf_647_path`` 或 ``estimated_params_647_path``）→ 647；
+    ③ 否则默认 ``DEFAULT_RED_LASER_NM``（638）。
+
+    必须在合并 ``laser_647_line``→``laser_red_line`` **之前**调用，否则线键证据已被消耗。
+    """
+    explicit = payload.get("red_laser_nm")
+    try:
+        explicit_nm = int(explicit) if explicit is not None else None
+    except (TypeError, ValueError):
+        explicit_nm = None
+    if explicit_nm in RED_LASER_CHOICES:
+        return explicit_nm
+
+    selected = payload.get("selected_laser_nm")
+    try:
+        selected_nm = int(selected) if selected is not None else None
+    except (TypeError, ValueError):
+        selected_nm = None
+    if selected_nm == 647:
+        return 647
+
+    daq = payload.get("daq") or {}
+    if isinstance(daq, dict) and str(daq.get("laser_647_line", "")).strip():
+        return 647
+
+    reconstruction = payload.get("reconstruction") or {}
+    if isinstance(reconstruction, dict) and (
+        str(reconstruction.get("otf_647_path", "")).strip()
+        or str(reconstruction.get("estimated_params_647_path", "")).strip()
+    ):
+        return 647
+
+    return DEFAULT_RED_LASER_NM
 
 
 def _migrate_v0_to_v1(payload: dict) -> dict:
@@ -278,13 +319,64 @@ def _migrate_v10_to_v11(payload: dict) -> dict:
 
 
 def _migrate_v11_to_v12(payload: dict) -> dict:
-    """v11 -> v12 migration: rename the fourth red laser from 640/647 to 638 nm."""
+    """v11 -> v12 migration: 归一最老的错误红光命名 640，并补齐 638 重建字段。
+
+    注意：双机红光改造后本步**不再**把 647 压成 638（647 身份保留给 v13 推断）；
+    ``_migrate_red_laser_aliases`` 现在只处理 640。这里仍 ``setdefault`` 638 OTF/params
+    字段，保证旧 v11 配置升级后有完整的 638 字段。
+    """
     payload = _migrate_red_laser_aliases(payload)
     reconstruction = dict(payload.get("reconstruction") or {})
     reconstruction.setdefault("otf_638_path", "")
     reconstruction.setdefault("estimated_params_638_path", "")
     payload["reconstruction"] = reconstruction
     payload["config_version"] = 12
+    return payload
+
+
+def _migrate_v12_to_v13(payload: dict) -> dict:
+    """v12 -> v13 migration: 第四路红光波长按机器可配置（638/647）。
+
+    取代历史"统一压成 638"：
+      1) **先**按 647 证据推断 ``red_laser_nm``（``_infer_red_laser_nm`` 须在合并线键前调）；
+      2) DAQ 红光线键 ``laser_638/647/640_line`` 统一合并到中性 ``laser_red_line``
+         （保留线值，首个非空者胜出，不覆盖已有 ``laser_red_line``）；
+      3) reconstruction 补齐 647 OTF/params 字段；
+      4) 校正 ``selected_laser_nm`` 使其 ∈ ``supported_lasers_for(red_laser_nm)``
+         （选中的另一红光身份归位到本机红光；非红光的 405/488/561 保持不变）。
+    """
+    # 1) 先推断红光身份（必须在消耗 laser_647_line 之前）。
+    red_laser_nm = _infer_red_laser_nm(payload)
+    payload["red_laser_nm"] = red_laser_nm
+
+    # 2) DAQ 红光线键统一中性化为 laser_red_line。
+    daq = dict(payload.get("daq") or {})
+    legacy_laser_line = ""
+    for legacy_key in ("laser_640_line", "laser_647_line", "laser_638_line"):
+        value = daq.pop(legacy_key, "")
+        if value and not legacy_laser_line:
+            legacy_laser_line = value
+    if legacy_laser_line and not str(daq.get("laser_red_line", "")).strip():
+        daq["laser_red_line"] = legacy_laser_line
+    if daq or "daq" in payload:
+        payload["daq"] = daq
+
+    # 3) 补齐 647 重建字段（与 638 字段并存，按机器波长取用）。
+    reconstruction = dict(payload.get("reconstruction") or {})
+    reconstruction.setdefault("otf_647_path", "")
+    reconstruction.setdefault("estimated_params_647_path", "")
+    payload["reconstruction"] = reconstruction
+
+    # 4) 校正 selected_laser_nm：选中的红光身份归位到本机红光，保证三方一致。
+    selected = payload.get("selected_laser_nm")
+    try:
+        selected_nm = int(selected) if selected is not None else None
+    except (TypeError, ValueError):
+        selected_nm = None
+    if selected_nm in RED_EQUIVALENT_WAVELENGTHS and selected_nm != red_laser_nm:
+        payload["selected_laser_nm"] = red_laser_nm
+
+    payload["config_version"] = 13
     return payload
 
 
@@ -302,6 +394,7 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (9, _migrate_v9_to_v10),
     (10, _migrate_v10_to_v11),
     (11, _migrate_v11_to_v12),
+    (12, _migrate_v12_to_v13),
 ]
 
 
@@ -357,7 +450,9 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         3. 补齐 9 项 pattern_files，并强制 ``config_version`` 标到当前版本。
     """
     # 1) 用 dict 副本喂迁移链，避免修改调用方传入的对象。
-    payload = _migrate_red_laser_aliases(_run_migrations(dict(payload)))
+    #    注意：绝不在迁移链外再调用 ``_migrate_red_laser_aliases``——历史上那条二次调用会把
+    #    每次加载的 647 机器配置重新压回 638（命门）。红光身份归一只在迁移链内（v13）处理。
+    payload = _run_migrations(dict(payload))
     # 2) 各子配置直接用 ``**`` 解包：缺失字段由 dataclass 默认值兜底。
     daq = DaqLineConfig(**(payload.get("daq") or {}))
     camera = CameraConfig(**(payload.get("camera") or {}))
@@ -399,6 +494,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         otf_488_path=str(reconstruction_payload.get("otf_488_path", "")),
         otf_561_path=str(reconstruction_payload.get("otf_561_path", "")),
         otf_638_path=str(reconstruction_payload.get("otf_638_path", "")),
+        otf_647_path=str(reconstruction_payload.get("otf_647_path", "")),
         background_path=str(reconstruction_payload.get("background_path", "")),
         output_path=str(reconstruction_payload.get("output_path", DEFAULT_RECONSTRUCTION_OUTPUT_DIR)),
         wiener=float(reconstruction_payload.get("wiener", 2.0)),
@@ -412,6 +508,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         estimated_params_488_path=str(reconstruction_payload.get("estimated_params_488_path", "")),
         estimated_params_561_path=str(reconstruction_payload.get("estimated_params_561_path", "")),
         estimated_params_638_path=str(reconstruction_payload.get("estimated_params_638_path", "")),
+        estimated_params_647_path=str(reconstruction_payload.get("estimated_params_647_path", "")),
         save_reconstruction_output=bool(reconstruction_payload.get("save_reconstruction_output", True)),
         async_save_reconstruction_output=bool(
             reconstruction_payload.get("async_save_reconstruction_output", True)
@@ -422,6 +519,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
     pattern_files = _merge_list(payload.get("pattern_files", []))
     selected_running_order = str(payload.get("selected_running_order", ""))
     selected_laser_nm = int(payload.get("selected_laser_nm", 488))
+    red_laser_nm = int(payload.get("red_laser_nm", DEFAULT_RED_LASER_NM))
     # 5) ``config_path`` 在 JSON 中通常为空，回落到 DEFAULT_CONFIG_PATH 字符串。
     config_path = str(payload.get("config_path", DEFAULT_CONFIG_PATH))
     return AppConfig(
@@ -434,6 +532,7 @@ def app_config_from_dict(payload: dict) -> AppConfig:
         pattern_files=pattern_files,
         selected_running_order=selected_running_order,
         selected_laser_nm=selected_laser_nm,
+        red_laser_nm=red_laser_nm,
         config_version=CURRENT_CONFIG_VERSION,
         config_path=config_path,
     )
@@ -539,9 +638,12 @@ def validate_app_config(config: AppConfig) -> list[str]:
                     f"reconstruction.{params_field} file does not exist: {params_path}"
                 )
 
-    # 5) 顶层用户选择：波长必须在 SUPPORTED_LASERS 中；非 RO 模式下 pattern 必须 9 项。
-    if config.selected_laser_nm not in SUPPORTED_LASERS:
-        errors.append(f"selected_laser_nm must be one of {SUPPORTED_LASERS}.")
+    # 5) 顶层用户选择：红光波长身份合法；采集波长必须在本机四档内；非 RO 模式 pattern 9 项。
+    if config.red_laser_nm not in RED_LASER_CHOICES:
+        errors.append(f"red_laser_nm must be one of {RED_LASER_CHOICES}.")
+    machine_lasers = supported_lasers_for(config.red_laser_nm)
+    if config.selected_laser_nm not in machine_lasers:
+        errors.append(f"selected_laser_nm must be one of {machine_lasers}.")
     if not config.selected_running_order and len(config.pattern_files) != 9:
         errors.append("pattern_files must contain exactly 9 entries.")
     return errors

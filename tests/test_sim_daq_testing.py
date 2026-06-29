@@ -2,12 +2,12 @@
 
 作用：
     覆盖三类与 DAQ 测试相关的小型回归：
-        1. ``build_daq_test_target_items``：测试目标下拉的项目顺序与 638nm 命名
-           （旧 640 配置经迁移后必须显示为 ``Laser 638``）。
+        1. ``build_daq_test_target_items``：测试目标下拉的项目顺序与中性红光命名
+           （旧 640 配置经迁移后红光行显示为 ``Laser red``）。
         2. 默认 ``DaqLineConfig`` 必须使用 USB-6423 稀疏映射
-           ``slm_enable=0/trigger=1/finish=2/cam=8/405=9/488=10/561=11/638=12``。
-        3. ``NIDaqWaveformBuilder`` 在迁移 640/647→638 配置后仍正确使用 ``laser_638_line``，
-           且 packed port 波形的 bit 模式与稀疏线位匹配。
+           ``slm_enable=0/trigger=1/finish=2/cam=8/405=9/488=10/561=11/red=12``。
+        3. ``NIDaqWaveformBuilder`` 在迁移 640/647 配置后红光角色统一为中性
+           ``laser_red_line``，且 packed port 波形的 bit 模式与稀疏线位匹配。
         4. ``NIDaqAdapter.pulse_line`` 通过 mock nidaqmx 测试：先写 0 → 写位掩码 → 等待 →
            最终写 0；目标位是 ``1 << line_index``。
 
@@ -38,7 +38,7 @@ class DaqTestTargetTests(unittest.TestCase):
     """覆盖 DAQ 测试目标下拉、默认线位映射与波形 638 名称迁移。"""
 
     def test_build_daq_test_target_items_uses_638_labels_and_appends_sim_entry(self):
-        """旧 640 配置迁移后，测试下拉显示 ``Laser 638``，末尾追加 ``SIM采集`` 与 ``SLM激活时序``。"""
+        """旧 640 配置迁移后，测试下拉红光行显示中性 ``Laser red``，末尾追加 ``SIM采集`` 与 ``SLM激活时序``。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.gui import (
             SIM_ACQUISITION_TEST_ID,
@@ -74,7 +74,7 @@ class DaqTestTargetTests(unittest.TestCase):
                 ("laser_405_line", "Laser 405 -> Dev1/port0/line9"),
                 ("laser_488_line", "Laser 488 -> Dev1/port0/line10"),
                 ("laser_561_line", "Laser 561 -> Dev1/port0/line11"),
-                ("laser_638_line", "Laser 638 -> Dev1/port0/line12"),
+                ("laser_red_line", "Laser red -> Dev1/port0/line12"),
                 (SIM_ACQUISITION_TEST_ID, "SIM采集"),
                 (SLM_ACTIVATION_TIMING_TEST_ID, "SLM激活时序"),
             ],
@@ -94,13 +94,15 @@ class DaqTestTargetTests(unittest.TestCase):
         self.assertEqual(config.laser_405_line, "Dev1/port0/line9")
         self.assertEqual(config.laser_488_line, "Dev1/port0/line10")
         self.assertEqual(config.laser_561_line, "Dev1/port0/line11")
-        # ``laser_638_line`` 必须存在，旧 ``laser_640_line`` / ``laser_647_line`` 必须不存在。
-        self.assertEqual(getattr(config, "laser_638_line", None), "Dev1/port0/line12")
+        # 中性红光键 ``laser_red_line`` 必须存在（line 12 不变）；旧 ``laser_638_line`` /
+        # ``laser_640_line`` / ``laser_647_line`` 命名必须不存在。
+        self.assertEqual(getattr(config, "laser_red_line", None), "Dev1/port0/line12")
+        self.assertFalse(hasattr(config, "laser_638_line"))
         self.assertFalse(hasattr(config, "laser_640_line"))
         self.assertFalse(hasattr(config, "laser_647_line"))
 
     def test_waveform_builder_uses_638_role_name_and_sparse_line_bits(self):
-        """旧 640 配置迁移后，波形 builder 选用 ``laser_638_line`` 并产出正确位掩码。"""
+        """旧 640 配置迁移后，波形 builder 选用中性 ``laser_red_line`` 并产出正确位掩码。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.models import TimingConfig
         from sim_control.waveform import NIDaqWaveformBuilder
@@ -138,9 +140,9 @@ class DaqTestTargetTests(unittest.TestCase):
             frame_count=1,
         )
 
-        # 3) 元数据应反映迁移后的 638 角色。
-        self.assertEqual(plan.metadata["active_laser_role"], "laser_638_line")
-        # 4) packed value = bit0(SLM enable) + bit1(SLM trigger) + bit8(camera) + bit12(638 laser)
+        # 3) 元数据应反映迁移后的中性红光角色（638/647 都落到 laser_red_line）。
+        self.assertEqual(plan.metadata["active_laser_role"], "laser_red_line")
+        # 4) packed value = bit0(SLM enable) + bit1(SLM trigger) + bit8(camera) + bit12(red laser)
         #    = 1 + 2 + 256 + 4096 = 4355。该值证明位掩码按稀疏线位正确合成。
         self.assertEqual(int(plan.packed_port_values[1]), 4355)
 

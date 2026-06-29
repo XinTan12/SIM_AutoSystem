@@ -95,9 +95,9 @@ from .models import (
     DaqLineConfig,
     ReconstructionConfig,
     SimTaskConfig,
-    SUPPORTED_LASERS,
     TimingConfig,
     default_daq_line_name,
+    supported_lasers_for,
 )
 from .pipeline import DecisionEngine, FeatureWorker, ReconstructionWorker
 from .protocols import CameraAdapter, SlmAdapter
@@ -194,9 +194,6 @@ def write_selected_laser_to_widgets(
     # 缺失波长按"默认 488"处理，保证下次读取不抛 ValueError。
     laser_button = laser_buttons.get(laser_nm, laser_buttons[488])
     laser_button.setChecked(True)
-
-
-RECON_WAVELENGTHS = SUPPORTED_LASERS
 
 
 def read_daq_config_from_line_combos(
@@ -588,12 +585,15 @@ class SimControlWindow(QMainWindow):
         return group
 
     def _create_laser_group(self) -> QGroupBox:
-        """创建 405 / 488 / 561 / 638 nm 激光单选按钮组。"""
+        """创建激光单选按钮组：前三档 405 / 488 / 561 固定，第四档红光随本机
+        ``red_laser_nm``（638 / 647）显示。"""
         group = QGroupBox("Laser Selection")
         layout = QVBoxLayout(group)
         self.laser_group = QButtonGroup(self)
-        # 4 个 RadioButton + QButtonGroup 关联，便于 checkedId() 读取选中波长。
-        for wavelength in SUPPORTED_LASERS:
+        # 第四档红光按机器 ``red_laser_nm`` 决定（638/647）；字段缺失时兜底 638。
+        # button id 即波长值，``read_selected_laser_nm`` 据此读回，故 647 机器也正确。
+        red_laser_nm = getattr(self.config, "red_laser_nm", 638)
+        for wavelength in supported_lasers_for(red_laser_nm):
             button = QRadioButton(f"{wavelength} nm")
             self.laser_group.addButton(button, wavelength)
             self.laser_buttons[wavelength] = button

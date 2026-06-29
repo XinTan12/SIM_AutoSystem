@@ -11,7 +11,9 @@
         4. ``selected_running_order`` round-trip 通过 ``app_config_*_dict``。
         5. ``config_path`` 字段不会被持久化到 JSON（避免暴露本机绝对路径）；
            但 ``save_app_config`` 仍把它保留在内存 AppConfig 中以便下次保存。
-        6. 旧 ``laser_640`` / ``laser_647`` 命名迁移到 ``laser_638``（``selected_laser_nm=640/647 → 638``）。
+        6. 第四路红光波长按机器可配置（638/647）：最老的错误命名 ``640`` 仍归一到默认红光
+           638；真实波长 ``647`` 现在**保留为机器红光身份**（``red_laser_nm=647``），不再压成
+           638；所有历史红光 DAQ 线键统一合并到 ``laser_red_line``。
         7. ``apply_real_hardware_preference``（``control_wangbo/main.py``）能用真实
            设备列表覆盖旧 placeholder 标识，且在无设备时保留原标签。
 
@@ -153,13 +155,13 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
         )
 
         # 2) 加载后版本号应升到当前版本；缺失字段被补齐为安全默认。
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertFalse(config.backend.simulation_mode)
         # 3) round-trip 回 dict 时字段仍存在。
         payload = app_config_to_dict(config)
         self.assertFalse(payload["backend"]["simulation_mode"])
         self.assertEqual(payload["selected_running_order"], "")
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v2_config_migration_adds_selected_running_order_default(self):
         """v2 → v3 迁移应只补 ``selected_running_order``，保留已有 simulation_mode。"""
@@ -176,11 +178,11 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.selected_running_order, "")
         payload = app_config_to_dict(config)
         self.assertEqual(payload["selected_running_order"], "")
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v4_config_migration_adds_reconstruction_defaults(self):
         """v4 -> v6 应补齐 SIM9 重建配置，并可 round-trip 到 JSON。"""
@@ -188,7 +190,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
 
         config = app_config_from_dict({"config_version": 4})
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertTrue(config.reconstruction.enabled)
         self.assertEqual(config.reconstruction.backend, "sim_wiener_gpu")
         self.assertEqual(config.reconstruction.otf_488_path, "")
@@ -198,7 +200,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
         self.assertTrue(payload["reconstruction"]["enabled"])
         self.assertEqual(payload["reconstruction"]["output_path"], "data/reconstruction")
         self.assertEqual(payload["reconstruction"]["theta_ratio"], (1, 1, 1))
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v5_config_migration_enables_reconstruction_and_adds_output_path(self):
         """v5 -> v7 应补 output_path，并将无界面开关的重建默认设为启用。"""
@@ -215,13 +217,13 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertTrue(config.reconstruction.enabled)
         self.assertEqual(config.reconstruction.output_path, "data/reconstruction")
         payload = app_config_to_dict(config)
         self.assertTrue(payload["reconstruction"]["enabled"])
         self.assertEqual(payload["reconstruction"]["output_path"], "data/reconstruction")
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v6_config_migration_converts_output_tiff_to_output_directory(self):
         """v6 -> v7 应把旧 output_path 文件路径迁移成输出目录。"""
@@ -238,11 +240,11 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.reconstruction.output_path, "E:/data/reconstruction")
         payload = app_config_to_dict(config)
         self.assertEqual(payload["reconstruction"]["output_path"], "E:/data/reconstruction")
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v8_config_migration_raises_low_slm_enable_guard(self):
         """v8 -> v9 应把低于推荐值的 slm_enable_guard_us 抬到 1000 µs。
@@ -264,11 +266,11 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.timing.slm_enable_guard_us, 1000)
         payload = app_config_to_dict(config)
         self.assertEqual(payload["timing"]["slm_enable_guard_us"], 1000)
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
 
     def test_v8_config_migration_keeps_guard_at_or_above_recommended(self):
         """v8 -> v9 不应降低用户已设置的 >= 1000 µs guard。"""
@@ -281,7 +283,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.timing.slm_enable_guard_us, 2_500)
 
     def test_v9_config_keeps_user_low_guard_without_remigration(self):
@@ -296,7 +298,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.timing.slm_enable_guard_us, 600)
 
     def test_v9_to_v10_migration_adds_ti2_path_defaults(self):
@@ -310,12 +312,12 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.backend.ti2_dll_path, "")
         self.assertEqual(config.backend.ti2_sdk_module_path, "")
         self.assertTrue(config.backend.simulation_mode)
         payload = app_config_to_dict(config)
-        self.assertEqual(payload["config_version"], 12)
+        self.assertEqual(payload["config_version"], 13)
         self.assertEqual(payload["backend"]["ti2_dll_path"], "")
 
     def test_v10_config_preserves_user_ti2_paths(self):
@@ -332,7 +334,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         self.assertEqual(config.backend.ti2_dll_path, "C:/custom/Ti2_Mic_Driver.dll")
         self.assertEqual(config.backend.ti2_sdk_module_path, "E:/proj/z-scan/ti2_sdk.py")
 
@@ -351,7 +353,7 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
+        self.assertEqual(config.config_version, 13)
         # 仿真优先：旧配置无 estimated_params_*_path -> use_saved_params 必须为 False。
         self.assertFalse(config.reconstruction.use_saved_params)
         self.assertEqual(config.reconstruction.saved_params_fallback, "fail")
@@ -476,22 +478,32 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        # 2) 数据类层面：``selected_laser_nm`` 改为 638；``laser_638_line`` 字段值正确。
+        # 2) 数据类层面：``selected_laser_nm`` 改为默认红光 638；640 线键并入中性
+        #    ``laser_red_line``；机器红光身份 ``red_laser_nm`` 仍是默认 638。
         self.assertEqual(config.selected_laser_nm, 638)
-        self.assertEqual(getattr(config.daq, "laser_638_line", None), "Dev2/port0/line9")
+        self.assertEqual(config.red_laser_nm, 638)
+        self.assertEqual(getattr(config.daq, "laser_red_line", None), "Dev2/port0/line9")
         self.assertFalse(hasattr(config.daq, "laser_640_line"))
         self.assertFalse(hasattr(config.daq, "laser_647_line"))
+        self.assertFalse(hasattr(config.daq, "laser_638_line"))
 
-        # 3) round-trip 回 dict 后旧字段也不应出现。
+        # 3) round-trip 回 dict 后旧红光线键都不应出现，只保留 ``laser_red_line``。
         payload = app_config_to_dict(config)
 
         self.assertEqual(payload["selected_laser_nm"], 638)
-        self.assertEqual(payload["daq"].get("laser_638_line"), "Dev2/port0/line9")
+        self.assertEqual(payload["red_laser_nm"], 638)
+        self.assertEqual(payload["daq"].get("laser_red_line"), "Dev2/port0/line9")
         self.assertNotIn("laser_640_line", payload["daq"])
         self.assertNotIn("laser_647_line", payload["daq"])
+        self.assertNotIn("laser_638_line", payload["daq"])
 
-    def test_v11_config_migrates_647_laser_and_reconstruction_fields_to_638(self):
-        """v11 配置里的 ``647`` 红光字段应升级为 v12 的 ``638`` schema。"""
+    def test_v11_config_preserves_647_laser_and_reconstruction_fields(self):
+        """v11 配置里的 ``647`` 红光应**保留为机器红光身份**升级到 v13，不再压成 638。
+
+        语义反转（双机红光）：647 是真实合法的机器红光波长，迁移后
+        ``red_laser_nm=647``、``selected_laser_nm=647``、647 OTF/params 留在 647 字段；
+        DAQ 的 ``laser_647_line`` 仅做中性化合并到 ``laser_red_line``（线值不丢）。
+        """
         from sim_control.config_store import app_config_from_dict, app_config_to_dict
 
         config = app_config_from_dict(
@@ -518,21 +530,79 @@ class LegacySimConfigMigrationTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config.config_version, 12)
-        self.assertEqual(config.selected_laser_nm, 638)
-        self.assertEqual(config.daq.laser_638_line, "Dev2/port0/line9")
-        self.assertEqual(config.reconstruction.otf_638_path, "E:/calibration/647_otf.tif")
+        # 1) 数据类层面：647 保留为机器红光身份，不再压回 638。
+        self.assertEqual(config.config_version, 13)
+        self.assertEqual(config.red_laser_nm, 647)
+        self.assertEqual(config.selected_laser_nm, 647)
+        # 2) 旧 ``laser_647_line`` 线值并入中性 ``laser_red_line``；不留旧红光线键。
+        self.assertEqual(config.daq.laser_red_line, "Dev2/port0/line9")
+        self.assertFalse(hasattr(config.daq, "laser_647_line"))
+        self.assertFalse(hasattr(config.daq, "laser_638_line"))
+        # 3) 647 OTF/params 留在 647 字段，**不**搬进 638 字段。
+        self.assertEqual(config.reconstruction.otf_647_path, "E:/calibration/647_otf.tif")
+        self.assertEqual(config.reconstruction.otf_638_path, "")
         self.assertEqual(
-            config.reconstruction.estimated_params_638_path,
+            config.reconstruction.estimated_params_647_path,
             "E:/calibration/647_params.mat",
         )
 
+        # 4) round-trip 回 dict：JSON 含 ``red_laser_nm:647``；daq 无旧红光线键、有
+        #    ``laser_red_line``；647 OTF 仍在 647 字段。
         payload = app_config_to_dict(config)
+        self.assertEqual(payload["red_laser_nm"], 647)
+        self.assertEqual(payload["selected_laser_nm"], 647)
         self.assertNotIn("laser_647_line", payload["daq"])
-        self.assertEqual(payload["daq"]["laser_638_line"], "Dev2/port0/line9")
-        self.assertNotIn("otf_647_path", payload["reconstruction"])
-        self.assertNotIn("estimated_params_647_path", payload["reconstruction"])
-        self.assertEqual(payload["reconstruction"]["otf_638_path"], "E:/calibration/647_otf.tif")
+        self.assertNotIn("laser_638_line", payload["daq"])
+        self.assertEqual(payload["daq"]["laser_red_line"], "Dev2/port0/line9")
+        self.assertEqual(payload["reconstruction"]["otf_647_path"], "E:/calibration/647_otf.tif")
+        self.assertEqual(
+            payload["reconstruction"]["estimated_params_647_path"],
+            "E:/calibration/647_params.mat",
+        )
+
+    def test_v12_without_647_evidence_defaults_red_laser_to_638(self):
+        """无任何 647 证据的 v12 配置迁移到 v13：机器红光回落默认 638，647 字段补空串。"""
+        from sim_control.config_store import app_config_from_dict
+
+        config = app_config_from_dict({"config_version": 12})
+
+        self.assertEqual(config.config_version, 13)
+        self.assertEqual(config.red_laser_nm, 638)
+        # v13 应补齐 647 重建字段（默认空串），与 638 字段并存。
+        self.assertEqual(config.reconstruction.otf_647_path, "")
+        self.assertEqual(config.reconstruction.estimated_params_647_path, "")
+
+    def test_v13_647_config_round_trip_keeps_red_laser_identity(self):
+        """命门守护：一份 v13 的 647 配置 ``app_config_to_dict`` → ``app_config_from_dict``
+        后仍是 647，防回归"每次加载把 647 压回 638"。"""
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        # 由 v11 的 647 证据迁移得到一份 v13 的 647 机器配置。
+        config = app_config_from_dict(
+            {
+                "config_version": 11,
+                "daq": {
+                    "device_name": "Dev2",
+                    "laser_647_line": "Dev2/port0/line9",
+                },
+                "selected_laser_nm": 647,
+                "reconstruction": {
+                    "enabled": True,
+                    "backend": "sim_wiener_gpu",
+                    "otf_647_path": "E:/calibration/647_otf.tif",
+                },
+            }
+        )
+        self.assertEqual(config.red_laser_nm, 647)
+        self.assertEqual(config.selected_laser_nm, 647)
+
+        # round-trip 一次：序列化再反序列化，红光身份必须稳定保留为 647。
+        reloaded = app_config_from_dict(app_config_to_dict(config))
+
+        self.assertEqual(reloaded.red_laser_nm, 647)
+        self.assertEqual(reloaded.selected_laser_nm, 647)
+        self.assertEqual(reloaded.daq.laser_red_line, "Dev2/port0/line9")
+        self.assertEqual(reloaded.reconstruction.otf_647_path, "E:/calibration/647_otf.tif")
 
     def test_real_device_detection_replaces_stale_camera_identity(self):
         """``apply_real_hardware_preference`` 在真机存在时应替换 placeholder 标签。"""

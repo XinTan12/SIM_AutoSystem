@@ -5692,10 +5692,22 @@
           <item>
            <widget class="QComboBox" name="cmb_main_daq_device">
             <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>70</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>110</width>
+              <height>16777215</height>
+             </size>
             </property>
             <property name="font">
              <font>
@@ -5717,6 +5729,54 @@
              <string>Refresh</string>
             </property>
            </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lbl_main_red_laser">
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>10</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>Red(nm)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="cmb_main_red_laser">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>85</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="font">
+             <font>
+              <family>Times New Roman</family>
+              <pointsize>12</pointsize>
+             </font>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="hspacer_daq_device">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
           </item>
          </layout>
         </item>
@@ -5908,7 +5968,7 @@
          </widget>
         </item>
         <item row="7" column="1">
-         <widget class="QLabel" name="lbl_main_daq_laser_638">
+         <widget class="QLabel" name="lbl_main_daq_laser_red">
           <property name="font">
            <font>
             <family>Times New Roman</family>
@@ -5916,7 +5976,7 @@
            </font>
           </property>
           <property name="text">
-           <string>Laser 638</string>
+           <string>Laser red</string>
           </property>
          </widget>
         </item>
@@ -5937,7 +5997,7 @@
          </widget>
         </item>
         <item row="8" column="1">
-         <widget class="QComboBox" name="cmb_main_daq_laser_638">
+         <widget class="QComboBox" name="cmb_main_daq_laser_red">
           <property name="minimumSize">
            <size>
             <width>120</width>

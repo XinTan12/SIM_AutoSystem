@@ -52,7 +52,13 @@ from sim_control.gui import (
     populate_daq_line_combos,
     read_daq_config_from_line_combos,
 )
-from sim_control.models import SUPPORTED_LASERS, SimTaskConfig, Z_SCAN_EXPOSURE_PRESETS_MS
+from sim_control.models import (
+    RED_LASER_CHOICES,
+    SUPPORTED_LASERS,
+    SimTaskConfig,
+    Z_SCAN_EXPOSURE_PRESETS_MS,
+    supported_lasers_for,
+)
 from sim_control.pipeline import RawStackSaveWorker, ReconstructionWorker
 from sim_control.preview import SimPreviewController
 from sim_control.preview_contrast import AutoContrastState, fast_preview_uint16_to_uint8
@@ -143,6 +149,8 @@ def merge_legacy_sim_control_payload(base_config, legacy_payload):
     merged.pattern_files = list(legacy_config.pattern_files)
     merged.selected_running_order = legacy_config.selected_running_order
     merged.selected_laser_nm = legacy_config.selected_laser_nm
+    # 机器红光身份必须随配置一起合并，否则加载 647 机器配置会回落默认 638。
+    merged.red_laser_nm = legacy_config.red_laser_nm
     merged.config_path = base_config.config_path
     return merged
 
@@ -905,15 +913,30 @@ class MainWindow(qw.QWidget):
 
         # 1) 波长下拉：已由 CellSorting_ui 在 SIM Camera Settings 组 gridLayout_32 (2,1)=标签、
         #    (3,1)=下拉 静态定义；此处仅填充波长项（带 itemData，无法静态表达）、选默认、接信号。
+        red_laser_nm = int(getattr(self.sim_app_config, "red_laser_nm", 638))
         combo = getattr(self.ui, "cmb_sCMOS_laser", None)
         if combo is not None:
             combo.blockSignals(True)
             combo.clear()
-            for wavelength in (405, 488, 561, 638):
+            # 采集波长第四档随本机红光（638/647）显示；前三档固定。
+            for wavelength in supported_lasers_for(red_laser_nm):
                 combo.addItem(str(wavelength), wavelength)
             combo.setCurrentText("488")
             combo.blockSignals(False)
             combo.currentIndexChanged.connect(self.on_sim_camera_setting_changed)
+
+        # 1b) 红光机器切换下拉（638/647）：选择本机第四路红光波长身份；变更时联动刷新采集/recon
+        #     波长选项并复用波长变更安全流程。项带 itemData，.ui 无法静态表达；blockSignals 防回环。
+        red_combo = getattr(self.ui, "cmb_main_red_laser", None)
+        if red_combo is not None:
+            red_combo.blockSignals(True)
+            red_combo.clear()
+            for nm in RED_LASER_CHOICES:
+                red_combo.addItem(str(nm), nm)
+            red_index = red_combo.findData(red_laser_nm)
+            red_combo.setCurrentIndex(red_index if red_index >= 0 else 0)
+            red_combo.blockSignals(False)
+            red_combo.currentIndexChanged.connect(self._on_main_red_laser_changed)
 
         # 2) SLM 连接区 2×2 已由 CellSorting_ui 静态定义（device(0,0)110 / connect(0,1)154 /
         #    refresh(1,0)90 / immediateRO(1,1)154；lbl_SLM_status 移出布局作 layout 外 hidden 子）。
@@ -1239,6 +1262,12 @@ class MainWindow(qw.QWidget):
             laser_data = laser_combo.currentData()
             if laser_data is not None:
                 self.sim_app_config.selected_laser_nm = int(laser_data)
+        # 机器红光身份：从红光切换下拉补读 red_laser_nm，防程序化回显绕过 handler 后 Save 写出旧值。
+        red_combo = getattr(self.ui, "cmb_main_red_laser", None)
+        if red_combo is not None:
+            red_data = red_combo.currentData()
+            if red_data is not None:
+                self.sim_app_config.red_laser_nm = int(red_data)
         self.sync_sim_camera_roi_position_controls()
         if hasattr(self.ui, "cmb_sCMOS_camera") and self.ui.cmb_sCMOS_camera.currentIndex() >= 0:
             selected_index = self.ui.cmb_sCMOS_camera.currentIndex()
@@ -1725,6 +1754,96 @@ class MainWindow(qw.QWidget):
     def btn_sCMOS_refresh_function(self):
         self.refresh_sim_camera_devices(show_dialog_on_error=True)
 
+    def _sim_runtime_busy(self):
+        """SIM 硬件 worker 是否正忙——忙时拒绝红光切换 / Load 配置，避免 UI/config/硬件状态分裂。
+
+        覆盖：正式 SIM9 采集、Z-Scan 后台移动、DAQ 测试 worker、SLM/相机连接 worker。
+        """
+        return bool(
+            getattr(self, "sim_acquisition_in_progress", False)
+            or getattr(self, "_zscan_move_in_progress", False)
+            or getattr(self, "_daq_test_thread", None) is not None
+            or getattr(self, "_slm_connect_thread", None) is not None
+            or getattr(self, "_cam_connect_thread", None) is not None
+        )
+
+    def _apply_sim_red_laser_options(self, red_laser_nm):
+        """按机器红光波长重建所有"按红光"的 UI 选项（纯 UI，全程 blockSignals，绝不写 selected/不触发安全序列）。
+
+        统一供 启动初始化 / Load / 运行时红光切换 三条路径复用，防各写一套导致顺序漂移：
+          1) 采集波长下拉 ``cmb_sCMOS_laser``：重建项为 ``supported_lasers_for(red)``，保持当前选中
+             槽位 index（原选红光槽位则 currentData 自然变为新红光，供 ``on_sim_camera_setting_changed``
+             经 sync 检测 old≠new）；
+          2) recon 波长下拉 ``cmb_main_recon_wavelength``：重建项，保持选中槽位；
+          3) 红光切换下拉 ``cmb_main_red_laser`` 当前值（防程序化路径与控件分裂）。
+        """
+        red = int(red_laser_nm)
+        wavelengths = supported_lasers_for(red)
+        combo = getattr(self.ui, "cmb_sCMOS_laser", None)
+        if combo is not None:
+            prev_index = combo.currentIndex()
+            combo.blockSignals(True)
+            combo.clear()
+            for wl in wavelengths:
+                combo.addItem(str(int(wl)), int(wl))
+            if 0 <= prev_index < combo.count():
+                combo.setCurrentIndex(prev_index)
+            combo.blockSignals(False)
+        recon_combo = getattr(self.ui, "cmb_main_recon_wavelength", None)
+        if recon_combo is not None:
+            prev_index = recon_combo.currentIndex()
+            recon_combo.blockSignals(True)
+            recon_combo.clear()
+            for wl in wavelengths:
+                recon_combo.addItem(f"{int(wl)} nm", int(wl))
+            if 0 <= prev_index < recon_combo.count():
+                recon_combo.setCurrentIndex(prev_index)
+            recon_combo.blockSignals(False)
+        red_combo = getattr(self.ui, "cmb_main_red_laser", None)
+        if red_combo is not None:
+            idx = red_combo.findData(red)
+            if idx >= 0 and idx != red_combo.currentIndex():
+                red_combo.blockSignals(True)
+                red_combo.setCurrentIndex(idx)
+                red_combo.blockSignals(False)
+
+    def _on_main_red_laser_changed(self, *_):
+        """红光机器切换（638↔647）：复用波长变更安全流程，绝不在调 on_sim_camera_setting_changed 前写 selected。
+
+        关键（codex blocking 修复）：
+          - 忙碌互锁（E3d）：任一 SIM worker 活动则拒绝并把控件恢复原值，不做部分写入。
+          - **不提前写 ``config.selected_laser_nm``**（B-1 新形式）：只写 ``red_laser_nm`` + 重建选项，
+            随后调 ``on_sim_camera_setting_changed``——它在入口读旧 selected、经 sync 从 combo 读新
+            selected、比较 old≠new 触发 stop+刷新+重选 RO 安全序列（含 stop 失败硬互锁）。
+        """
+        if getattr(self, "_loading_configure_settings", False):
+            return
+        red_combo = getattr(self.ui, "cmb_main_red_laser", None)
+        if red_combo is None:
+            return
+        new_red = red_combo.currentData()
+        if new_red is None:
+            return
+        new_red = int(new_red)
+        old_red = int(getattr(self.sim_app_config, "red_laser_nm", 638))
+        if new_red == old_red:
+            return
+        if self._sim_runtime_busy():
+            qw.QMessageBox.information(
+                self,
+                "Red laser",
+                "SIM 采集 / Z-Scan / DAQ 测试 / 设备连接进行中，暂不能切换红光波长。请稍后再试。",
+            )
+            red_combo.blockSignals(True)
+            idx = red_combo.findData(old_red)
+            if idx >= 0:
+                red_combo.setCurrentIndex(idx)
+            red_combo.blockSignals(False)
+            return
+        self.sim_app_config.red_laser_nm = new_red
+        self._apply_sim_red_laser_options(new_red)
+        self.on_sim_camera_setting_changed()
+
     def on_sim_camera_setting_changed(self):
         if getattr(self, "_loading_configure_settings", False):
             return
@@ -1735,11 +1854,18 @@ class MainWindow(qw.QWidget):
         new_wavelength = int(getattr(cfg, "selected_laser_nm", old_wavelength)) if cfg is not None else old_wavelength
         wavelength_changed = new_wavelength != old_wavelength
 
+        stop_failed = False
         if wavelength_changed:
             # 换波长 = 换激光线，必须先关找样品激光；再按新波长重过滤 immediate 下拉。
             stop_immediate = getattr(self, "stop_immediate_live_mode", None)
             if callable(stop_immediate):
                 stop_immediate()
+            # stop 失败硬互锁：关光失败（DAQ 拉低失败、状态仍 active/pending）时绝不切 SLM RO——
+            # 否则可能在激光线未拉低的情况下切换 RO（set_line 整 port 与未拉低激光线冲突）。
+            active_or_pending = getattr(self, "_immediate_live_active_or_pending", None)
+            if callable(active_or_pending) and active_or_pending():
+                stop_failed = True
+                print("找样品激光未能关闭（DAQ 拉低失败），跳过 SLM RO 切换并保留当前 RO，请检查 DAQ。")
             refresh_dropdown = getattr(self, "refresh_immediate_ro_dropdown", None)
             if callable(refresh_dropdown):
                 refresh_dropdown()
@@ -1747,7 +1873,7 @@ class MainWindow(qw.QWidget):
         # immediate-live 期间仅改 ROI/曝光：保住 immediate RO，绝不重选正式 RO（否则画面又黑）。
         immediate_live = bool(getattr(self, "sim_immediate_live_active", False)) and not wavelength_changed
 
-        if getattr(self, "sim_slm_connected", False) and not immediate_live:
+        if getattr(self, "sim_slm_connected", False) and not immediate_live and not stop_failed:
             try:
                 self.select_current_sim_running_order(save_to_disk=False)
             except Exception as e:
@@ -2304,7 +2430,7 @@ class MainWindow(qw.QWidget):
             "laser_405_line": self.ui.cmb_main_daq_laser_405,
             "laser_488_line": self.ui.cmb_main_daq_laser_488,
             "laser_561_line": self.ui.cmb_main_daq_laser_561,
-            "laser_638_line": self.ui.cmb_main_daq_laser_638,
+            "laser_red_line": self.ui.cmb_main_daq_laser_red,
         }
         # 列伸缩：label-on-top 2 列布局——两列（左 SLM/Cam-Trig 通道、右 Laser 通道）等分余量、
         # 宽度一致；Device/Test 行用跨 2 列的嵌套 HBox（其内 combo 设 Expanding 吃余量）。
@@ -2624,7 +2750,7 @@ class MainWindow(qw.QWidget):
         # 波长下拉项（带 itemData，.ui 无法静态表达）。
         self.ui.cmb_main_recon_wavelength.blockSignals(True)
         self.ui.cmb_main_recon_wavelength.clear()
-        for wl in SUPPORTED_LASERS:
+        for wl in supported_lasers_for(int(self.sim_app_config.red_laser_nm)):
             self.ui.cmb_main_recon_wavelength.addItem(f"{int(wl)} nm", int(wl))
         self.ui.cmb_main_recon_wavelength.blockSignals(False)
         self._main_recon_current_wavelength_nm = int(self.sim_app_config.selected_laser_nm)
@@ -3683,8 +3809,27 @@ class MainWindow(qw.QWidget):
     def apply_loaded_sim_settings_payload(self, configure_settings, *, apply_legacy_sim_camera_settings=True):
         sim_control_payload = configure_settings.get('sim_control')
         if sim_control_payload:
+            # E3a stop-first 安全序列：Load = 重置采集。先关找样品激光并硬互锁——关光失败
+            # （DAQ 拉低失败、状态仍 active/pending）则中止：不 merge、不改任何 config/UI，
+            # 避免"config 已变硬件未停"中间态（load_configure_settings 期 on_sim_camera_setting_changed
+            # 因 _loading 守卫 early-return，故安全序列必须在此显式补）。
+            stop_immediate = getattr(self, "stop_immediate_live_mode", None)
+            if callable(stop_immediate):
+                stop_immediate(reset_dropdown=False)
+            active_or_pending = getattr(self, "_immediate_live_active_or_pending", None)
+            if callable(active_or_pending) and active_or_pending():
+                qw.QMessageBox.warning(
+                    self,
+                    "SIM SLM",
+                    "找样品激光未能关闭（DAQ 拉低失败），已中止加载 SIM 配置以避免硬件状态冲突。请检查 DAQ 后重试。",
+                )
+                return
             self.sim_app_config = merge_legacy_sim_control_payload(self.sim_app_config, sim_control_payload)
             save_app_config(self.sim_app_config, self.sim_app_config.config_path)
+            # 先按新机器红光重建"按红光"的 UI 选项（采集/recon 波长项 + 红光下拉），
+            # **必须先于下方 sync_sim_camera_controls_from_config 的 findData 回显**：否则 647 机器
+            # 配置选 647 时下拉项还只有 638，findData(647) 失败回落 488（B-1 关键顺序）。
+            self._apply_sim_red_laser_options(int(getattr(self.sim_app_config, "red_laser_nm", 638)))
             # B3：Load 替换了 sim_app_config（含 DAQ/Recon/Z-Scan）；把主界面三个 SIM 模块控件
             # 回填到最新配置（各 _init_* 内 blockSignals 防回环），并同步 controller DAQ / z-scan /
             # 常驻 recon worker，避免配置与控件/后端状态分裂（下次 Save 才不会用旧控件值覆盖）。
@@ -3710,9 +3855,29 @@ class MainWindow(qw.QWidget):
             self.sync_sim_camera_config_from_ui(save_to_disk=False)
         self.sync_sim_camera_controls_from_config()
         self.refresh_sim_settings_summary()
+        # E3a：加载新红光/波长后，若 SLM 已连接则按新采集波长重选正式 RO 并刷新 immediate 下拉，
+        # 使 UI / config / SLM RO 三者一致（stop 已在上方完成且互锁通过）。
+        if sim_control_payload and getattr(self, "sim_slm_connected", False):
+            try:
+                self.select_current_sim_running_order(save_to_disk=False)
+            except Exception as e:
+                print(f"SIM SLM running order refresh on load failed: {str(e)}")
+                self.sim_app_config.selected_running_order = ""
+            refresh_dropdown = getattr(self, "refresh_immediate_ro_dropdown", None)
+            if callable(refresh_dropdown):
+                refresh_dropdown()
 
     def load_configure_settings(self, file_path, *, apply_legacy_sim_camera_settings=True):
         """通用配置加载逻辑"""
+        # 忙碌互锁：SIM 采集 / Z-Scan / DAQ 测试 / 设备连接进行中时拒绝加载配置，避免在硬件活动期
+        # 替换 controller/SIM 配置导致 UI/config/硬件状态分裂（不做任何部分写入）。
+        if self._sim_runtime_busy():
+            qw.QMessageBox.information(
+                self,
+                "Load Config",
+                "SIM 采集 / Z-Scan / DAQ 测试 / 设备连接进行中，暂不能加载配置。请稍后再试。",
+            )
+            return
         previous_loading_state = bool(getattr(self, "_loading_configure_settings", False))
         self._loading_configure_settings = True
         try:

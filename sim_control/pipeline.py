@@ -72,6 +72,15 @@ def _resolve_raw_stack_output_dir(output_path: str | Path | None = None) -> Path
     return PROJECT_ROOT / output_dir
 
 
+def _dated_output_dir(base_dir: str | Path, when: datetime) -> Path:
+    """在 base_dir 下按 when 的日期（``%Y%m%d``）分子目录，返回形如 ``base_dir/20260629`` 的路径。
+
+    by-design 接收调用方传入的同一个时间快照，使日期目录与文件名时间戳出自同一 ``datetime.now()``，
+    避免跨午夜整点时出现目录日期与文件名时间戳错配。
+    """
+    return Path(base_dir) / when.strftime("%Y%m%d")
+
+
 def _safe_filename_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip())
     return token.strip("._") or datetime.now().strftime("sim_%Y%m%d_%H%M%S")
@@ -92,7 +101,7 @@ def _parse_pitch_token(ro_name: str) -> str:
     return "NA"
 
 
-def _build_raw_stack_filename(batch: AcquisitionBatch, stack: np.ndarray) -> str:
+def _build_raw_stack_filename(batch: AcquisitionBatch, stack: np.ndarray, when: datetime | None = None) -> str:
     """raw SIM9 ``.tif`` 文件名：``采集波长_直径_曝光_图像大小_时间戳.tif``。
 
     - 采集波长：``batch.laser_wavelength_nm``（nm，如 488）。
@@ -100,7 +109,8 @@ def _build_raw_stack_filename(batch: AcquisitionBatch, stack: np.ndarray) -> str
       缺失则回退 ``pattern_files[0]`` 的 basename，再否则 ``"NA"``。
     - 曝光：``batch.exposure_us`` → ms（``:g`` 去尾零，如 ``500ms`` / ``5.61ms``）。
     - 图像大小：``WxH``（已校验 stack 的 ``shape[2]×shape[1]``，如 ``2048x2048``）。
-    - 时间戳：保存时刻 ``datetime.now()`` 年月日时分秒（14 位）。
+    - 时间戳：保存时刻 ``when``（缺省 ``datetime.now()``）年月日时分秒（14 位）；
+      由 ``slot_save`` 传入同一 ``save_time``，与所在日期目录同源、不跨午夜错配。
 
     例：``488_3.5_500ms_2048x2048_20260625143022.tif``。
     """
@@ -115,7 +125,7 @@ def _build_raw_stack_filename(batch: AcquisitionBatch, stack: np.ndarray) -> str
     exposure_us = int(getattr(batch, "exposure_us", 0) or 0)
     exposure_token = f"{exposure_us / 1000:g}ms" if exposure_us > 0 else "NAms"
     height, width = int(stack.shape[1]), int(stack.shape[2])
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = (when or datetime.now()).strftime("%Y%m%d%H%M%S")
     return f"{wavelength}_{pitch}_{exposure_token}_{width}x{height}_{timestamp}.tif"
 
 
@@ -155,9 +165,10 @@ class RawStackSaveWorker(QObject):
                 raise ValueError(f"Expected raw SIM9 stack shape (9, H, W), got {stack.shape}.")
             if stack.dtype != np.uint16:
                 raise TypeError(f"Expected raw SIM9 stack dtype uint16, got {stack.dtype}.")
-            output_dir = Path(self.output_dir)
+            save_time = datetime.now()
+            output_dir = _dated_output_dir(self.output_dir, save_time)
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = _unique_output_path(output_dir, _build_raw_stack_filename(batch, stack))
+            output_path = _unique_output_path(output_dir, _build_raw_stack_filename(batch, stack, save_time))
             tifffile.imwrite(
                 str(output_path),
                 stack,

@@ -6,8 +6,9 @@
         2. ``run_single_acquisition`` 配合仿真 adapter 能产出 ``(9, H, W)`` ``uint16`` stack
            并广播 9 次 ``frame_captured`` 与一次 ``acquisition_complete``。
         3. ``SimulatedCameraAdapter`` 暴露 8/12/16 位深，并把非法位深回落到 16。
-        4. ``SimulatedSlmAdapter`` 暴露 68 个 RO（24 正式 + 4 z-scan + 40 immediate，与命名规则
-           一致），且 ``select_running_order`` 能返回 ``handles=[-1]`` 的 PatternPreparationResult。
+        4. ``SimulatedSlmAdapter`` 暴露 74 个 RO（24 正式(638 机) + 4 z-scan + 40 immediate +
+           6 正式(647 机)，与命名规则一致），且 ``select_running_order`` 能返回 ``handles=[-1]``
+           的 PatternPreparationResult。
         5. ``select_running_order_for_task`` 在 controller 路径上也能为 488nm/11ms 选出
            ``"488_3.5_2d_10ms"`` 并广播 ``running_order_selected``。
 
@@ -17,8 +18,8 @@
           ``sim_control.sim_adapters``、``sim_control.models``。
 
 维护要点：
-    - 仿真 RO 列表长度（68 = 24 正式 + 4 z-scan + 40 immediate）与命名格式由
-      ``SimulatedSlmAdapter.SIMULATED_RUNNING_ORDERS`` 决定；改动需同步本测试。
+    - 仿真 RO 列表长度（74 = 24 正式(638 机) + 4 z-scan + 40 immediate + 6 正式(647 机)）与
+      命名格式由 ``SimulatedSlmAdapter.SIMULATED_RUNNING_ORDERS`` 决定；改动需同步本测试。
     - ``simulation_mode=True`` 是测试夹具默认；改用真实 adapter 时本测试不应被执行。
 """
 
@@ -130,12 +131,13 @@ class SimulationModeTests(unittest.TestCase):
 
         slm = SimulatedSlmAdapter()
 
-        # 1) 列表长度由 ``SIMULATED_RUNNING_ORDERS`` 决定；24 个正式 SIM RO + 4 个 z-scan RO
-        #    + 40 个找样品 immediate RO（末尾追加，故正式/Z-scan 的 0..27 索引不变）。
+        # 1) 列表长度由 ``SIMULATED_RUNNING_ORDERS`` 决定；24 个正式 SIM RO(638 机) + 4 个
+        #    z-scan RO + 40 个找样品 immediate RO + 6 个 647 机正式 RO（647 段刻意追加在整个
+        #    列表最末尾，故正式/Z-scan/immediate 的 0..67 既有索引不变）。
         running_orders = slm.list_running_orders()
         result = slm.select_running_order(7)
 
-        self.assertEqual(len(running_orders), 68)
+        self.assertEqual(len(running_orders), 74)
         self.assertEqual(running_orders[7][1], "488_3.5_2d_10ms_ang0")
         # immediate 段保留既有 488 块的 index 28..37，再追加 405/561/647。
         self.assertIn((28, "488_3.5_2d_imm_f1"), running_orders)
@@ -144,6 +146,9 @@ class SimulationModeTests(unittest.TestCase):
         self.assertIn((48, "561_3.5_2d_imm_f1"), running_orders)
         self.assertIn((67, "647_3.5_2d_imm_3dir"), running_orders)
         self.assertIn((25, "488_3.5_2d_zscan3p_8ms"), running_orders)
+        # 新增 647 红光机正式 SIM 段在末尾 68..73（与 638 正式段同样 3 曝光 × {normal,_ang0}）。
+        self.assertIn((68, "647_3.5_2d_10ms"), running_orders)
+        self.assertIn((73, "647_3.5_2d_50ms_ang0"), running_orders)
         self.assertEqual(result["running_order_name"], "488_3.5_2d_10ms_ang0")
         self.assertEqual(result["activation_type"], 0x04)
         self.assertEqual(slm.select_running_order(28)["activation_type"], 0x01)

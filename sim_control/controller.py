@@ -87,15 +87,16 @@ def _parse_immediate_live_ro_name(name: str) -> dict[str, Any] | None:
 def immediate_live_wavelength_matches(parsed_wavelength_nm: Any, selected_wavelength_nm: Any) -> bool:
     """判断 immediate RO 名前导波长是否兼容当前选择的激光波长。
 
-    红光兼容是单向的：当前选择 638 nm 激光时允许使用旧 647 前缀 immediate RO；
-    其它波长仍必须严格等值匹配。
+    红光兼容是双向的：638 与 647 互为等价，任一为选择波长、另一为 RO 前缀都算兼容
+    （支持两台机器分别只烧录 638 或 647 命名的 RO）；其它波长仍必须严格等值匹配。
+    ``parsed_wavelength_nm`` 为 None 或无法解析时返回 False（不放行未知前缀）。
     """
     try:
         parsed = int(parsed_wavelength_nm)
         selected = int(selected_wavelength_nm)
     except (TypeError, ValueError):
         return False
-    return parsed == selected or (selected == 638 and parsed == 647)
+    return parsed == selected or {parsed, selected} == {638, 647}
 
 
 def _activation_type_label(value: Any) -> str:

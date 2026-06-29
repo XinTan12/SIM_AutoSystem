@@ -2,10 +2,10 @@
 
 作用：
     把 ``AppConfig`` 与运行时相机 timing 信息格式化成一段多行文本，供
-    ``control_wangbo/main.py`` 集成主界面以只读方式展示当前激光、Running
-    Order、相机选择/曝光/位深/ROI、读出时间、9 帧采集预估总时长、DAQ 各
-    TTL 线位以及内部 Timing 字段。摘要的目的是让用户在不打开 SIM 设置弹窗
-    的情况下就能"看一眼明白"当前会按什么参数发起一次采集。
+    ``control_wangbo/main.py`` 集成主界面以只读方式展示正式采集 Running
+    Order、相机读出时间、9 帧采集预估总时长、Z-Scan 派生信息以及内部 Timing
+    字段。摘要只保留主 GUI 其他模块没有直接显示的信息，避免重复展示激光、相机、
+    DAQ 接线等已在一级模块中可见的配置。
 
 协作关系：
     上游：``control_wangbo/main.py``（调用 ``build_sim_settings_summary()``
@@ -46,17 +46,6 @@ SIM9_FRAME_COUNT = 9
 # 从波形结束到 9 帧 stack 可读出额外预留的 stack 整理开销（微秒）。
 # 经验值，覆盖 DCAM transfer + numpy 重整 + 控制器信号传递的累计开销。
 SIM9_STACK_TRANSFER_OVERHEAD_US = 10_000
-
-
-def _sim_exposure_us_to_ms(exposure_us: int) -> int:
-    """把配置中的曝光微秒值转换成摘要里更易读的毫秒整数。
-
-    返回：
-        至少 1 ms 的整数；亚毫秒曝光会被四舍五入到 1 ms。
-    """
-    # 用 ``round`` 再 ``int`` 保证常见整毫秒值（10_000 → 10）准确；
-    # ``max(1, ...)`` 保证显示出的值至少为 1 ms，避免主界面显示 0 让用户误解。
-    return max(1, int(round(float(exposure_us) / 1000.0)))
 
 
 def _format_readout_time_ms(runtime_timing: dict[str, Any] | None) -> str:
@@ -159,29 +148,20 @@ def build_sim_settings_summary(
     """把当前 SIM 配置和运行时相机 timing 信息格式化为主界面摘要文本。
 
     返回：
-        多行字符串，行间以 ``\\n`` 分隔；上半段是用户可改字段（激光/RO/相机/曝光等），
-        中段是 DAQ 各 TTL 线，末段是只读 Timing。
+        多行字符串，行间以 ``\\n`` 分隔；包含主 GUI 其他模块没有直接显示的
+        正式 RO、运行时/派生耗时、Z-Scan 派生值与内部 Timing。
 
     维护要点：
         - 显示顺序与 ``tests/test_sim_summary.py`` 中的断言耦合。
         - SLM 未连接时把 ``Pattern RO`` 显示为「(SLM 未连接)」，提示用户先连接。
     """
     # 1) 解构常用子配置，避免后续 f-string 中重复 ``sim_config.xxx``。
-    daq = sim_config.daq
-    camera = sim_config.camera
     timing = sim_config.timing
-    # 2) 相机名优先用 ``device_label``（人可读）；若空则用 "#index" 作为兜底。
-    selected_device = camera.device_label or f"#{camera.device_index}"
-    # 3) Running Order 选中名为空（SLM 未连接）时显示提示文本，提醒用户先连接 SLM。
+    # 2) Running Order 选中名为空（SLM 未连接）时显示提示文本，提醒用户先连接 SLM。
     selected_ro = sim_config.selected_running_order or "(SLM 未连接)"
-    # 4) 按"用户视图 → DAQ 线位 → Timing"三段顺序拼装摘要行，再 join 成最终字符串。
+    # 3) 只拼装主 GUI 其他模块未直接显示的信息，避免右侧摘要与一级模块重复。
     summary_lines = [
-        f"Laser: {sim_config.selected_laser_nm} nm",
         f"Pattern RO: {selected_ro}",
-        f"Selected SIM Camera: {selected_device}",
-        f"Exposure: {_sim_exposure_us_to_ms(camera.exposure_us)} ms",
-        f"Bit Depth: {int(camera.bit_depth)}-bit",
-        f"ROI: x={camera.roi_x}, y={camera.roi_y}, w={camera.roi_width}, h={camera.roi_height}",
         f"TIMING_READOUTTIME: {_format_readout_time_ms(runtime_timing)}",
         f"SIM9_ESTIMATED_TOTAL_TIME: {_format_sim9_estimated_total_time_ms(sim_config, runtime_timing)}",
     ]
@@ -190,7 +170,6 @@ def build_sim_settings_summary(
         actual_exposure_us = Z_SCAN_EXPOSURE_PRESETS_US[int(sim_config.z_scan.exposure_preset_ms)]
         scan_moves = int(sim_config.z_scan.num_steps)
         image_layers = scan_moves + 1
-        scan_gap_nm = float(sim_config.z_scan.step_um) * 1000.0
         total_distance_um = abs(float(sim_config.z_scan.step_um) * scan_moves)
         estimated_move_only_time_ms, estimated_move_capture_time_ms = _format_z_scan_estimated_times_ms(
             sim_config,
@@ -200,32 +179,16 @@ def build_sim_settings_summary(
             [
                 "",
                 "Z-Scan:",
-                f"  enabled: {sim_config.z_scan.enabled}",
                 f"  start_um: {start_um}",
-                f"  direction: {sim_config.z_scan.direction}",
-                f"  scan_gap_nm: {scan_gap_nm:.0f}",
-                f"  scan_moves: {scan_moves}",
                 f"  image_layers: {image_layers}",
                 f"  total_distance_um: {total_distance_um:.3f}",
                 f"  estimated_move_only_time_ms: {estimated_move_only_time_ms}",
                 f"  estimated_move_capture_time_ms: {estimated_move_capture_time_ms}",
-                f"  exposure_preset_ms: {int(sim_config.z_scan.exposure_preset_ms)}",
                 f"  actual_exposure_us: {actual_exposure_us}",
             ]
         )
     summary_lines.extend(
         [
-        "",
-        "DAQ:",
-        f"  device_name: {daq.device_name}",
-        f"  slm_enable_line: {daq.slm_enable_line}",
-        f"  slm_trigger_line: {daq.slm_trigger_line}",
-        f"  slm_finish_line: {daq.slm_finish_line}",
-        f"  cam_trigger_line: {daq.camera_trigger_line}",
-        f"  laser_405_line: {daq.laser_405_line}",
-        f"  laser_488_line: {daq.laser_488_line}",
-        f"  laser_561_line: {daq.laser_561_line}",
-        f"  laser_638_line: {daq.laser_638_line}",
         "",
         "Timing:",
         f"  sample_rate_hz: {timing.sample_rate_hz}",

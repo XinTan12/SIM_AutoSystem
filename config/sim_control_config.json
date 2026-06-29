@@ -8,16 +8,16 @@
     "laser_405_line": "Dev1/port0/line9",
     "laser_488_line": "Dev1/port0/line10",
     "laser_561_line": "Dev1/port0/line11",
-    "laser_638_line": "Dev1/port0/line12"
+    "laser_red_line": "Dev1/port0/line12"
   },
   "camera": {
     "device_index": 0,
     "device_label": "0: C13440-20C [S/N: 305209]",
-    "roi_x": 0,
-    "roi_y": 0,
-    "roi_width": 2048,
-    "roi_height": 2048,
-    "exposure_us": 100000,
+    "roi_x": 512,
+    "roi_y": 512,
+    "roi_width": 1024,
+    "roi_height": 1024,
+    "exposure_us": 150000,
     "bit_depth": 16,
     "timeout_ms": 5000,
     "trigger_mode": "external_level"
@@ -53,6 +53,7 @@
     "otf_488_path": "",
     "otf_561_path": "",
     "otf_638_path": "",
+    "otf_647_path": "",
     "background_path": "",
     "output_path": "data/reconstruction",
     "wiener": 2.0,
@@ -70,6 +71,7 @@
     "estimated_params_488_path": "",
     "estimated_params_561_path": "",
     "estimated_params_638_path": "",
+    "estimated_params_647_path": "",
     "save_reconstruction_output": true,
     "async_save_reconstruction_output": true,
     "save_queue_maxsize": 4
@@ -85,7 +87,8 @@
     "",
     ""
   ],
-  "selected_running_order": "",
+  "selected_running_order": "488_3.5_2d_50ms",
   "selected_laser_nm": 488,
-  "config_version": 12
+  "red_laser_nm": 638,
+  "config_version": 13
 }

@@ -154,6 +154,8 @@ class NIDaqWaveformBuilder:
             daq_config: DAQ 线位配置，必须先经 ``validate_daq_line_config`` 通过。
             timing: 采样率、脉冲宽度、帧间隔、保护时间。
             laser_wavelength_nm: 必须在 ``LASER_ROLE_MAP`` 中，否则抛 ValueError。
+                第四路红光可为 638 或 647（各机器红光身份不同），两者都映射到中性的
+                ``laser_red_line``（line 12）；其余三档固定为 405/488/561。
             exposure_us: 单帧曝光，必须为正。
             frame_count: 默认 9，SIM9 项目固定值。
             include_role_matrix: True 时额外生成每条 line 的 uint8 数组，方便测试和诊断；
@@ -219,6 +221,7 @@ class NIDaqWaveformBuilder:
         }
 
         # 9) 选择当前波长对应的激光 role；SLM enable 在整段波形里都保持高电平。
+        #    红光 638/647 都经 LASER_ROLE_MAP 落到中性 ``laser_red_line``（line 12）。
         active_laser_role = LASER_ROLE_MAP[laser_wavelength_nm]
         if include_role_matrix:
             matrix["slm_enable_line"][:] = 1

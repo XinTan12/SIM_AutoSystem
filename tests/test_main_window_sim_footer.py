@@ -120,12 +120,17 @@ class SimFooterHarmonizationTests(unittest.TestCase):
                 self.ui = Ui_Single_Cell_Sorting()
                 self.ui.setupUi(self)
                 self.raw_acquire_calls = []
+                # _build_... 现按本机红光（默认 638）填充波长下拉并接红光切换下拉。
+                self.sim_app_config = types.SimpleNamespace(red_laser_nm=638)
 
             def _reset_immediate_ro_dropdown(self):
                 legacy_main.MainWindow._reset_immediate_ro_dropdown(self)
 
             def _update_immediate_ro_dropdown_tooltip(self, text=None):
                 legacy_main.MainWindow._update_immediate_ro_dropdown_tooltip(self, text)
+
+            def _on_main_red_laser_changed(self, *_args):
+                pass
 
             def on_immediate_ro_changed(self, _index=None):
                 pass
@@ -197,12 +202,17 @@ class SimFooterHarmonizationTests(unittest.TestCase):
                 super().__init__()
                 self.ui = Ui_Single_Cell_Sorting()
                 self.ui.setupUi(self)
+                # _build_... 现按本机红光（默认 638）填充波长下拉并接红光切换下拉。
+                self.sim_app_config = types.SimpleNamespace(red_laser_nm=638)
 
             def _reset_immediate_ro_dropdown(self):
                 legacy_main.MainWindow._reset_immediate_ro_dropdown(self)
 
             def _update_immediate_ro_dropdown_tooltip(self, text=None):
                 legacy_main.MainWindow._update_immediate_ro_dropdown_tooltip(self, text)
+
+            def _on_main_red_laser_changed(self, *_args):
+                pass
 
             def on_immediate_ro_changed(self, index=None):
                 activated_calls.append(index)
@@ -337,12 +347,17 @@ class SimFooterHarmonizationTests(unittest.TestCase):
                 super().__init__()
                 self.ui = Ui_Single_Cell_Sorting()
                 self.ui.setupUi(self)
+                # 638 机器：supported_lasers_for(638) == (405, 488, 561, 638)，与下方断言一致。
+                self.sim_app_config = types.SimpleNamespace(red_laser_nm=638)
 
             def _reset_immediate_ro_dropdown(self):
                 legacy_main.MainWindow._reset_immediate_ro_dropdown(self)
 
             def _update_immediate_ro_dropdown_tooltip(self, text=None):
                 legacy_main.MainWindow._update_immediate_ro_dropdown_tooltip(self, text)
+
+            def _on_main_red_laser_changed(self, *_args):
+                pass
 
             def on_immediate_ro_changed(self, _index=None):
                 pass

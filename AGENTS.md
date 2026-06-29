@@ -162,8 +162,8 @@ ui_sim_settings_dialog.py  pyuic5 生成代码，勿手动修改
 - 实时采集路径禁止同步磁盘 I/O；采集链路应保持低延迟、可中止。
 - 仿真优先：无真实硬件时仍应能验证 GUI、配置和控制流程。
 - `control_wangbo/` 默认只读，新 SIM 侧开发优先放在 `sim_control/` 或新的顶层模块。
-- NI USB-6423 规范接线固定为：`slm_enable=0, slm_trigger=1, slm_finish=2, camera_trigger=8, laser_405=9, laser_488=10, laser_561=11, laser_638=12`。
-- 第四路红光统一命名为 `638`，旧 `640` / `647` 配置通过迁移逻辑兼容。
+- NI USB-6423 规范接线固定为：`slm_enable=0, slm_trigger=1, slm_finish=2, camera_trigger=8, laser_405=9, laser_488=10, laser_561=11, laser_red=12`。第四路红光 DAQ 角色键为中性 `laser_red_line`（物理 line 12，与波长数字解耦）。
+- 第四路红光波长**按机器可配置**（638 或 647）：两台 SIM 系统前三档相同、红光不同，由 `AppConfig.red_laser_nm`（638/647，默认 638）表达机器身份，主界面 `cmb_main_red_laser` 下拉运行时切换并联动刷新采集/recon 波长选项。`SUPPORTED_LASERS=(405,488,561,638)` 仅为默认四档常量（显式字面量，勿由 `LASER_ROLE_MAP.keys()` 派生）；按机器红光取四档用 `models.supported_lasers_for(red_laser_nm)`。638 与 647 在 `LASER_ROLE_MAP` 都映射到 `laser_red_line`（同一条物理红光线、line 12）。旧 `640` 错误命名仍归一到 638；旧 `647` 配置经 schema v13 迁移**保留为 647 机器身份**（不再压成 638）。重建按机器红光分别用 `otf_638_path`/`otf_647_path` 与对应 `.mat`，NA/pixel/theta 跨机共用。
 - SIM live 预览采用 `latest-frame-wins`：采集线程持续更新最新帧快照，GUI 端轮询显示最新帧，允许丢弃中间帧以避免旧帧积压。
 - `ui_sim_settings_dialog.py` 由 `pyuic5` 从 `.ui` 生成；修改 UI 时编辑 `.ui` 后重新生成，不直接手改生成文件。
 - 主 GUI（`control_wangbo` 主界面 `CellSorting`）的界面控件一律先在 `CellSorting_ui.ui` 静态定义、再用 `pyuic5` 重生成 `CellSorting_ui.py`（生成文件不手改）；`control_wangbo/main.py` 只对静态控件做**运行时接线**——信号连接、配置双向同步（含 `blockSignals` 防回环）、带 `itemData` 的下拉项填充、`view()` popup 宽度等无法静态表达的属性、以及 `.ui`/pyuic5 不支持的布局参数（如 `setColumnStretch`：pyuic5 5.15.11 会把 `.ui` 的 `<string>` 形式误生成非法 `setColumnStretch(_translate(...))`，须从 `.ui` 删该 property 改运行时补）。**不再运行期编程创建主 GUI 界面控件**（取代以往多处“纯运行期、不改 `.ui`”做法，2026-06-25 决策）。统一流程：改 `.ui` → `pyuic5` 绝对路径重生成 + before/after 副本 diff 核对零漂移 → `main.py` 接线 → 更新测试。
@@ -177,7 +177,7 @@ ui_sim_settings_dialog.py  pyuic5 生成代码，勿手动修改
 - SLM：Kopin / Forth Dimension Displays `QXGA-R11-STR`，通过 `R11CommLib` over WinUSB 厂商栈控制。`KopinSlmAdapter` 已包含仿真模式、Running Order 枚举/选择和真实 SDK 扩展点。
 - DAQ：当前 SIM9 采集只使用 NI USB-6423 输出同步 TTL，驱动 `slm_enable_line`、`slm_trigger_line`、`slm_finish_line`、`camera_trigger_line` 和各激光触发线。
 - `SDK/` 本地材料包含 Hamamatsu `DCAM-SDK4` 与 FDD `R11` bundle，包括 `R11CommLib`、WinUSB 驱动、MetroCon、sequence catalogue 和协议文档；仓库只跟踪 `SDK/README.md` 的目录约定。
-- SLM 正式采集路径使用预烧录 Running Order：主界面连接 SLM 后，按当前波长与相机曝光自动选择 `3.5/2d`、非 `_ang0` RO；638 nm 采集优先匹配 `638` RO，若现场 repertoire 仍只有旧命名则允许 fallback 到 `647` RO；RO 模式以 `PatternPreparationResult(handles=[-1], metadata["mode"]="running_order")` 表示。
+- SLM 正式采集路径使用预烧录 Running Order：主界面连接 SLM 后，按当前波长与相机曝光自动选择 `3.5/2d`、非 `_ang0` RO；红光 638↔647 互为等价（`RED_EQUIVALENT_WAVELENGTHS`），`find_best_running_order` 优先精确匹配当前机器红光波长命名的 RO，缺失时自动 fallback 到另一红光命名的 RO（双向，warning 动态生成）；RO 模式以 `PatternPreparationResult(handles=[-1], metadata["mode"]="running_order")` 表示。
 - 当前 `.repz11` RO 的 1ms/10ms/50ms 循环能力由 repertoire 内 `[HWA h]` 与 FINISH-controlled loop 定义提供；不要启用占用 SPI_1/SPI_2 的 RO Selection 替代模式，否则会破坏 TRIGGER/FINISH 语义。
 
 ## 编码风格

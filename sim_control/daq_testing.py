@@ -56,7 +56,8 @@ ROLE_LABELS = {
     "laser_405_line": "Laser 405",
     "laser_488_line": "Laser 488",
     "laser_561_line": "Laser 561",
-    "laser_638_line": "Laser 638",
+    # 第四路红光（638 或 647）共用中性线 ``laser_red_line``；标签不写死具体波长。
+    "laser_red_line": "Laser red",
 }
 
 # "SIM 采集测试"的下拉项目 ID 常量。
@@ -75,7 +76,7 @@ DAQ_PULSE_TEST_ROLES = (
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
-    "laser_638_line",
+    "laser_red_line",
 )
 # 测试采集的 TIFF 保存目录；按子目录分类相机/SIM9 采集，便于事后审阅。
 TEST_CAPTURE_ROOT = Path(__file__).resolve().parent.parent / "data" / "test_captures"

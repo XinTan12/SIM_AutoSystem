@@ -131,6 +131,10 @@ class _DaqHost(QtWidgets.QWidget):
     def _set_main_daq_inputs_enabled(self, enabled):
         legacy_main.MainWindow._set_main_daq_inputs_enabled(self, enabled)
 
+    def _apply_sim_red_laser_options(self, red_laser_nm):
+        # Load 回填会先按机器红光重建"按红光"的 UI 选项（纯 UI、全程 blockSignals）。
+        legacy_main.MainWindow._apply_sim_red_laser_options(self, red_laser_nm)
+
     def on_main_daq_test_clicked(self):
         legacy_main.MainWindow.on_main_daq_test_clicked(self)
 
@@ -171,7 +175,9 @@ class MainWindowDaqModuleTests(unittest.TestCase):
                 "cmb_main_daq_device", "btn_main_daq_refresh",
                 "cmb_main_daq_slm_enable", "cmb_main_daq_slm_trigger", "cmb_main_daq_slm_finish",
                 "cmb_main_daq_camera_trigger", "cmb_main_daq_laser_405", "cmb_main_daq_laser_488",
-                "cmb_main_daq_laser_561", "cmb_main_daq_laser_638",
+                "cmb_main_daq_laser_561", "cmb_main_daq_laser_red",
+                # 红光机器切换下拉（638/647）+ 标签，移入 row 0 设备行 hbox_daq_device。
+                "cmb_main_red_laser", "lbl_main_red_laser",
                 "cmb_main_daq_test_target", "btn_main_daq_test", "lbl_main_daq_status",
             ):
                 self.assertTrue(hasattr(ui, name), name)
@@ -190,7 +196,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             self.assertEqual(ui.cmb_main_daq_slm_finish.currentText(), daq.slm_finish_line)
             self.assertEqual(ui.cmb_main_daq_camera_trigger.currentText(), daq.camera_trigger_line)
             self.assertEqual(ui.cmb_main_daq_laser_405.currentText(), daq.laser_405_line)
-            self.assertEqual(ui.cmb_main_daq_laser_638.currentText(), daq.laser_638_line)
+            self.assertEqual(ui.cmb_main_daq_laser_red.currentText(), daq.laser_red_line)
             self.assertEqual(ui.cmb_main_daq_device.currentText(), daq.device_name)
         finally:
             host.close()
@@ -204,7 +210,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             self.assertEqual(
                 ids,
                 ["camera_trigger_line", "laser_405_line", "laser_488_line",
-                 "laser_561_line", "laser_638_line", "sim_acquisition", "slm_activation_timing"],
+                 "laser_561_line", "laser_red_line", "sim_acquisition", "slm_activation_timing"],
             )
         finally:
             host.close()
@@ -219,7 +225,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             for name in (
                 "cmb_main_daq_slm_enable", "cmb_main_daq_slm_trigger", "cmb_main_daq_slm_finish",
                 "cmb_main_daq_camera_trigger", "cmb_main_daq_laser_405", "cmb_main_daq_laser_488",
-                "cmb_main_daq_laser_561", "cmb_main_daq_laser_638",
+                "cmb_main_daq_laser_561", "cmb_main_daq_laser_red",
             ):
                 self.assertEqual(getattr(ui, name).minimumWidth(), 120, name)
             # 字体：标签 10pt / 控件 12pt / 按钮 10pt（与 SIM Camera Settings 一致）
@@ -239,7 +245,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
                 ("cmb_main_daq_slm_finish", "lbl_main_daq_slm_finish"),
                 ("cmb_main_daq_laser_561", "lbl_main_daq_laser_561"),
                 ("cmb_main_daq_camera_trigger", "lbl_main_daq_camera_trigger"),
-                ("cmb_main_daq_laser_638", "lbl_main_daq_laser_638"),
+                ("cmb_main_daq_laser_red", "lbl_main_daq_laser_red"),
             ):
                 combo = getattr(ui, cmb_name)
                 row, col, _, _ = grid.getItemPosition(grid.indexOf(combo))
@@ -249,9 +255,13 @@ class MainWindowDaqModuleTests(unittest.TestCase):
                 self.assertEqual(item_above.widget().font().pointSize(), 10)
             # 第一行 "Device" 标签已删除（Device 下拉 + Refresh 仍在跨 2 列的 HBox 内）
             self.assertFalse(hasattr(ui, "lbl_main_daq_device"))
-            # Device/Test 行是跨 2 列的嵌套 HBox（combo Expanding 吃余量、按钮靠右），防回退为平铺
+            # Device 行是跨 2 列的嵌套 HBox（设备下拉+Refresh+红光标签/下拉+spacer），防回退为平铺
             self.assertIs(grid.itemAtPosition(0, 0).layout(), ui.hbox_daq_device)
+            # 红光机器切换控件（638/647）已并入 row 0 的 hbox_daq_device；test/status 回到 row 9/10。
+            self.assertGreaterEqual(ui.hbox_daq_device.indexOf(ui.cmb_main_red_laser), 0)
+            self.assertGreaterEqual(ui.hbox_daq_device.indexOf(ui.lbl_main_red_laser), 0)
             self.assertIs(grid.itemAtPosition(9, 0).layout(), ui.hbox_daq_test)
+            self.assertIs(grid.itemAtPosition(10, 0).widget(), ui.lbl_main_daq_status)
             # 几何：SIM 列收窄 grp 455→372 / 内部 443→360，摘要列左移 x 1965→1882
             self.assertEqual(ui.grp_simConfiguration.geometry().width(), 372)
             self.assertEqual(ui.layoutWidget_simConfiguration.geometry().width(), 360)
@@ -368,7 +378,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
                 laser_405_line="Dev1/port0/line9",
                 laser_488_line="Dev1/port0/line10",
                 laser_561_line="Dev1/port0/line11",
-                laser_638_line="Dev1/port0/line12",
+                laser_red_line="Dev1/port0/line12",
             )
             payload = {"sim_control": legacy_main.app_config_to_dict(loaded)}
             with mock.patch.object(legacy_main, "save_app_config"):

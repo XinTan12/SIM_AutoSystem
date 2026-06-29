@@ -5,6 +5,19 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-06-27
+
+### 决策：第四路红光波长按机器可配置（638/647），取代 2026-06-22「统一迁移为 638」；新增 config schema v13 与 `red_laser_nm` 机器档案
+- 原因：
+  现有两台 SIM 系统前三档波长相同（405/488/561），第四路红光一台真 `638 nm`、另一台真 `647 nm`，要用同一套代码控制两台。2026-06-22「红光统一迁移为 638」基于当时只有一台、红光标称 638 的前提，会把 647 不可逆压成 638——647 机器无法被真实表示（选不了 647、存不下独立 647 OTF、加载即被抹成 638）。本质问题：红光波长是「每台机器固定、机器间不同」的配置量，而非要并存的第 5 个波长（一台机同一时刻只有一种红光、接同一条 line 12）。
+- 影响：
+  ① **机器档案 `AppConfig.red_laser_nm`**（638/647，默认 638）表达本机红光身份；`SUPPORTED_LASERS=(405,488,561,638)` 收敛为显式默认常量，新增纯函数 `models.supported_lasers_for(red_laser_nm)` 给所有「按机器红光」的点（GUI 波长下拉、recon 下拉、validate）。`LASER_ROLE_MAP` 中 638 与 647 都映射到中性键 `laser_red_line`（物理 line 12 不变）；DAQ 角色键、`DaqLineConfig`、`DEFAULT_DAQ_LINE_INDICES` 由 `laser_638_line` 全量重命名为 `laser_red_line`。`ReconstructionConfig` 加 `otf_647_path`/`estimated_params_647_path`（与 638 并存，按机器波长取用；NA/pixel/theta 跨机共用）。
+  ② **config schema v13**：`_migrate_v12_to_v13` 按 647 证据（selected==647 / 非空 laser_647_line / 非空 otf_647/estimated_params_647）推断 `red_laser_nm` 并保留 647 身份、合并历史红光线键到 `laser_red_line`、校正 `selected∈supported_lasers_for(red)`；最老错误命名 `640` 仍归一到 638。**命门**：移除 `app_config_from_dict` 在迁移链后对 `_migrate_red_laser_aliases` 的二次调用——原会把每次加载的 647 重新压回 638。validate 按机器红光校验 + `red_laser_nm∈{638,647}`。
+  ③ **SLM RO / immediate 双向 fallback**（取代 2026-06-25「647 单向兼容 638 GUI 入口」）：`find_best_running_order` 与 `immediate_live_wavelength_matches` 改 638↔647 红光等价双向，优先精确匹配本机红光波长命名、缺失时 fallback 另一红光（warning 动态生成）。
+  ④ **主界面运行时切换**（部署=一份配置+界面切换）：新增红光机器切换下拉 `cmb_main_red_laser`（638/647），切换复用波长变更安全流程——绝不提前写 `selected_laser_nm`，只写 `red_laser_nm`+`_apply_sim_red_laser_options`（统一 helper 纯 UI 重建）后委托 `on_sim_camera_setting_changed`（经 sync 检测 old→new）；含 stop 失败硬互锁（关光失败不切 RO）与忙碌 worker 互锁（采集/Z-Scan/DAQ 测试/连接进行中拒绝切换/Load 不部分写入）；Load 路径 stop 先于 merge、helper 先于 findData 回显。DAQ 红光控件 `.ui` 重命名 `cmb/lbl_main_daq_laser_638`→`_red`，走 pyuic5 重生成（零漂移核对）。
+  ⑤ **真机/人工确认项**：两台红光 TTL 都接 line 12 需台架确认；现场 v12 已压成 638 的旧配置无法自动恢复 647 标定路径，需人工重填 `otf_647_path`/`estimated_params_647_path`；647 机 repertoire 实际 RO 命名需现场以 `list_running_orders()` 核对。
+  审查：高风险（硬件/DAQ/波形/SLM），走 Codex 双循环（方案 4 轮 / 实现 1 轮 0 blocking）+ 独立 subagent review 0 blocking 双审。测试 `unittest discover` 427 OK / `pytest` 433 passed（含新增 `tests/test_red_laser_machine.py` 8 项）。
+
 ## 2026-06-26
 
 ### 决策：SIM 设置弹窗 DAQ/Recon 两页迁入主 GUI 一级模块、弹窗整体移除；DAQ 诊断测试逻辑下沉到 `sim_control/daq_testing.py`；Recon 配置跨线程下发改 queued signal（硬约束）

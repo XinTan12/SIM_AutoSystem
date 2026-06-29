@@ -55,7 +55,12 @@ from typing import Any
 
 import numpy as np
 
-from .models import CameraConfig, PatternPreparationResult, Z_SCAN_EXPOSURE_PRESETS_MS
+from .models import (
+    CameraConfig,
+    PatternPreparationResult,
+    RED_EQUIVALENT_WAVELENGTHS,
+    Z_SCAN_EXPOSURE_PRESETS_MS,
+)
 from .sim_camera_presets import DEFAULT_SIM_CAMERA_SIZE, SIM_CAMERA_ROI_STEP_PX, build_sim_camera_size_presets
 from .waveform import WaveformPlan
 # HardwareError 现集中定义在 ``errors.py``；此处导入并 re-export，保持
@@ -227,7 +232,8 @@ def find_best_running_order(
 
     输入：
         running_orders: SLM ``list_running_orders()`` 返回的 ``(index, name)`` 列表。
-        wavelength_nm: 当前任务波长，必须在 405/488/561/638 中。
+        wavelength_nm: 当前任务波长（405/488/561 + 本机红光 638 或 647）；638↔647
+            互为红光等价，请求其一缺失时自动 fallback 到另一红光命名的 RO。
         exposure_us: 当前任务曝光（微秒），决定走 1ms/10ms/50ms 桶。
         exclude_indices: 需排除的 RO 索引集合（正式采集用它显式排除 ``ACT_IMMEDIATE``
             找样品 RO，避免命名巧合时误选；为 None 表示不排除）。
@@ -240,9 +246,14 @@ def find_best_running_order(
     target_exposure_ms = _target_running_order_exposure_ms(exposure_us)
     warnings: list[str] = []
     requested_wavelength_nm = int(wavelength_nm)
-    wavelength_candidates = [requested_wavelength_nm]
-    if requested_wavelength_nm == 638:
-        wavelength_candidates.append(647)
+    # 红光等价双向 fallback：638/647 互为兜底——请求波长优先，另一红光垫底；
+    # 非红光（405/488/561）只取请求波长本身，行为完全不变。
+    if requested_wavelength_nm in RED_EQUIVALENT_WAVELENGTHS:
+        wavelength_candidates = [requested_wavelength_nm] + [
+            w for w in sorted(RED_EQUIVALENT_WAVELENGTHS) if w != requested_wavelength_nm
+        ]
+    else:
+        wavelength_candidates = [requested_wavelength_nm]
     excluded = {int(i) for i in exclude_indices} if exclude_indices else set()
 
     # 2) 遍历所有 RO，按命名解析逐条筛选：必须是 ``_ang0`` 之外、3.5/2d、波长匹配、曝光桶匹配。
@@ -270,8 +281,10 @@ def find_best_running_order(
         # 3) 若有候选，直接取第一个（同一组多个候选时按 RO 编号顺序）。
         if candidates:
             if candidate_wavelength_nm != requested_wavelength_nm:
+                # 按实际命中的红光波长动态生成提示（不再写死 647 -> 638 方向）。
                 warnings.append(
-                    "Using legacy 647 nm SLM running order for requested 638 nm laser."
+                    f"Using {candidate_wavelength_nm} nm SLM running order for "
+                    f"requested {requested_wavelength_nm} nm laser."
                 )
             return candidates[0][0], candidates[0][1], warnings
 

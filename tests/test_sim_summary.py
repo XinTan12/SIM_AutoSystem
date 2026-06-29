@@ -3,10 +3,10 @@
 作用：
     覆盖 ``summary.build_sim_settings_summary`` 五类场景：
         1. ``backend`` 段不出现在摘要里（避免暴露本机 SDK 绝对路径）；旧 640nm
-           配置经迁移后必须显示 ``cam_trigger_line`` 与 ``laser_638_line``。
-        2. 给定 runtime_timing 时，``Bit Depth``、``TIMING_READOUTTIME``、
-           ``SIM9_ESTIMATED_TOTAL_TIME`` 都按相机回报的实际值显示，且最后一段是
-           完整的 Timing 只读区块。
+           配置经迁移后，DAQ 线位等主 GUI 已显示字段也不再出现在摘要里。
+        2. 给定 runtime_timing 时，``TIMING_READOUTTIME`` 与
+           ``SIM9_ESTIMATED_TOTAL_TIME`` 都按相机回报的实际值显示，且最后一段
+           是完整的 Timing 只读区块。
         3. 没有 runtime_timing 时使用默认 50ms 帧间隔；总时长公式不变。
         4. 总时长会随相机曝光变化（10ms → 550.100 ms vs 20ms → 640.100 ms）。
         5. 相机推荐间隔 ≥ 50ms 时仍使用 50ms 默认（不允许放慢默认时序）。
@@ -36,8 +36,8 @@ if str(PROJECT_ROOT) not in sys.path:
 class SimSettingsSummaryTests(unittest.TestCase):
     """覆盖主界面 SIM 设置摘要的字段顺序、命名迁移与总时长估算。"""
 
-    def test_build_sim_settings_summary_omits_backend_block(self):
-        """旧 640 配置迁移后，摘要使用 638 命名；``backend`` 段完全不出现。"""
+    def test_build_sim_settings_summary_omits_backend_and_repeated_gui_config(self):
+        """摘要不暴露 backend，也不重复显示主 GUI DAQ/相机/激光配置。"""
         from sim_control.config_store import app_config_from_dict
         from sim_control.summary import build_sim_settings_summary
 
@@ -75,27 +75,38 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
         summary = build_sim_settings_summary(config)
 
-        # 2) 关键字段都按期望出现（命名、设备、行别名）。
-        self.assertIn("Laser: 488 nm", summary)
+        # 2) 只保留正式 RO 与派生/运行时信息；激光和 DAQ 线位已由主 GUI 模块显示。
         self.assertIn("Pattern RO: (SLM 未连接)", summary)
-        # 3) ``cam_trigger_line`` 别名（GUI 显示简写）替代原始字段名。
-        self.assertIn("cam_trigger_line: Dev1/port0/line8", summary)
+        self.assertNotIn("Laser: 488 nm", summary)
+        self.assertNotIn("Selected SIM Camera", summary)
+        self.assertNotIn("Exposure:", summary)
+        self.assertNotIn("Bit Depth:", summary)
+        self.assertNotIn("ROI:", summary)
+        self.assertNotIn("DAQ:", summary)
+        self.assertNotIn("device_name: Dev1", summary)
+        self.assertNotIn("slm_enable_line", summary)
+        self.assertNotIn("slm_trigger_line", summary)
+        self.assertNotIn("slm_finish_line", summary)
+        self.assertNotIn("cam_trigger_line", summary)
         self.assertNotIn("camera_trigger_line", summary)
-        # 4) 旧 640 / 新 638 命名必须互斥。
-        self.assertIn("laser_638_line: Dev1/port0/line12", summary)
+        self.assertNotIn("laser_405_line", summary)
+        self.assertNotIn("laser_488_line", summary)
+        self.assertNotIn("laser_561_line", summary)
+        self.assertNotIn("laser_red_line", summary)
         self.assertNotIn("laser_640_line", summary)
         self.assertNotIn("laser_647_line", summary)
-        # 5) backend SDK 路径绝不出现：避免暴露本机敏感路径。
+        self.assertNotIn("laser_638_line", summary)
+        # 3) backend SDK 路径绝不出现：避免暴露本机敏感路径。
         self.assertNotIn("Backend:", summary)
         self.assertNotIn("fusion_bt_sdk_path", summary)
         self.assertNotIn("slm_sdk_path", summary)
 
-    def test_build_sim_settings_summary_shows_bit_depth_and_runtime_timing(self):
+    def test_build_sim_settings_summary_shows_runtime_timing_without_repeated_camera_config(self):
         """``runtime_timing`` 给出读出时间与推荐间隔时，摘要应显示具体值。"""
         from sim_control.models import AppConfig, CameraConfig, TimingConfig
         from sim_control.summary import build_sim_settings_summary
 
-        # 1) 配置 20 ms 曝光 / 12-bit / 标准 SIM9 时序。
+        # 1) 配置 20 ms 曝光 / 12-bit / 标准 SIM9 时序；相机字段只参与总时长计算。
         config = AppConfig(
             camera=CameraConfig(
                 device_index=0,
@@ -120,8 +131,11 @@ class SimSettingsSummaryTests(unittest.TestCase):
             },
         )
 
-        # 3) 关键字段：位深 / 读出时间 / 总时长 / RO 状态 / 行顺序。
-        self.assertIn("Bit Depth: 12-bit", summary)
+        # 3) 关键字段：读出时间 / 总时长 / RO 状态 / 行顺序。
+        self.assertNotIn("Bit Depth: 12-bit", summary)
+        self.assertNotIn("Selected SIM Camera", summary)
+        self.assertNotIn("Exposure:", summary)
+        self.assertNotIn("ROI:", summary)
         self.assertIn("Pattern RO: (SLM 未连接)", summary)
         self.assertIn("TIMING_READOUTTIME: 31.649 ms", summary)
         self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 483.941 ms", summary)
@@ -158,7 +172,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
         summary = build_sim_settings_summary(config)
 
-        self.assertIn("Bit Depth: 16-bit", summary)
+        self.assertNotIn("Bit Depth: 16-bit", summary)
         self.assertIn("TIMING_READOUTTIME: -", summary)
         # 2) 总时长 = 2 × 1000 µs 默认 guard + 9 × (10 ms exposure + 50 ms gap) + 10 ms 整理 = 552.000 ms。
         self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 552.000 ms", summary)
@@ -217,7 +231,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
 
     def test_build_sim_settings_summary_includes_enabled_z_scan_block(self):
-        """启用 z-scan 时摘要应显示 UI preset 和实际曝光时间。"""
+        """启用 z-scan 时摘要只显示主 GUI 没有的派生信息。"""
         from sim_control.models import AppConfig, ZScanConfig
         from sim_control.summary import build_sim_settings_summary
 
@@ -235,20 +249,20 @@ class SimSettingsSummaryTests(unittest.TestCase):
         summary = build_sim_settings_summary(config, z_scan_timing_records=())
 
         self.assertIn("Z-Scan:", summary)
-        self.assertIn("  enabled: True", summary)
+        self.assertNotIn("  enabled:", summary)
         self.assertIn("  start_um: 12.500", summary)
-        self.assertIn("  direction: negative_z", summary)
+        self.assertNotIn("  direction:", summary)
         self.assertNotIn("  step_um:", summary)
         self.assertNotIn("  num_steps:", summary)
-        self.assertIn("  scan_gap_nm: 400", summary)
-        self.assertIn("  scan_moves: 12", summary)
+        self.assertNotIn("  scan_gap_nm:", summary)
+        self.assertNotIn("  scan_moves:", summary)
         self.assertIn("  image_layers: 13", summary)
         self.assertIn("  total_distance_um: 4.800", summary)
         self.assertIn("  estimated_move_only_time_ms: 325.000", summary)
         # 默认 capture 模型每层波形含 2×1000 µs guard；guard 默认值改动会同步影响该值。
         self.assertIn("  estimated_move_capture_time_ms: 531.492", summary)
         self.assertNotIn("  estimated_scan_time_ms:", summary)
-        self.assertIn("  exposure_preset_ms: 14", summary)
+        self.assertNotIn("  exposure_preset_ms:", summary)
         self.assertIn("  actual_exposure_us: 13884", summary)
 
     def test_build_sim_settings_summary_uses_z_scan_history_records(self):

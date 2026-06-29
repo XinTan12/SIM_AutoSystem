@@ -9,7 +9,7 @@
     "laser_405_line": "Dev1/port0/line9",
     "laser_488_line": "Dev1/port0/line10",
     "laser_561_line": "Dev1/port0/line11",
-    "laser_638_line": "Dev1/port0/line12"
+    "laser_red_line": "Dev1/port0/line12"
   },
   "camera": {
     "device_index": 0,
@@ -54,6 +54,7 @@
     "otf_488_path": "REPLACE_WITH/488_OTF.tif",
     "otf_561_path": "REPLACE_WITH/561_OTF.tif",
     "otf_638_path": "REPLACE_WITH/638_OTF.tif",
+    "otf_647_path": "REPLACE_WITH/647_OTF.tif",
     "background_path": "",
     "output_path": "data/reconstruction",
     "wiener": 2.0,
@@ -71,6 +72,7 @@
     "estimated_params_488_path": "REPLACE_WITH/488_estimated_params.mat",
     "estimated_params_561_path": "REPLACE_WITH/561_estimated_params.mat",
     "estimated_params_638_path": "REPLACE_WITH/638_estimated_params.mat",
+    "estimated_params_647_path": "REPLACE_WITH/647_estimated_params.mat",
     "save_reconstruction_output": true,
     "async_save_reconstruction_output": true,
     "save_queue_maxsize": 4
@@ -88,5 +90,6 @@
   ],
   "selected_running_order": "",
   "selected_laser_nm": 488,
-  "config_version": 12
+  "red_laser_nm": 638,
+  "config_version": 13
 }

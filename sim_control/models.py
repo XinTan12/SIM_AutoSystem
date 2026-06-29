@@ -23,10 +23,12 @@
       line 索引的对应顺序，**绝对不可改顺序**，否则会和真实接线错位。
     - ``DEFAULT_DAQ_LINE_INDICES``：项目唯一固定的 USB-6423 端口/线位映射，
       与硬件实际接线一致（slm_enable=0/trigger=1/finish=2/cam=8/
-      405=9/488=10/561=11/638=12）。
+      405=9/488=10/561=11/red=12）。第四路红光线 ``laser_red_line``（line 12）
+      承载机器红光（638 或 647），物理接线与波长数字无关。
     - ``DEFAULT_INTER_FRAME_GAP_US = 50_000``：SIM9 正式采集帧间隔默认 50 ms，
       只有相机推荐值（recommended_inter_frame_gap_us）小于该值时才能覆盖。
-    - ``SUPPORTED_LASERS = (405, 488, 561, 638)``：项目唯一支持的四档波长。
+    - ``SUPPORTED_LASERS = (405, 488, 561, 638)``：默认机器四档波长常量；按机器红光
+      （``AppConfig.red_laser_nm`` 638/647）取四档用 ``supported_lasers_for``。
     - 9 帧 pattern：``pattern_files`` 列表始终 9 槽位长度，Running Order
       模式下槽位值由元数据覆盖（实际由 SLM 端 RO 控制）。
 
@@ -58,7 +60,7 @@ DAQ_ROLE_ORDER = [
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
-    "laser_638_line",
+    "laser_red_line",
 ]
 
 # 项目唯一规范化的 USB-6423 port0 线位号。任何修改都必须经过硬件验收。
@@ -71,7 +73,7 @@ DEFAULT_DAQ_LINE_INDICES = {
     "laser_405_line": 9,
     "laser_488_line": 10,
     "laser_561_line": 11,
-    "laser_638_line": 12,
+    "laser_red_line": 12,
 }
 
 
@@ -102,15 +104,45 @@ def default_daq_line_map(device_name: str) -> dict[str, str]:
 
 
 # 激光波长（nm）→ DAQ 角色键的映射。controller 选定波长后用它定位要拉高的 TTL。
+# 第四路红光（638 或 647）是"每台机器固定、机器间不同"的波长身份，但物理上共用同一条
+# 红光 DAQ 线 ``laser_red_line``（line 12）；故 638 与 647 都映射到 ``laser_red_line``。
 LASER_ROLE_MAP = {
     405: "laser_405_line",
     488: "laser_488_line",
     561: "laser_561_line",
-    638: "laser_638_line",
+    638: "laser_red_line",
+    647: "laser_red_line",
 }
 
-# 项目支持的 4 档激光波长，UI 下拉、波形 builder 校验都从这里取。
-SUPPORTED_LASERS = tuple(LASER_ROLE_MAP.keys())
+# 前三档固定波长；第四档红光由各机器的 ``AppConfig.red_laser_nm`` 决定（638/647）。
+BASE_LASERS = (405, 488, 561)
+# 第四路红光的两种合法波长身份（两台机器各一）。
+RED_LASER_CHOICES = (638, 647)
+# 默认机器红光波长（与历史"统一 638"兼容）。
+DEFAULT_RED_LASER_NM = 638
+# 638/647 是同一条物理红光路（line 12）的两种激光器身份，RO 命名可能用任一数字，
+# 互为 fallback；用于 RO 选择与 immediate 波长匹配的红光等价判定。
+RED_EQUIVALENT_WAVELENGTHS = frozenset({638, 647})
+# 项目默认支持的四档波长（默认机器/legacy 语义）。必须是显式字面量，**不能**由
+# ``LASER_ROLE_MAP.keys()`` 派生——map 现含 638 与 647 两个红光键会让它变 5 元组、
+# 破坏全项目"四档"假设。按机器红光取波长请用 ``supported_lasers_for``。
+SUPPORTED_LASERS = (405, 488, 561, 638)
+
+
+def supported_lasers_for(red_laser_nm: int) -> tuple[int, int, int, int]:
+    """返回某台机器实际支持的四档波长 ``(405, 488, 561, red_laser_nm)``。
+
+    第四档由机器红光波长决定；非法 ``red_laser_nm``（不在 ``RED_LASER_CHOICES``）回落
+    到 ``DEFAULT_RED_LASER_NM``。UI 波长下拉、validate 等"按机器"的点都应调它，不要
+    直接用模块级 ``SUPPORTED_LASERS``（那是默认 638 机器的常量）。
+    """
+    try:
+        red = int(red_laser_nm)
+    except (TypeError, ValueError):
+        red = DEFAULT_RED_LASER_NM
+    if red not in RED_LASER_CHOICES:
+        red = DEFAULT_RED_LASER_NM
+    return (*BASE_LASERS, red)
 # 50 ms 是正式 SIM9 默认帧间隔。仅当相机针对当前 ROI/接口推荐的
 # ``recommended_inter_frame_gap_us`` < 50_000 时才允许覆盖此默认。
 DEFAULT_INTER_FRAME_GAP_US = 50_000
@@ -186,7 +218,7 @@ class DaqLineConfig:
     """保存 USB-6423 设备名和各 SIM TTL 角色对应的物理线位。
 
     职责：
-        - 8 个角色字段（``slm_enable_line`` ... ``laser_638_line``）记录线名。
+        - 8 个角色字段（``slm_enable_line`` ... ``laser_red_line``）记录线名。
         - 提供 ``line_map()`` 把字段重新组织为角色→线名字典，供波形 builder 与
           adapter 直接使用。
 
@@ -202,7 +234,7 @@ class DaqLineConfig:
     laser_405_line: str = default_daq_line_name("Dev1", "laser_405_line")
     laser_488_line: str = default_daq_line_name("Dev1", "laser_488_line")
     laser_561_line: str = default_daq_line_name("Dev1", "laser_561_line")
-    laser_638_line: str = default_daq_line_name("Dev1", "laser_638_line")
+    laser_red_line: str = default_daq_line_name("Dev1", "laser_red_line")
 
     def line_map(self) -> dict[str, str]:
         """把 dataclass 字段重新组织成采集核心需要的角色→线名字典。
@@ -419,6 +451,7 @@ class ReconstructionConfig:
     otf_488_path: str = ""
     otf_561_path: str = ""
     otf_638_path: str = ""
+    otf_647_path: str = ""
     background_path: str = ""
     output_path: str = "data/reconstruction"
     wiener: float = 2.0
@@ -435,6 +468,7 @@ class ReconstructionConfig:
     estimated_params_488_path: str = ""
     estimated_params_561_path: str = ""
     estimated_params_638_path: str = ""
+    estimated_params_647_path: str = ""
     # 异步落盘：先发结果再后台有界单 writer 写盘，避免拖慢 重建→特征→决策 回传。
     save_reconstruction_output: bool = True
     async_save_reconstruction_output: bool = True
@@ -476,10 +510,14 @@ class AppConfig:
     pattern_files: list[str] = field(default_factory=_default_pattern_files)
     selected_running_order: str = ""
     selected_laser_nm: int = 488
+    # 机器档案：第四路红光的真实波长（638 或 647）。每台机器固定、机器间不同，决定
+    # ``supported_lasers_for`` 的第四档、SLM RO 选择波长身份与重建 OTF 取用。默认 638
+    # 兼容历史"统一 638"配置。
+    red_laser_nm: int = DEFAULT_RED_LASER_NM
     # 默认值必须与 ``config_store.CURRENT_CONFIG_VERSION`` 保持一致（由
     # ``test_legacy_sim_config_migration`` 钉死）；写盘路径 ``app_config_to_dict``
     # 另有强制兜底，即使此处漂移也不会写出过期版本号。
-    config_version: int = 12
+    config_version: int = 13
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:

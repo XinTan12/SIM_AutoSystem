@@ -67,10 +67,12 @@ class ImmediateActivationTypeHelperTests(unittest.TestCase):
         self.assertEqual(parse_leading_wavelength_nm("561_3.5_2d_imm_f1"), 561)
         self.assertIsNone(parse_leading_wavelength_nm("live_imm_no_wavelength"))
 
-    def test_controller_immediate_wavelength_match_allows_legacy_red_only_for_638(self):
+    def test_controller_immediate_wavelength_match_allows_red_both_directions(self):
+        # 638↔647 互认（双向红光等价）；非红光与 None 仍严格不匹配。
         self.assertTrue(immediate_live_wavelength_matches(405, 405))
         self.assertTrue(immediate_live_wavelength_matches(561, 561))
         self.assertTrue(immediate_live_wavelength_matches(647, 638))
+        self.assertTrue(immediate_live_wavelength_matches(638, 647))
         self.assertFalse(immediate_live_wavelength_matches(647, 561))
         self.assertFalse(immediate_live_wavelength_matches(None, 638))
 

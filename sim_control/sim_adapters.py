@@ -19,10 +19,12 @@
 关键概念：
     - ``np.random.default_rng(12345)``：固定随机数种子保证 ``_generate_frame``
       在同一进程内可重复（便于 visual diff 与回归测试）。
-    - ``SIMULATED_RUNNING_ORDERS``：覆盖 4 波长 × 3 曝光 × {normal, _ang0}
-      的 24 个正式名字（注意 ``638/3.5/2d/1ms`` 这类），再追加 z-scan
-      和 immediate 找样品 RO。它们的命名格式与真实 R11 repertoire 保持一致，
-      因此 ``adapters.find_best_running_order`` 在仿真路径下也能正常工作。
+    - ``SIMULATED_RUNNING_ORDERS``：覆盖默认机器（638）4 波长 × 3 曝光 ×
+      {normal, _ang0} 的 24 个正式名字（注意 ``638/3.5/2d/1ms`` 这类），再追加
+      z-scan、immediate 找样品 RO，并在列表最末尾追加 647 红光机器的 6 个正式 RO
+      （3 曝光 × {normal, _ang0}），使 647 机器也能端到端跑通并覆盖 638↔647 fallback。
+      它们的命名格式与真实 R11 repertoire 保持一致，因此
+      ``adapters.find_best_running_order`` 在仿真路径下也能正常工作。
 
 维护要点：
     - 仿真生成的帧 dtype 必须保持 ``uint16``，否则 ``acquisition_core``
@@ -44,8 +46,15 @@ from .models import CameraConfig, PatternPreparationResult
 from .waveform import WaveformPlan, parse_line_name
 
 
-# 仿真用 Running Order 名称：覆盖 4 波长 × 3 曝光 × {normal, _ang0}。
+# 仿真用 Running Order 名称：覆盖第四路红光默认机器（638）的 4 波长 × 3 曝光 ×
+# {normal, _ang0}，再追加 z-scan、immediate 找样品，以及 647 红光机器的正式 RO 块。
 # 顺序刻意先按波长聚类，再按曝光、再按 angle，便于在 GUI 下拉中分组浏览。
+#
+# 索引契约（务必遵守）：正式 SIM 段占 0..23、z-scan 段占 24..27、immediate 段从
+# index 28 起。``tests/test_immediate_live.py`` 与 ``tests/test_simulation_mode.py``
+# 对 immediate 段起始 index 28 和各 RO 绝对位置有硬断言；647 红光机器的正式 RO 块
+# **必须追加到整个列表的最末尾（immediate 段之后）**，绝不能插在 immediate 段之前，
+# 否则会整体平移 immediate RO 的索引、破坏 0..27 与 28.. 的既有断言。
 SIMULATED_RUNNING_ORDERS = [
     f"{wavelength}_3.5_2d_{exposure}{suffix}"
     for wavelength in (405, 488, 561, 638)
@@ -62,6 +71,14 @@ SIMULATED_RUNNING_ORDERS = [
         *(f"{wavelength}_3.5_2d_imm_f{i}" for i in range(1, 10)),
         f"{wavelength}_3.5_2d_imm_3dir",
     ]
+] + [
+    # 647 红光机器的正式 SIM RO：与上方 638 正式段同样的 pitch/mode/曝光桶 × {normal,
+    # _ang0}，仅波长换成旧命名 647，使 647 机器也能端到端跑通正式采集并覆盖 638↔647
+    # 双向 fallback。**刻意追加在整个列表最末尾（immediate 段之后）**，保证正式段
+    # 0..23、z-scan 24..27、immediate 28.. 的既有索引契约不被打乱。
+    f"647_3.5_2d_{exposure}{suffix}"
+    for exposure in ("10ms", "1ms", "50ms")
+    for suffix in ("", "_ang0")
 ]
 # 仿真相机支持的 bit depth；与真实 Hamamatsu Fusion BT 的常用集合保持一致。
 SIMULATED_CAMERA_BIT_DEPTHS = [8, 12, 16]
