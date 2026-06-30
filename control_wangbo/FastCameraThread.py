@@ -10,7 +10,6 @@ import platform
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from PublicClassCamera import RingBuffer,TriggerBuffer,VideoSaver
-from roi_geometry import crop_rotated_roi
 
 class FastCameraWorker(QObject):
     #信号（signal）定义在发送类中，而槽函数定义在接收类（signal）中，然后在适当的地方进行信号和槽的连接。
@@ -18,7 +17,6 @@ class FastCameraWorker(QObject):
     signal_fastCmameraScan_QThread      = pyqtSignal(object)     # 定义接受相机参数的信号（名称、曝光时间、帧率、ROI(待定)）
     signal_triggerReady                 = pyqtSignal(list,int,str)  # 需要保存图像的索引,当前帧率,最大灰度值,保存类型
     signal_sendImageProcessorIndex      = pyqtSignal(int, int)   # 用于图像处理分析ROI区域细胞的时候，发给图像处理线程 和
-    signal_sendFlowRateDetectIndex      = pyqtSignal(int)        # 发送测速图像帧信息
     def __init__(self, camera_para,ring_buffer):
         super().__init__()
         self.camera_info    = camera_para["camera_info"]           # 相机设备信息
@@ -260,10 +258,6 @@ class ImageProcessor(QObject):
         self.sortScan_number = 0
         self.sortCell_miss  = 0 # 使用了capture，但是没有检测到合适细胞的个数
 
-        self.flowRate_ID          = 0      # 用来记录是哪次细胞的
-        self.flowRateScan_number  = 0      # 用来记录扫描帧
-        self.flowRateFirst_rightmost_x       = 0    # 记录第一帧细胞的X位置
-        self.flowRateFirst_rightmost_contour = None # 用来记录第一帧的细胞轮廓
 
         self.releaseScan_number   = 0  # 用来记录release扫描了多少次才出现没有细胞的情况，能够顺利筛选
 
@@ -346,20 +340,7 @@ class ImageProcessor(QObject):
         self.collectedROI_Y       = int(para["collectedROI_Y"])
         self.collectedROI_width   = int(para["collectedROI_width"])
         self.collectedROI_height  = int(para["collectedROI_height"])
-        self.collectedROI_angle   = float(para.get("collectedROI_angle", 0))
         self.collectedROI_noneImage = np.full((self.collectedROI_height, self.collectedROI_width),125, dtype=np.uint8)
-        # flowRate ROI
-        self.flowRateROI_X       = int(para["flowRateROI_X"])
-        self.flowRateROI_Y       = int(para["flowRateROI_Y"])
-        self.flowRateROI_width   = int(para["flowRateROI_width"])
-        self.flowRateROI_height  = int(para["flowRateROI_height"])
-        self.flowRateScanFrames  = int(para["flowRateScanFrames"])
-        self.flowRateROI_noneImage = np.full((self.flowRateROI_height, self.flowRateROI_width),125, dtype=np.uint8)
-
-        self.chipChannel_width          = float(para["chipChannel_width"])  #μm
-        self.chipChannel_height         = float(para["chipChannel_height"]) #μm
-        self.objective_magnification    = float(para["objective_magnification"])    #10X or 20X
-        self.cameraPixelSize            = float(para["cameraPixelSize"])    #μm
 
         # 根据self.imageProcessing_way确定处理哪个区域的ROI
         self.roi_params = {
@@ -368,10 +349,6 @@ class ImageProcessor(QObject):
             2: (self.cellFlowThroughROI_X, self.cellFlowThroughROI_Y, self.cellFlowThroughROI_width, self.cellFlowThroughROI_height),
             3: (self.sortROI_X, self.sortROI_Y, self.sortROI_width, self.sortROI_height),
             4: (self.collectedROI_X, self.collectedROI_Y, self.collectedROI_width, self.collectedROI_height),
-            5: (self.flowRateROI_X, self.flowRateROI_Y, self.flowRateROI_width, self.flowRateROI_height), #start flowRateROI
-        }
-        self.roi_angles = {
-            4: self.collectedROI_angle,
         }
         if self.Bg_frame is not None:
             "capture和release共用一个ROI；"
@@ -382,15 +359,7 @@ class ImageProcessor(QObject):
                 1: (self.Bg_frame[self.trappedROI_Y:self.trappedROI_Y+self.trappedROI_height, self.trappedROI_X:self.trappedROI_X+self.trappedROI_width]),
                 2: (self.Bg_frame[self.cellFlowThroughROI_Y:self.cellFlowThroughROI_Y+self.cellFlowThroughROI_height, self.cellFlowThroughROI_X:self.cellFlowThroughROI_X+self.cellFlowThroughROI_width]),
                 3: (self.Bg_frame[self.sortROI_Y:self.sortROI_Y+self.sortROI_height, self.sortROI_X:self.sortROI_X+self.sortROI_width]),
-                4: crop_rotated_roi(
-                    self.Bg_frame,
-                    self.collectedROI_X,
-                    self.collectedROI_Y,
-                    self.collectedROI_width,
-                    self.collectedROI_height,
-                    self.collectedROI_angle,
-                ),
-                5: (self.Bg_frame[self.flowRateROI_Y:self.flowRateROI_Y+self.flowRateROI_height, self.flowRateROI_X:self.flowRateROI_X+self.flowRateROI_width]),
+                4: (self.Bg_frame[self.collectedROI_Y:self.collectedROI_Y+self.collectedROI_height, self.collectedROI_X:self.collectedROI_X+self.collectedROI_width]),
             }
         #图像算法用到运算核
         self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)) #生成一个3*3的圆型结构运算核
@@ -427,17 +396,7 @@ class ImageProcessor(QObject):
             # 选择背景图像的对应区域ROI，已经高斯模糊后了
             roi_Bg_frame = self.roi_Bg_frames[roi_choice]
             # 提取分析帧的ROI图像
-            if roi_choice == 4:
-                roi_frame = crop_rotated_roi(
-                    frame,
-                    roi_x,
-                    roi_y,
-                    roi_w,
-                    roi_h,
-                    self.roi_angles.get(roi_choice, 0),
-                )
-            else:
-                roi_frame = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
+            roi_frame = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
             #参数需和UI线程的显示控件中的保持一样
             # 高斯模糊需处理16位溢出 [3,9](@ref)
             blur_roi_frame = cv2.GaussianBlur(roi_frame.astype(np.float32), 
@@ -470,8 +429,6 @@ class ImageProcessor(QObject):
                     self.particle_detection_for_sort(roi_frame,opened_frame,contours,TimeStamp)
             elif roi_choice == 4: # collected
                     self.particle_detection_for_collected(roi_frame,opened_frame,contours,TimeStamp)
-            elif roi_choice in (5, 6): # flowRate  ##  5 -> start flowRate 6-> end flowRot
-                    self.particle_detection_for_flowRate(roi_frame,opened_frame,contours,roi_w,TimeStamp)
 
         except Exception as e:
             print(f"图像处理总线ROI分析错误: {str(e)}")
@@ -481,8 +438,8 @@ class ImageProcessor(QObject):
         # 其中capture需要保证ROI中只能有一个细胞，且细胞的X位置必须大于0.6*roi_x，假设ROI为100*50，X坐标必须大于60，这样吸的时候就不会多吸细胞
         # capture的筛选条件是最严格的
         # 未靠近边框
-        # 圆度大于0.82
-        # 长宽比误差为0.2
+        # 圆度大于0.5
+        # 长宽比范围0.5-2
         cX_0 = 0
         self.cellArea = 0
         if self.captureScan_number == 0:
@@ -514,13 +471,13 @@ class ImageProcessor(QObject):
                 if perimeter == 0: #轮廓为0跳过
                     continue
                 circularity = 4 * np.pi * area / (perimeter ** 2)
-                if circularity < 0.7:  # 过滤非圆形物体
+                if circularity < 0.5:  # 过滤非圆形物体
                     self.judgeTargetCell = False #大小不对的细胞直接终止循环
                     break
                 # 长宽比过滤
                 x, y, w, h = cv2.boundingRect(cnt)
                 aspect_ratio = float(w)/h
-                if aspect_ratio < 0.7 or aspect_ratio > 1.3:  # 接近正方形
+                if aspect_ratio < 0.5 or aspect_ratio > 2:  # 接近正方形
                     self.judgeTargetCell = False #大小不对的细胞直接终止循环
                     break
                 filtered_contours.append(cnt)
@@ -848,7 +805,6 @@ class ImageProcessor(QObject):
 
                         ROI_para = {}
                         ROI_para["imageProcessing_way"] = 4 # 4: collected
-                        ROI_para["roi_angle"]           = self.collectedROI_angle
                         ROI_para["ID_add"]              = 0 
 
                         ROI_para["algorithm_time"]      = 0 # 其实不需要None
@@ -884,7 +840,6 @@ class ImageProcessor(QObject):
                     #发送给UI界面显示ROI的消息
                     ROI_para = {}
                     ROI_para["imageProcessing_way"] = 4 # 4: collected
-                    ROI_para["roi_angle"]           = self.collectedROI_angle
                     ROI_para["ID_add"]              = 0 
                     
                     ROI_para["algorithm_time"]      = algorithm_time  # 转换为微秒  这个算法的耗时
@@ -907,174 +862,6 @@ class ImageProcessor(QObject):
         except Exception as e:
             print(f"图像分析错误capture_ROI: {str(e)}")
 
-    def particle_detection_for_flowRate(self,roi_frame,opened_frame,contours,roi_w,TimeStamp):
-        #算法逻辑：扫描到ROI区域只有一个细胞且在ROI左边20%以内，记录下此时细胞中心位置和时间，
-        #到目标帧数后再次扫描，将最右边的细胞中的位置，和这帧时间记录下来，算速度
-        try:
-            if self.flowRateScan_number == 0:
-                pass
-            else: #当发现细胞后开始计算扫描的帧速
-                self.flowRateScan_number += 1
-            filtered_contours = []
-            rightmost_contour = None  # 记录最靠右的轮廓
-            rightmost_x = -1  # 初始化为最小值
-            for cnt in contours:
-                #用于计算颗粒是否贴边了
-                x_side, y_side, w_side, h_side = cv2.boundingRect(cnt)
-                # 检查轮廓是否接触到图像边框
-                if x_side == 0 or x_side + w_side == roi_w:
-                    continue  # 接触到左右边框，跳过
-                # 计算面积
-                area = cv2.contourArea(cnt)
-                if area < (self.minArea * 0.7) or area > self.maxArea:  # 根据实际情况调整阈值
-                    continue #跳过当前循环进行下一个循环
-                # 计算圆度
-                perimeter = cv2.arcLength(cnt, True)
-                if perimeter == 0: #轮廓为0跳过
-                    continue
-                circularity = 4 * np.pi * area / (perimeter ** 2)
-                if circularity < 0.8:  # 过滤非圆形物体
-                    continue
-                # 长宽比过滤
-                x, y, w, h = cv2.boundingRect(cnt)
-                aspect_ratio = float(w)/h
-                if aspect_ratio < 0.7 or aspect_ratio > 1.3:  # 接近正方形
-                    continue
-                filtered_contours.append(cnt)
-
-                # 计算第一个轮廓的中心点
-                centre = cv2.moments(cnt)
-                if centre["m00"] != 0:  # 防止除以零
-                    cX = int(centre["m10"] / centre["m00"])
-                 # 更新最靠右的轮廓
-                if cX > rightmost_x:
-                    rightmost_x = cX
-                    rightmost_contour = cnt
-
-            #一个细胞时且该细胞位于ROI左边0.2X处的位置时，触发
-            if self.flowRateScan_number == 0:
-                if len(filtered_contours) == 1 and rightmost_x < 0.2*roi_w:     # 宽度设为200pixel的话就是40pixel
-                    self.flowRateScan_number = 1
-                    self.first_TimeStamp = TimeStamp                    #记录当前细胞帧的时间
-                    self.flowRateFirst_rightmost_x = rightmost_x
-                    self.flowRateFirst_rightmost_contour = rightmost_contour    #记录当前细胞的轮廓
-                    #发送给UI界面显示ROI的消息
-                    ROI_para = {}
-                    ROI_para["imageProcessing_way"] = 5 # 5: flowRate_start
-                    ROI_para["ID_add"]                  = 1         #次 ID和细胞捕获筛选的分开算
-                    
-                    ROI_para["algorithm_time"]      = 0 # 其实不需要 None
-                    ROI_para["interval_time"]       = 0 # 其实不需要 None
-                    
-                    ROI_para["total_add"]           = 0
-                    ROI_para["miss_add"]            = 0
-
-                    ROI_para["cell_area"]           = area                      # 因为只有一个 颗粒所以直接用area
-                    ROI_para["cell_cX"]             = rightmost_x   
-                    ROI_para["cell_cY"]             = 0 # 其实不需要 None
-
-                    roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
-                    ROI_para["roi_frame"]           = roi_frame_8bit
-                    ROI_para["processed_frame"]     = opened_frame
-                    ROI_para["target_frame"]        = cv2.drawContours(roi_frame_8bit.copy(), [rightmost_contour], -1, (255,255,255), 1)
-                    ROI_para["processing_state"]    = 1  # 状态一共分为3中 0，1，2。0-> 结束或者报错; 1->首帧拍摄完了;2->末帧拍摄完了
-                    self.signal_processedROIImage_for_view.emit(ROI_para)
-            elif self.get_image_processing_way():
-                if self.flowRateScan_number >= self.flowRateScanFrames: #当扫描次数等于目标帧数的时候
-                    self.signal_finishROIProcessing.emit(6, 0) #发送完成信号
-                    self.flowRateScan_number       = 0         # 用来记录扫描帧归零
-                    self.slot_set_image_processing_way(-1)  # 退出分析模式
-                    #判断是否有细胞
-                    if len(filtered_contours) > 0:
-                        # 判断最右侧细胞是否为第一帧的细胞
-                        firstArea = cv2.contourArea(self.flowRateFirst_rightmost_contour)
-                        lastArea = cv2.contourArea(rightmost_contour)
-                        #如何面积差不多的话暂且看成同一个细胞，具体得自己看图像
-                        if 0.8 * firstArea <= lastArea <=1.2 * firstArea:
-                            #计算耗时
-                            interval_time = (TimeStamp - self.first_TimeStamp) / 10 #转换成ms单位
-                            # 计算两个最右侧 x 坐标的差值,并将这个差值转换为显微镜视野中的实际距离
-                            actual_distance = (rightmost_x - self.flowRateFirst_rightmost_x) * self.cameraPixelSize/ self.objective_magnification
-                            # 计算速度
-                            cellSpeedValue = actual_distance / interval_time  # 单位是um/ms
-                            # 根据微流控管道的宽和高，将细胞流速转换成液体流速 μL/h
-                            flowRateValue = self.chipChannel_width * self.chipChannel_height * cellSpeedValue*3600 /1000000
-                            print("高"+str(self.chipChannel_height))
-                            print("宽"+str(self.chipChannel_width))
-                            print("流速"+str(cellSpeedValue))
-                            print("流量"+str(flowRateValue))
-                            #发送给UI界面显示ROI的消息
-                            ROI_para = {}
-                            ROI_para["imageProcessing_way"] = 6                         # 6:flowRate_end
-                            ROI_para["ID_add"]              = 0          
-                            
-                            ROI_para["algorithm_time"]      = 0 # 其实不需要 None
-                            ROI_para["interval_time"]       = interval_time             
-                           
-                            ROI_para["total_add"]           = 0
-                            ROI_para["miss_add"]            = 0
-
-                            ROI_para["cell_area"]           = area                      # 因为只有一个 颗粒所以直接用area
-                            ROI_para["cell_cX"]             = rightmost_x  
-                            ROI_para["cell_cY"]             = 0 # 其实不需要 None
-                            
-                            roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
-                            ROI_para["roi_frame"]           = roi_frame_8bit
-                            ROI_para["processed_frame"]     = opened_frame
-                            ROI_para["target_frame"]        = cv2.drawContours(roi_frame_8bit.copy(), [rightmost_contour], -1, (255,255,255), 1)
-                            ROI_para["processing_state"]    = 1  # 0:miss; 1:ok
-                            
-                            # 专属参数
-                            ROI_para["cellSpeedValue"]      = cellSpeedValue            # 细胞的流速 单位是um/ms
-                            ROI_para["flowRateValue"]       = flowRateValue             # 流体的流量 单位是μL/min
-                            self.signal_processedROIImage_for_view.emit(ROI_para)
-                        else: #细胞大小不对
-                            ROI_para["imageProcessing_way"] = 6                         # 6:flowRate_end
-                            ROI_para["ID_add"]              = 0          
-                            
-                            ROI_para["algorithm_time"]      = 0 # 其实不需要None
-                            ROI_para["interval_time"]       = 0 # 其实不需要None             
-                           
-                            ROI_para["total_add"]           = 0
-                            ROI_para["miss_add"]            = 0
-
-                            ROI_para["cell_area"]           = 0 # 其实不需要None                      # 因为只有一个 颗粒所以直接用area
-                            ROI_para["cell_cX"]             = 0 # 其实不需要None  
-                            ROI_para["cell_cY"]             = 0 # 其实不需要None
-                            
-                            roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
-                            ROI_para["roi_frame"]           = roi_frame_8bit
-                            ROI_para["processed_frame"]     = opened_frame
-                            ROI_para["target_frame"]        = cv2.drawContours(roi_frame_8bit.copy(), [rightmost_contour], -1, (255,255,255), 1)
-                            ROI_para["processing_state"]    = 0  # 0:miss; 1:ok
-                            ROI_para["cellSpeedValue"]      = 0 # 没有速度
-                            ROI_para["flowRateValue"]       = 0 # 没有速度
-                            self.signal_processedROIImage_for_view.emit(ROI_para)
-                    else: #没有细胞
-                        ROI_para["imageProcessing_way"] = 6                         # 6:flowRate_end
-                        ROI_para["ID_add"]              = 0
-                        
-                        ROI_para["algorithm_time"]      = 0 # 其实不需要None
-                        ROI_para["interval_time"]       = 0 # 其实不需要None             
-                        
-                        ROI_para["total_add"]           = 0
-                        ROI_para["miss_add"]            = 0
-
-                        ROI_para["cell_area"]           = 0 # 其实不需要None                      # 因为只有一个 颗粒所以直接用area
-                        ROI_para["cell_cX"]             = 0 # 其实不需要None  
-                        ROI_para["cell_cY"]             = 0 # 其实不需要None
-                        
-                        roi_frame_8bit = self.convert_16bit_to_8bit(roi_frame,self.maxGray)
-                        ROI_para["roi_frame"]           = roi_frame_8bit
-                        ROI_para["processed_frame"]     = opened_frame
-                        ROI_para["target_frame"]        = self.flowRateROI_noneImage
-                        ROI_para["processing_state"]    = 0  # 0:miss; 1:ok
-                        ROI_para["cellSpeedValue"]      = 0 # 没有速度
-                        ROI_para["flowRateValue"]       = 0 # 没有速度
-                        self.signal_processedROIImage_for_view.emit(ROI_para) 
-                
-        except Exception as e:
-            print(f"图像分析错误capture_ROI: {str(e)}")
 
     def shutdown_executor(self):
         "用于关闭线程池"

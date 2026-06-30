@@ -18,7 +18,6 @@ class sCMOSCameraWorker(QObject):
     signal_fastCmameraScan_QThread      = pyqtSignal(object)     # 定义接受相机参数的信号（名称、曝光时间、帧率、ROI(待定)）
     signal_triggerReady                 = pyqtSignal(list,int,str)  # 触发完成的参数 和当前帧率 和类型
     signal_sendImageProcessorIndex      = pyqtSignal(int, int)   # 用于图像处理分析ROI区域细胞的时候，发给图像处理线程 和
-    signal_sendFlowRateDetectIndex      = pyqtSignal(int)        # 发送测速图像帧信息
     signal_updataROIBgImage             = pyqtSignal(int)        # 发送背景提取的帧索引
     signal_functionMeasurementTrigger = pyqtSignal(int)        # 发送细胞弹性形变检测帧的索引, 当前帧的前一帧
     def __init__(self, sCMOS_camera_para,sCMOS_ring_buffer):

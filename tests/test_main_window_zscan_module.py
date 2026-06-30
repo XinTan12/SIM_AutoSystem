@@ -1,8 +1,8 @@
-"""主 GUI Z-Scan 模块（位于 SLM 与 DAQ 之间；SIM Runtime 已移至 SIM Configuration 列顶）的回归测试。
+"""主 GUI Z-Scan 模块（位于 SLM 与 DAQ 之间；Save Path 位于 SIM Configuration 列顶）的回归测试。
 
 复用 test_main_window_sim_footer 的 stub/host 模式：用一个持有真实 Ui 的 QWidget 宿主，
 把待测 MainWindow 方法以 ``legacy_main.MainWindow.<m>(host)`` 直接调用，外部依赖打桩。
-覆盖：控件存在/选项、插入顺序（SLM<Z-Scan<Runtime, index 2）、不越界、配置初值/回写往返、
+覆盖：控件存在/选项、插入顺序（Save Path<SLM<Z-Scan, index 2）、不越界、配置初值/回写往返、
 blockSignals 防回环、运行分派（选择焦面 ON→autofocus / OFF→stage_only）、采集互斥、取消、轮询让路。
 """
 
@@ -179,14 +179,14 @@ class MainWindowZScanModuleTests(unittest.TestCase):
             self.assertIn("Test Z-Scan", ui.chk_main_zscan_capture.toolTip())
 
             grid = ui.grp_zscan.layout()
-            # 「标签在上、控件在下」(参考 SIM Camera Settings)：开关置顶 row0、四参数标签 row1、
-            # 控件 row2、选择焦面+测试按钮 row3、状态 row4。
+            # Z-Scan 重排 2×2（label-on-top）：开关 row0(colspan2)；方向/步进 标签row1·控件row2，
+            # 步数/曝光 标签row3·控件row4；选择焦面+测试按钮 row5；状态 row6。
             self.assertEqual(grid.getItemPosition(grid.indexOf(ui.chk_main_zscan_enabled))[0], 0)
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_direction))[0], 2)
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_step_nm))[0], 2)
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_num_steps))[0], 2)
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_exposure))[0], 2)
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.lbl_main_zscan_status))[0], 4)
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_direction)), (2, 0, 1, 1))
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_step_nm)), (2, 1, 1, 1))
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_num_steps)), (4, 0, 1, 1))
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_exposure)), (4, 1, 1, 1))
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.lbl_main_zscan_status))[0], 6)
 
             # 每个参数控件正上方一格 (row-1, 同列) 应是其文字标签（label-on-top）。
             for control, expected_text in (
@@ -203,31 +203,34 @@ class MainWindowZScanModuleTests(unittest.TestCase):
                 self.assertEqual(label_above.text(), expected_text)
                 self.assertEqual(label_above.font().pointSize(), 10)
 
-            # 控件加宽以适配 12pt 字体（原 54/72 在 12pt 下 < minSizeHint 76，会裁切数字）。
-            self.assertEqual(ui.cmb_main_zscan_direction.maximumWidth(), 80)
-            self.assertEqual(ui.spb_main_zscan_step_nm.maximumWidth(), 90)
-            self.assertEqual(ui.spb_main_zscan_num_steps.maximumWidth(), 80)
-            self.assertEqual(ui.cmb_main_zscan_exposure.maximumWidth(), 80)
+            # 控件宽沿用既有 2x2 Z-Scan 排布，不因 Save Path 模块新增而扩宽。
+            self.assertEqual(ui.cmb_main_zscan_direction.maximumWidth(), 76)
+            self.assertEqual(ui.spb_main_zscan_step_nm.maximumWidth(), 82)
+            self.assertEqual(ui.spb_main_zscan_num_steps.maximumWidth(), 76)
+            self.assertEqual(ui.cmb_main_zscan_exposure.maximumWidth(), 76)
             self.assertEqual(ui.btn_main_zscan_run.maximumWidth(), 100)
             self.assertEqual(ui.btn_main_zscan_run.font().pointSize(), 10)
+            # 重排 2×2 后给 Select Focus Plane 加 maxWidth 165（防 row5 撑宽、真实不裁切）。
+            self.assertEqual(ui.chk_main_zscan_capture.maximumWidth(), 165)
             # 控件字体 12pt（与 SIM Camera Settings 数值控件一致）
             self.assertEqual(ui.cmb_main_zscan_direction.font().pointSize(), 12)
             self.assertEqual(ui.spb_main_zscan_step_nm.font().pointSize(), 12)
         finally:
             host.close()
 
-    def test_module_order_runtime_first_then_slm_zscan(self):
+    def test_module_order_save_path_first_then_slm_zscan(self):
         host = _ZScanHost()
         try:
             host.setup_sim_zscan_module()
             layout = host.ui.verticalLayout_simConfiguration
             idx_slm = layout.indexOf(host.ui.grp_hardvareConnection_SLM)
             idx_zscan = layout.indexOf(host.ui.grp_zscan)
-            idx_runtime = layout.indexOf(host.ui.grp_simRuntime)
-            # SIM Runtime 已移到 SIM Configuration 列最顶部（index 0）；其后 SLM→Z-Scan→DAQ→Recon。
-            self.assertEqual(idx_runtime, 0)
+            idx_save_path = layout.indexOf(host.ui.grp_savePath)
+            self.assertFalse(hasattr(host.ui, "grp_simRuntime"))
+            # Save Path replaces the old runtime panel at index 0; then SLM -> Z-Scan -> DAQ -> Recon.
+            self.assertEqual(idx_save_path, 0)
             self.assertEqual(idx_zscan, 2)
-            self.assertLess(idx_runtime, idx_slm)
+            self.assertLess(idx_save_path, idx_slm)
             self.assertLess(idx_slm, idx_zscan)
         finally:
             host.close()
@@ -248,7 +251,7 @@ class MainWindowZScanModuleTests(unittest.TestCase):
             host.setup_sim_zscan_module()
             panel_w = host.ui.layoutWidget_simConfiguration.width()
             self.assertGreaterEqual(panel_w, 280)
-            self.assertLessEqual(host.ui.grp_zscan.minimumSizeHint().width(), panel_w)
+            self.assertLessEqual(host.ui.grp_zscan.layout().minimumSize().width(), panel_w)
         finally:
             host.close()
 

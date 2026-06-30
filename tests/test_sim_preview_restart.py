@@ -11,7 +11,7 @@
         3. 正式采集前后状态恢复：发起 9 帧采集前必须先停 live preview，采集完成
            或失败后必须能恢复到之前的预览请求状态。
         4. DaqTestRunner DAQ 诊断测试执行：复用与 controller 共享的相机/SLM/DAQ 适配器，
-           按角色分派单线脉冲/相机触发/SIM9 采集，并在 finally 收尾相机 + DAQ 全低。
+           按角色分派 4 路激光单线脉冲/SIM9 采集/SLM 激活时序，并在 finally 收尾相机 + DAQ 全低。
         5. ``running_order_selected`` 状态被广播时主界面摘要刷新；``patterns_prepared``
            会更新 controller 内部 ``pattern_result`` 但不影响 GUI 预览。
 
@@ -302,7 +302,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(leds["slm"].state, "gray")
         self.assertEqual(leds["daq"].state, "gray")
 
-    def test_reconstruction_runtime_led_matches_existing_led_visual_size(self):
+    def test_runtime_status_setup_is_noop_without_runtime_panel(self):
         legacy_main = load_legacy_main_module()
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
 
@@ -310,30 +310,105 @@ class SimPreviewRestartTests(unittest.TestCase):
         ui = Ui_Single_Cell_Sorting()
         ui.setupUi(host)
         window = SimpleNamespace(ui=ui)
-        window.set_sim_runtime_led_state = lambda led, state: legacy_main.MainWindow.set_sim_runtime_led_state(
-            window, led, state
-        )
+        window.set_sim_runtime_led_state = mock.Mock()
 
         legacy_main.MainWindow.setup_sim_runtime_status_widgets(window)
 
-        reconstruction_led = window.sim_runtime_leds["reconstruction"]
-        self.assertTrue(hasattr(ui, "led_simRuntimeReconstruction"))
-        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionName"))
-        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionStatus"))
-        self.assertIs(reconstruction_led, ui.led_simRuntimeReconstruction)
-        self.assertIs(window.sim_runtime_status_labels["reconstruction"], ui.lbl_simRuntimeReconstructionStatus)
-        self.assertEqual(ui.lbl_simRuntimeReconstructionName.text(), "Reconstruction")
-        reference_leds = (
-            ui.led_simRuntimeCamera,
-            ui.led_simRuntimeSlm,
-            ui.led_simRuntimeDaq,
+        self.assertEqual(window.sim_runtime_leds, {})
+        self.assertEqual(window.sim_runtime_status_labels, {})
+        self.assertFalse(hasattr(ui, "led_simRuntimeReconstruction"))
+        self.assertTrue(hasattr(ui, "grp_savePath"))
+        window.set_sim_runtime_led_state.assert_not_called()
+
+    def _build_save_path_host(self):
+        legacy_main = load_legacy_main_module()
+        from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
+
+        host_widget = QtWidgets.QWidget()
+        ui = Ui_Single_Cell_Sorting()
+        ui.setupUi(host_widget)
+        window = type("SavePathHost", (), {})()
+        window.ui = ui
+        window.sim_save_next_number = 1
+        window._loading_configure_settings = False
+        window._sim_raw_pending_save_path = {}
+        window.save_current_settings_to_default = mock.Mock()
+        for name in (
+            "setup_sim_save_path_module",
+            "_coerce_sim_save_start_number",
+            "_coerce_sim_save_next_number",
+            "_normal_sim_save_folder",
+            "_sanitize_sim_save_prefix",
+            "_sim_save_filename_for_number",
+            "_current_sim_raw_save_path",
+            "_set_sim_save_path_controls",
+            "_apply_loaded_sim_save_path_settings",
+            "_refresh_sim_save_path_preview",
+            "_normalize_main_save_path_prefix",
+            "_on_main_save_path_start_number_changed",
+            "_browse_main_save_path_folder",
+            "_reserve_sim_raw_save_path_for_task",
+            "_clear_sim_raw_pending_save_path",
+            "_route_raw_stack_save",
+        ):
+            setattr(window, name, getattr(legacy_main.MainWindow, name).__get__(window, type(window)))
+        return host_widget, window
+
+    def test_save_path_numbering_reserves_path_and_routes_by_task_id(self):
+        from tempfile import TemporaryDirectory
+
+        host_widget, window = self._build_save_path_host()
+        emitted = []
+        window.signal_request_raw_save = SimpleNamespace(
+            emit=lambda batch, path: emitted.append((getattr(batch, "task_id", ""), path))
         )
-        for reference_led in reference_leds:
-            with self.subTest(reference=reference_led.objectName()):
-                self.assertIsInstance(reconstruction_led, QtWidgets.QLabel)
-                self.assertEqual(reconstruction_led.minimumSize(), reference_led.minimumSize())
-                self.assertEqual(reconstruction_led.maximumSize(), reference_led.maximumSize())
-                self.assertEqual(reconstruction_led.styleSheet(), reference_led.styleSheet())
+        try:
+            window.setup_sim_save_path_module()
+            with TemporaryDirectory() as temp_dir:
+                window._set_sim_save_path_controls(
+                    folder=temp_dir,
+                    prefix="cell..",
+                    start_number=7,
+                    next_number=7,
+                )
+                window._reserve_sim_raw_save_path_for_task("task-1")
+
+                expected = str(Path(temp_dir) / "cell0007.tif")
+                self.assertEqual(window._sim_raw_pending_save_path["task-1"], expected)
+                self.assertEqual(window.sim_save_next_number, 8)
+                self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: cell0008.tif")
+                window.save_current_settings_to_default.assert_called_once()
+
+                batch = SimpleNamespace(task_id="task-1")
+                window._route_raw_stack_save(batch)
+                self.assertEqual(emitted, [("task-1", expected)])
+                self.assertEqual(window._sim_raw_pending_save_path, {})
+        finally:
+            host_widget.close()
+
+    def test_save_path_start_number_reset_and_loaded_next_number(self):
+        host_widget, window = self._build_save_path_host()
+        try:
+            window.setup_sim_save_path_module()
+            window._apply_loaded_sim_save_path_settings(
+                {
+                    "sim_save_folder": "data/custom",
+                    "sim_save_prefix": "SIM.raw",
+                    "sim_save_start_number": 4,
+                    "sim_save_next_number": 9,
+                }
+            )
+            self.assertTrue(window.ui.edit_main_savePath_folder.text().endswith(str(Path("data/custom"))))
+            self.assertEqual(window.ui.edit_main_savePath_prefix.text(), "SIM.raw")
+            self.assertEqual(window.ui.spb_main_savePath_startNumber.value(), 4)
+            self.assertEqual(window.sim_save_next_number, 9)
+            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw0009.tif")
+
+            window.ui.spb_main_savePath_startNumber.setValue(12)
+            self.assertEqual(window.sim_save_next_number, 12)
+            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw0012.tif")
+        finally:
+            host_widget.close()
 
     def test_live_setting_change_keeps_config_update_in_memory(self):
         legacy_main = load_legacy_main_module()
@@ -946,6 +1021,8 @@ class SimPreviewRestartTests(unittest.TestCase):
             ensure_sim_raw_stack_save_worker=mock.Mock(),
             disconnect_sim_reconstruction_worker_from_controller=mock.Mock(),
             connect_sim_raw_stack_save_worker_to_controller=mock.Mock(),
+            _reserve_sim_raw_save_path_for_task=mock.Mock(),
+            _clear_sim_raw_pending_save_path=mock.Mock(),
             update_sim_camera_action_buttons=mock.Mock(),
             set_sim_camera_controls_enabled=mock.Mock(),
             sim_preview_restart_timer=TimerSpy(),
@@ -964,6 +1041,8 @@ class SimPreviewRestartTests(unittest.TestCase):
         window.connect_sim_raw_stack_save_worker_to_controller.assert_called_once()
         self.assertTrue(window.sim_current_acquisition_raw_only)
         self.assertEqual(window.sim_current_task_id, "raw-task-1")
+        window._reserve_sim_raw_save_path_for_task.assert_called_once_with("raw-task-1")
+        window._clear_sim_raw_pending_save_path.assert_not_called()
         start_kwargs = controller.start_single_acquisition.call_args.kwargs
         self.assertTrue(start_kwargs["prepare_running_order"])
         self.assertTrue(start_kwargs["initialize_hardware"])
@@ -2260,61 +2339,6 @@ class DaqTestRunnerTests(unittest.TestCase):
         if cls.app is None:
             cls.app = QtWidgets.QApplication([])
 
-    def test_camera_trigger_test_uses_external_camera_adapter_without_reopening_dcam(self):
-        from sim_control.daq_testing import DaqTestRunner
-        from sim_control.models import AppConfig
-
-        camera_adapter = mock.Mock()
-        camera_adapter.is_connected.return_value = True
-        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
-        daq_adapter = mock.Mock()
-        runner = DaqTestRunner(
-            camera_adapter=camera_adapter,
-            slm_adapter=mock.Mock(),
-            daq_adapter=daq_adapter,
-            config=AppConfig(),
-            selected_laser_nm=488,
-        )
-
-        with mock.patch.object(runner, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
-            runner,
-            "_write_uint16_tiff",
-        ) as write_tiff:
-            output_path = runner._run_camera_trigger_test(runner.config.daq)
-
-        self.assertEqual(output_path, Path("dummy.tiff"))
-        camera_adapter.apply_config.assert_called_once_with(runner.config.camera)
-        camera_adapter.arm.assert_called_once_with(frame_count=1)
-        daq_adapter.pulse_line.assert_called_once_with("Dev1", 8, duration_s=0.1, stop_event=None)
-        write_tiff.assert_called_once()
-        camera_adapter.disarm.assert_called_once_with()
-        camera_adapter.disconnect.assert_not_called()
-
-    def test_camera_trigger_test_cleans_up_external_camera_that_was_disconnected_before_test(self):
-        from sim_control.daq_testing import DaqTestRunner
-        from sim_control.models import AppConfig
-
-        camera_adapter = mock.Mock()
-        camera_adapter.is_connected.return_value = False
-        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
-        runner = DaqTestRunner(
-            camera_adapter=camera_adapter,
-            slm_adapter=mock.Mock(),
-            daq_adapter=mock.Mock(),
-            config=AppConfig(),
-            selected_laser_nm=488,
-        )
-
-        with mock.patch.object(runner, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
-            runner,
-            "_write_uint16_tiff",
-        ):
-            output_path = runner._run_camera_trigger_test(runner.config.daq)
-
-        self.assertEqual(output_path, Path("dummy.tiff"))
-        camera_adapter.disarm.assert_called_once_with()
-        camera_adapter.disconnect.assert_called_once_with()
-
     def test_sim_acquisition_test_selects_running_order_on_shared_slm(self):
         from sim_control.daq_testing import DaqTestRunner
         from sim_control.models import AppConfig
@@ -2582,32 +2606,6 @@ class DaqTestRunnerTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result)
-
-    def test_camera_trigger_test_forwards_stop_event_to_read_frame_sequence(self):
-        """相机触发测试必须把 stop_event 透传给 read_frame_sequence（等帧是主要阻塞段）。"""
-        import threading
-
-        from sim_control.daq_testing import DaqTestRunner
-        from sim_control.models import AppConfig
-
-        camera_adapter = mock.Mock()
-        camera_adapter.is_connected.return_value = True
-        camera_adapter.read_frame_sequence.return_value = (np.zeros((1, 2, 2), dtype=np.uint16), [])
-        runner = DaqTestRunner(
-            camera_adapter=camera_adapter,
-            slm_adapter=mock.Mock(),
-            daq_adapter=mock.Mock(),
-            config=AppConfig(),
-            selected_laser_nm=488,
-        )
-        sentinel = threading.Event()
-
-        with mock.patch.object(runner, "_test_capture_path", return_value=Path("dummy.tiff")), mock.patch.object(
-            runner, "_write_uint16_tiff"
-        ):
-            runner._run_camera_trigger_test(runner.config.daq, stop_event=sentinel)
-
-        self.assertIs(camera_adapter.read_frame_sequence.call_args.kwargs["stop_event"], sentinel)
 
     def test_laser_pulse_test_skips_pulse_when_stop_event_preset(self):
         """stop_event 预先置位时激光脉冲测试直接返回，不再驱动 DAQ。"""

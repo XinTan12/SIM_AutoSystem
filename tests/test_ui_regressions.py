@@ -119,22 +119,28 @@ class UiRegressionTests(unittest.TestCase):
         self.assertTrue(hasattr(ui, "spb_sCMOS_ROI_Y"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_imageSize"))
         self.assertTrue(hasattr(ui, "cmb_sCMOS_bitDepth"))
-        self.assertTrue(hasattr(ui, "led_simRuntimeReconstruction"))
-        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionName"))
-        self.assertTrue(hasattr(ui, "lbl_simRuntimeReconstructionStatus"))
-        self.assertEqual(ui.lbl_simRuntimeReconstructionName.text(), "Reconstruction")
-        self.assertEqual(ui.lbl_simRuntimeReconstructionStatus.text(), "Not initialized")
-        for led in (
-            ui.led_simRuntimeCamera,
-            ui.led_simRuntimeSlm,
-            ui.led_simRuntimeDaq,
-            ui.led_simRuntimeReconstruction,
-        ):
-            with self.subTest(runtime_led=led.objectName()):
-                self.assertIsInstance(led, QtWidgets.QLabel)
-                self.assertEqual(led.minimumSize(), QtCore.QSize(16, 16))
-                self.assertEqual(led.maximumSize(), QtCore.QSize(16, 16))
-                self.assertEqual(led.styleSheet(), "background-color: #8b949e; border-radius: 8px;")
+        self.assertFalse(hasattr(ui, "grp_simRuntime"))
+        self.assertTrue(hasattr(ui, "grp_savePath"))
+        self.assertTrue(hasattr(ui, "edit_main_savePath_folder"))
+        self.assertTrue(hasattr(ui, "edit_main_savePath_prefix"))
+        self.assertTrue(hasattr(ui, "spb_main_savePath_startNumber"))
+        self.assertTrue(hasattr(ui, "btn_main_savePath_browse"))
+        self.assertTrue(hasattr(ui, "lbl_main_savePath_preview"))
+        self.assertTrue(ui.edit_main_savePath_folder.isReadOnly())
+        self.assertEqual(ui.btn_main_savePath_browse.text(), "...")
+        self.assertLessEqual(
+            ui.grp_savePath.layout().minimumSize().width(),
+            ui.layoutWidget_simConfiguration.width(),
+        )
+        self.assertEqual(ui.edit_main_savePath_prefix.font().family(), "Arial")
+        self.assertEqual(ui.lbl_main_savePath_folder.font().family(), "Arial")
+        self.assertEqual(ui.lbl_main_savePath_folder.font().pointSize(), 12)
+        self.assertEqual(ui.lbl_main_savePath_prefix.font().pointSize(), 12)
+        self.assertEqual(ui.lbl_main_savePath_startNumber.font().pointSize(), 12)
+        self.assertEqual(ui.lbl_main_savePath_preview.font().pointSize(), 12)
+        self.assertEqual(ui.spb_main_savePath_startNumber.minimum(), 1)
+        self.assertEqual(ui.spb_main_savePath_startNumber.maximum(), 99999)
+        self.assertEqual(ui.lbl_main_savePath_preview.text(), "Next: SIM9_0001.tif")
         # 7) 已废弃的旧 sCMOS 字段不应存在。
         self.assertFalse(hasattr(ui, "spb_sCMOS_ringBufferCapacity"))
         self.assertFalse(hasattr(ui, "spb_sCMOS_delayTime"))
@@ -152,6 +158,18 @@ class UiRegressionTests(unittest.TestCase):
         self.assertEqual(ui.chb_sCMOS_autoContrast.text(), "Auto Contrast")
         self.assertIsInstance(ui.spb_triggerFunction_time, QtWidgets.QDoubleSpinBox)
         self.assertEqual(ui.spb_triggerFunction_time.maximum(), 600_000)
+        trigger_time_spinboxes = [
+            ui.spb_triggerCapture_time,
+            ui.spb_triggerFunction_time,
+            ui.spb_triggerRelease_time,
+            ui.spb_triggerReleaseSort_time,
+        ]
+        for spinbox in trigger_time_spinboxes:
+            with self.subTest(trigger_time_spinbox=spinbox.objectName()):
+                self.assertIsInstance(spinbox, QtWidgets.QDoubleSpinBox)
+                self.assertEqual(spinbox.decimals(), 0)
+                self.assertEqual(spinbox.minimum(), 1)
+                self.assertEqual(spinbox.singleStep(), 1)
         # ROI 尺寸下拉必须列出 3 档预设；位深下拉必须列出 3 个档位。
         self.assertEqual(
             [ui.cmb_sCMOS_imageSize.itemText(index) for index in range(ui.cmb_sCMOS_imageSize.count())],
@@ -188,14 +206,14 @@ class UiRegressionTests(unittest.TestCase):
         )
 
     def test_cellsorting_left_column_uses_uniform_lines_between_groups(self):
-        """主窗口左列 7 条分隔线必须几何对齐，宽 291、高 1，且紧贴上下 GroupBox。"""
+        """主窗口左列 6 条分隔线必须几何对齐，宽 291、高 1，且紧贴上下 GroupBox。"""
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
 
         widget = QtWidgets.QWidget()
         ui = Ui_Single_Cell_Sorting()
         ui.setupUi(widget)
 
-        # 1) 左列 8 个 GroupBox 与对应 7 条分隔线的顺序锁定。
+        # 1) 左列 7 个 GroupBox 与对应 6 条分隔线的顺序锁定。
         column_groups = [
             ui.grp_hardvareConnection,
             ui.grp_hardvareConnection_sCMOS,
@@ -204,7 +222,6 @@ class UiRegressionTests(unittest.TestCase):
             ui.grp_captureROI,
             ui.grp_trappedROI,
             ui.grp_collectedCellsROI,
-            ui.grp_flowRateDetection,
         ]
         lines = [
             getattr(ui, name)
@@ -215,7 +232,6 @@ class UiRegressionTests(unittest.TestCase):
                 "line_19",
                 "line_17",
                 "line_22",
-                "line_23",
             )
         ]
 
@@ -238,6 +254,37 @@ class UiRegressionTests(unittest.TestCase):
             "The entire left column should fit inside the main window height.",
         )
 
+    def test_flow_rate_detection_widgets_removed(self):
+        """Flow Rate Detection ROI 模块已整体删除：相关控件与分隔线均不存在。"""
+        from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
+
+        widget = QtWidgets.QWidget()
+        ui = Ui_Single_Cell_Sorting()
+        ui.setupUi(widget)
+
+        removed = [
+            "grp_flowRateDetection",
+            "grp_releaseROIView_2",
+            "line_23",
+            "spb_flowRateROI_X",
+            "spb_flowRateROI_Y",
+            "spb_flowRateROI_width",
+            "spb_flowRateROI_height",
+            "spb_flowRateDetectFramesNumber",
+            "spb_flowRateValue",
+            "spb_cellSpeedValue",
+            "cmb_objective",
+            "spb_chipChannel_width",
+            "spb_chipChannel_height",
+            "btn_flowRateROI_view",
+            "btn_flowRateImageProcessing",
+            "btn_enterSettingPara_flowRateDetection",
+            "lb_flowRateDetectROIView_original_start",
+            "lb_flowRateROI_state",
+        ]
+        for name in removed:
+            self.assertFalse(hasattr(ui, name), f"{name} should have been removed")
+
     def test_cellsorting_background_diff_collected_label_aligns_with_roi(self):
         """Fast Camera 背景差分区不再显示 Sort 标签，Collected 标签与 ROI 图像居中对齐。"""
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
@@ -257,8 +304,8 @@ class UiRegressionTests(unittest.TestCase):
             ui.lb_collectedROIView_BgDiff_Bi.geometry().center().x(),
         )
 
-    def test_cellsorting_collected_roi_has_angle_control(self):
-        """Collected ROI keeps a zero-degree default and exposes an angle control."""
+    def test_cellsorting_collected_roi_has_no_angle_control(self):
+        """Collected ROI no longer exposes rotation controls."""
         from control_wangbo.CellSorting_ui import Ui_Single_Cell_Sorting
 
         widget = QtWidgets.QWidget()
@@ -267,14 +314,28 @@ class UiRegressionTests(unittest.TestCase):
         widget.show()
         self.app.processEvents()
 
-        self.assertTrue(hasattr(ui, "label_collectedROI_angle"))
-        self.assertTrue(hasattr(ui, "spb_collectedROI_angle"))
-        self.assertEqual(ui.label_collectedROI_angle.text(), "Angle")
-        self.assertIsInstance(ui.spb_collectedROI_angle, QtWidgets.QSpinBox)
-        self.assertEqual(ui.spb_collectedROI_angle.minimum(), -180)
-        self.assertEqual(ui.spb_collectedROI_angle.maximum(), 180)
-        self.assertEqual(ui.spb_collectedROI_angle.value(), 0)
-        self.assertLess(ui.spb_collectedROI_angle.geometry().x(), ui.btn_collectedROI_view.geometry().x())
+        self.assertFalse(hasattr(ui, "label_collectedROI_angle"))
+        self.assertFalse(hasattr(ui, "spb_collectedROI_angle"))
+        labels = [
+            ui.label_53,
+            ui.label_54,
+            ui.label_55,
+            ui.label_56,
+        ]
+        spinboxes = [
+            ui.spb_collectedROI_X,
+            ui.spb_collectedROI_Y,
+            ui.spb_collectedROI_width,
+            ui.spb_collectedROI_height,
+        ]
+        for label in labels:
+            self.assertEqual(label.geometry().size(), QtCore.QSize(50, 15))
+        for spinbox in spinboxes:
+            self.assertEqual(spinbox.geometry().size(), QtCore.QSize(50, 25))
+        self.assertEqual(ui.btn_collectedROI_view.geometry().size(), QtCore.QSize(55, 25))
+        for label, spinbox in zip(labels, spinboxes):
+            self.assertEqual(label.geometry().center().x(), spinbox.geometry().center().x())
+        self.assertGreater(ui.btn_collectedROI_view.geometry().x(), ui.spb_collectedROI_height.geometry().x())
 
     def test_sim_test_capture_root_lives_under_data_directory(self):
         from sim_control.gui import TEST_CAPTURE_ROOT

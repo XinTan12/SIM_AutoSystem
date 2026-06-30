@@ -70,9 +70,8 @@ SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US = 50_000
 SLM_ACTIVATION_TIMING_TEST_ID = "slm_activation_timing"
 # 激活轮询超时：tHWAT 上限 500 µs + USB 轮询粒度（毫秒级），2 秒足够分辨异常。
 SLM_ACTIVATION_TIMING_TIMEOUT_S = 2.0
-# 测试下拉中可单独发短脉冲的 5 个角色（不含 SLM enable/trigger/finish，避免误触发 SLM）。
+# 测试下拉中可单独发短脉冲的 4 个激光角色（不含 SLM enable/trigger/finish 与相机触发线，避免误触发）。
 DAQ_PULSE_TEST_ROLES = (
-    "camera_trigger_line",
     "laser_405_line",
     "laser_488_line",
     "laser_561_line",
@@ -132,15 +131,11 @@ def build_daq_test_target_items(daq_config: DaqLineConfig) -> list[tuple[str, st
     """根据当前 DAQ 配置生成"测试目标"下拉项目列表。
 
     返回：
-        ``[(target_id, display_text), ...]``：5 路单线脉冲 + 1 路 SIM9 完整测试 + 1 路 SLM 激活时序。
+        ``[(target_id, display_text), ...]``：4 路激光单线脉冲 + 1 路 SIM9 完整测试 + 1 路 SLM 激活时序。
     """
-    # 1) 5 路角色：相机触发显示成"Camera Trigger + Capture"，便于和单线脉冲区分。
+    # 1) 4 路激光角色：显示"Laser xxx -> 线名"。
     items = [
-        (
-            role,
-            f"{'Camera Trigger + Capture' if role == 'camera_trigger_line' else ROLE_LABELS[role]} -> "
-            f"{getattr(daq_config, role)}",
-        )
+        (role, f"{ROLE_LABELS[role]} -> {getattr(daq_config, role)}")
         for role in DAQ_PULSE_TEST_ROLES
     ]
     # 2) 末尾追加完整 SIM9 测试项；ID 用 ``SIM_ACQUISITION_TEST_ID`` 常量。
@@ -289,41 +284,6 @@ class DaqTestRunner:
         )
 
     # ------------------------------------------------------------------- tests
-    def _run_camera_trigger_test(
-        self,
-        daq_config: DaqLineConfig,
-        stop_event: threading.Event | None = None,
-    ) -> Path:
-        """对相机触发线发一次 100 ms 脉冲，读单帧并保存 16 位 TIFF。"""
-        # 1) 准备输出路径与目标 line index。
-        output_path = self._test_capture_path("camera_pulse", "camera_trigger")
-        _, _, line_index = parse_line_name(daq_config.camera_trigger_line)
-        was_camera_connected = self._camera_connected_for_test_cleanup()
-        try:
-            # 2) apply_config → arm → 发脉冲 → 读 1 帧；启动前与等帧期间均可取消
-            #    （等帧是主要阻塞段，stop_event 直接透传给 read_frame_sequence）。
-            if stop_event is not None and stop_event.is_set():
-                raise HardwareError("相机触发测试已取消。")
-            self.camera_adapter.apply_config(self.config.camera)
-            self.camera_adapter.arm(frame_count=1)
-            self.daq_adapter.pulse_line(daq_config.device_name, line_index, duration_s=0.1, stop_event=stop_event)
-            stack, _timestamps = self.camera_adapter.read_frame_sequence(
-                frame_count=1,
-                pattern_files=[""],
-                laser_wavelength_nm=self.config.selected_laser_nm,
-                stop_event=stop_event,
-            )
-            # 3) 保存 stack[0] 为 16 位 TIFF。
-            self._write_uint16_tiff(output_path, stack[0])
-            return output_path
-        finally:
-            # 4) 不论成功失败：都 cleanup 相机 + 把 DAQ 全部置低，避免遗留高电平。
-            self._cleanup_test_camera(was_camera_connected)
-            try:
-                self.daq_adapter.set_all_low(daq_config.device_name)
-            except Exception:
-                logger.warning("SIM teardown step failed; continuing cleanup.", exc_info=True)
-
     def _run_laser_pulse_test(
         self,
         daq_config: DaqLineConfig,
@@ -416,7 +376,7 @@ class DaqTestRunner:
                 daq_waveform_duration_s=float(plan.duration_s),
             )
         finally:
-            # 10) 同 ``_run_camera_trigger_test``：相机 cleanup + DAQ 全 0。
+            # 10) 相机 cleanup + DAQ 全 0（与其它测试 finally 收尾一致）。
             self._cleanup_test_camera(was_camera_connected)
             try:
                 self.daq_adapter.set_all_low(daq_config.device_name)
@@ -562,8 +522,9 @@ class DaqTestRunner:
                     "请检查 slm_enable(EXT_RUN) 接线、RO 激活方式与 R11CommLib 版本。"
                 )
             return "SLM激活时序测试完成:\n" + "\n".join(lines)
-        if target_id == "camera_trigger_line":
-            output_path = self._run_camera_trigger_test(daq_config, stop_event=stop_event)
-            return f"相机测试完成，16位 TIFF 已保存到:\n{output_path}"
+        # SIM采集/SLM激活时序已在前面 return；此处只应是 4 路激光角色之一。显式守卫，
+        # 杜绝已删的 camera_trigger_line 或任意未知 id 静默走 _run_laser_pulse_test。
+        if target_id not in DAQ_PULSE_TEST_ROLES:
+            raise ValueError(f"Unknown test target: {target_id!r}")
         self._run_laser_pulse_test(daq_config, str(target_id), stop_event=stop_event)
         return f"{ROLE_LABELS[str(target_id)]} 脉冲测试完成。"

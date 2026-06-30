@@ -67,10 +67,10 @@ class DaqTestTargetTests(unittest.TestCase):
         items = build_daq_test_target_items(config)
 
         # 2) 列表顺序与文案锁死；SIM 采集与 SLM 激活时序诊断按固定顺序排在末尾。
+        # "Camera Trigger + Capture" 项已删除；只剩 4 路激光 + SIM采集 + SLM激活时序。
         self.assertEqual(
             items,
             [
-                ("camera_trigger_line", "Camera Trigger + Capture -> Dev1/port0/line8"),
                 ("laser_405_line", "Laser 405 -> Dev1/port0/line9"),
                 ("laser_488_line", "Laser 488 -> Dev1/port0/line10"),
                 ("laser_561_line", "Laser 561 -> Dev1/port0/line11"),
@@ -385,6 +385,31 @@ class SlmActivationTimingTestFlowTests(unittest.TestCase):
         # slm_enable 先拉高、finally 拉低，随后 set_all_low 安全归位。
         self.assertEqual(daq.set_line_calls, [("Dev1", 0, True), ("Dev1", 0, False)])
         self.assertEqual(daq.set_all_low_calls, 1)
+
+    def test_run_test_rejects_camera_and_unknown_targets(self):
+        """删 camera 项后，run_test 对 camera_trigger_line 或未知 id 必须 ValueError（不静默走激光脉冲）。"""
+        import threading
+
+        from sim_control.config_store import app_config_from_dict
+        from sim_control.daq_testing import DaqTestRunner
+        from sim_control.sim_adapters import SimulatedDaqAdapter
+
+        app_config = app_config_from_dict({"config_version": 9})
+        runner = DaqTestRunner(
+            camera_adapter=None,
+            slm_adapter=None,
+            daq_adapter=SimulatedDaqAdapter(),
+            config=app_config,
+            selected_laser_nm=488,
+        )
+        for bad_id in ("camera_trigger_line", "nonsense_target"):
+            with self.assertRaises(ValueError):
+                runner.run_test(
+                    bad_id,
+                    app_config.daq,
+                    selected_laser_nm=488,
+                    stop_event=threading.Event(),
+                )
 
 
 if __name__ == "__main__":

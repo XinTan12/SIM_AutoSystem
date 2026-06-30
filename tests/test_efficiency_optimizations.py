@@ -53,6 +53,22 @@ class EfficiencyOptimizationTests(unittest.TestCase):
 
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    @staticmethod
+    def _make_raw_batch(task_id="raw", stack=None):
+        from sim_control.models import AcquisitionBatch
+
+        if stack is None:
+            stack = np.zeros((9, 4, 5), dtype=np.uint16)
+        return AcquisitionBatch(
+            task_id=task_id,
+            stack=stack,
+            timestamps=[float(index) for index in range(9)],
+            laser_wavelength_nm=488,
+            exposure_us=10_000,
+            pattern_files=["488_3.5_2d_10ms"] * 9,
+            metadata={"running_order_name": "488_3.5_2d_10ms"},
+        )
+
     def test_raw_stack_save_worker_writes_uint16_tiff_stack(self):
         from tempfile import TemporaryDirectory
 
@@ -98,6 +114,81 @@ class EfficiencyOptimizationTests(unittest.TestCase):
         self.assertEqual(loaded.shape, (9, 4, 5))
         self.assertEqual(loaded.dtype, np.uint16)
         np.testing.assert_array_equal(loaded, stack)
+
+    def test_raw_stack_save_to_path_writes_explicit_path_and_overwrites(self):
+        from tempfile import TemporaryDirectory
+
+        import tifffile
+
+        from sim_control.pipeline import RawStackSaveWorker
+
+        saved = []
+        failed = []
+        first_stack = np.ones((9, 4, 5), dtype=np.uint16)
+        second_stack = np.full((9, 4, 5), 2, dtype=np.uint16)
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "sim_9frames"
+            target = Path(temp_dir) / "chosen" / "cell0001.tif"
+            worker = RawStackSaveWorker(output_dir=output_dir)
+            worker.signal_stack_saved.connect(lambda task_id, path: saved.append((task_id, path)))
+            worker.signal_stack_save_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            worker.slot_save_to_path(self._make_raw_batch("task-1", first_stack), str(target))
+            worker.slot_save_to_path(self._make_raw_batch("task-2", second_stack), str(target))
+
+            self.assertEqual(failed, [])
+            self.assertEqual(saved, [("task-1", str(target)), ("task-2", str(target))])
+            self.assertTrue(target.exists())
+            self.assertFalse(any(child.is_dir() and child.name.isdigit() for child in target.parent.iterdir()))
+            loaded = tifffile.imread(target)
+
+        np.testing.assert_array_equal(loaded, second_stack)
+
+    def test_raw_stack_save_to_path_empty_path_falls_back_to_auto_naming(self):
+        from tempfile import TemporaryDirectory
+
+        from sim_control.pipeline import RawStackSaveWorker
+
+        saved = []
+        failed = []
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "sim_9frames"
+            worker = RawStackSaveWorker(output_dir=output_dir)
+            worker.signal_stack_saved.connect(lambda task_id, path: saved.append((task_id, path)))
+            worker.signal_stack_save_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            worker.slot_save_to_path(self._make_raw_batch("auto"), "")
+
+            self.assertEqual(failed, [])
+            self.assertEqual(len(saved), 1)
+            saved_path = Path(saved[0][1])
+            self.assertEqual(saved_path.parent.parent, output_dir)
+            self.assertRegex(saved_path.parent.name, r"^\d{8}$")
+            self.assertRegex(saved_path.name, r"^488_3\.5_10ms_5x4_\d{14}\.tif$")
+
+    def test_raw_stack_save_to_path_rejects_bad_stack_before_creating_parent(self):
+        from tempfile import TemporaryDirectory
+
+        from sim_control.pipeline import RawStackSaveWorker
+
+        saved = []
+        failed = []
+        bad_stack = np.zeros((8, 4, 5), dtype=np.uint16)
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "sim_9frames"
+            target = Path(temp_dir) / "missing" / "cell0001.tif"
+            worker = RawStackSaveWorker(output_dir=output_dir)
+            worker.signal_stack_saved.connect(lambda task_id, path: saved.append((task_id, path)))
+            worker.signal_stack_save_failed.connect(lambda task_id, message: failed.append((task_id, message)))
+
+            worker.slot_save_to_path(self._make_raw_batch("bad", bad_stack), str(target))
+
+            self.assertEqual(saved, [])
+            self.assertEqual([task_id for task_id, _message in failed], ["bad"])
+            self.assertFalse(target.parent.exists())
 
     def test_raw_stack_save_worker_rejects_non_sim9_or_non_uint16_stack(self):
         from tempfile import TemporaryDirectory

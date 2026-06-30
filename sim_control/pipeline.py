@@ -156,19 +156,45 @@ class RawStackSaveWorker(QObject):
         super().__init__(parent)
         self.output_dir = _resolve_raw_stack_output_dir(output_dir)
 
+    @staticmethod
+    def _validated_stack(batch: AcquisitionBatch) -> tuple[str, np.ndarray]:
+        task_id = str(getattr(batch, "task_id", "") or "")
+        stack = np.asarray(getattr(batch, "stack", None))
+        if stack.ndim != 3 or stack.shape[0] != 9:
+            raise ValueError(f"Expected raw SIM9 stack shape (9, H, W), got {stack.shape}.")
+        if stack.dtype != np.uint16:
+            raise TypeError(f"Expected raw SIM9 stack dtype uint16, got {stack.dtype}.")
+        return task_id, stack
+
     @pyqtSlot(object)
     def slot_save(self, batch: AcquisitionBatch) -> None:
         task_id = str(getattr(batch, "task_id", "") or "")
         try:
-            stack = np.asarray(getattr(batch, "stack", None))
-            if stack.ndim != 3 or stack.shape[0] != 9:
-                raise ValueError(f"Expected raw SIM9 stack shape (9, H, W), got {stack.shape}.")
-            if stack.dtype != np.uint16:
-                raise TypeError(f"Expected raw SIM9 stack dtype uint16, got {stack.dtype}.")
+            task_id, stack = self._validated_stack(batch)
             save_time = datetime.now()
             output_dir = _dated_output_dir(self.output_dir, save_time)
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = _unique_output_path(output_dir, _build_raw_stack_filename(batch, stack, save_time))
+            tifffile.imwrite(
+                str(output_path),
+                stack,
+                photometric="minisblack",
+            )
+            self.signal_stack_saved.emit(task_id, str(output_path))
+        except Exception as exc:
+            logger.warning("Failed to save raw SIM9 stack for %s: %s", task_id, exc)
+            self.signal_stack_save_failed.emit(task_id, str(exc))
+
+    @pyqtSlot(object, str)
+    def slot_save_to_path(self, batch: AcquisitionBatch, path: str) -> None:
+        if not str(path or "").strip():
+            self.slot_save(batch)
+            return
+        task_id = str(getattr(batch, "task_id", "") or "")
+        try:
+            task_id, stack = self._validated_stack(batch)
+            output_path = Path(path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(
                 str(output_path),
                 stack,

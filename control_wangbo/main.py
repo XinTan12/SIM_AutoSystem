@@ -6,8 +6,8 @@
 import copy
 import html
 import sys
-from PyQt5.QtCore import QEvent, QMetaObject, QObject, QThread, Qt, pyqtSlot,pyqtSignal,QTimer
-from PyQt5.QtGui import QFont, QFontMetrics, QImage, QPixmap
+from PyQt5.QtCore import QEvent, QMetaObject, QObject, QRegExp, QThread, Qt, pyqtSlot,pyqtSignal,QTimer
+from PyQt5.QtGui import QFont, QFontMetrics, QImage, QPixmap, QRegExpValidator
 import PyQt5.QtWidgets as qw
 import CellSorting_ui
 from PyQt5.QtSerialPort import QSerialPortInfo
@@ -30,7 +30,6 @@ from tkinter import messagebox
 from threading import Event, Lock
 import numpy as np
 from PyQt5.QtWidgets import QScrollArea
-from roi_geometry import crop_rotated_roi, draw_rotated_roi
 #import torch 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -53,13 +52,14 @@ from sim_control.gui import (
     read_daq_config_from_line_combos,
 )
 from sim_control.models import (
+    LASER_ROLE_MAP,
     RED_LASER_CHOICES,
     SUPPORTED_LASERS,
     SimTaskConfig,
     Z_SCAN_EXPOSURE_PRESETS_MS,
     supported_lasers_for,
 )
-from sim_control.pipeline import RawStackSaveWorker, ReconstructionWorker
+from sim_control.pipeline import RawStackSaveWorker, ReconstructionWorker, _safe_filename_token
 from sim_control.preview import SimPreviewController
 from sim_control.preview_contrast import AutoContrastState, fast_preview_uint16_to_uint8
 from sim_control.summary import build_sim_settings_summary
@@ -93,6 +93,9 @@ SIM_RUNTIME_LED_RADIUS_PX = SIM_RUNTIME_LED_SIZE_PX // 2
 SIM_RUNTIME_LED_GRAY_STYLE = (
     f"background-color: #8b949e; border-radius: {SIM_RUNTIME_LED_RADIUS_PX}px;"
 )
+SIM_RAW_STACK_DEFAULT_FOLDER = PROJECT_ROOT / "data" / "sim_9frames"
+SIM_RAW_STACK_DEFAULT_PREFIX = "SIM9_"
+SIM_RAW_STACK_NUMBER_WIDTH = 4
 
 
 # 旧 CellSorting UI 是固定尺寸生成界面，这里外包一层滚动区以适配较小显示器。
@@ -318,6 +321,7 @@ class MainWindow(qw.QWidget):
     signal_zscan_status = pyqtSignal(str, dict)
     # B6：GUI 线程跨线程向常驻 recon worker 下发配置快照（queued slot），不裸 setter。
     signal_reconstruction_config_changed = pyqtSignal(object)
+    signal_request_raw_save = pyqtSignal(object, str)
 
 
     def __init__(self):
@@ -367,6 +371,8 @@ class MainWindow(qw.QWidget):
         self.sim_current_task_id = ""
         self.sim_current_acquisition_raw_only = False
         self.sim_raw_stack_save_finished_task_ids = set()
+        self.sim_save_next_number = 1
+        self._sim_raw_pending_save_path = {}
         self.sim_last_preview_frame = None
         self.sim_last_preview_sequence = -1
         self.sim_auto_contrast_state = AutoContrastState()
@@ -387,6 +393,7 @@ class MainWindow(qw.QWidget):
         self.sim_stage_position_timer.setInterval(500)
         self.sim_stage_position_timer.timeout.connect(self.poll_sim_stage_position)
         self.UI_Init()
+        self.setup_sim_save_path_module()
         self.setup_sim_runtime_status_widgets()
         self.setup_sim_z_position_widgets()
         self.setup_sim_zscan_module()
@@ -404,7 +411,6 @@ class MainWindow(qw.QWidget):
         self.functionMeasurement_end_miss = 0
         self.totalNumb_collected = 0       
         self.collectedCell_miss  = 0
-        self.flowRate_ID          = 0      # 用来记录是哪次细胞的
         # 初始化串口和相机的变量
         self.portName = []
         self.cameraList = []
@@ -440,8 +446,6 @@ class MainWindow(qw.QWidget):
         self.index_sCMOS_number = 0 #用于间隔保存显示sCMOS的二值化图像
         self.sCMOS_ROI_Bg = None #用于储存sCMOS的ROI的背景图像，由capture trigger信号触发，当信号发生时，将当前帧的前第5帧的ROI图像（深拷贝）作为背景图，每次促发capture信号都更新
 
-        #flowRate的图像分析
-        self.btn_flowRateImageProcessing_state       = False
         # 立即执行一次扫描
         self.btn_refresh_camera_function()
         
@@ -550,10 +554,15 @@ class MainWindow(qw.QWidget):
         if self.sim_raw_stack_save_worker is not None:
             return
         self.sim_raw_stack_save_thread = QThread(self)
-        self.sim_raw_stack_save_worker = RawStackSaveWorker(PROJECT_ROOT / "data" / "sim_9frames")
+        self.sim_raw_stack_save_worker = RawStackSaveWorker(SIM_RAW_STACK_DEFAULT_FOLDER)
         self.sim_raw_stack_save_worker.moveToThread(self.sim_raw_stack_save_thread)
         self.sim_raw_stack_save_worker.signal_stack_saved.connect(self.slot_handle_sim_raw_stack_saved)
         self.sim_raw_stack_save_worker.signal_stack_save_failed.connect(self.slot_handle_sim_raw_stack_save_failed)
+        try:
+            self.signal_request_raw_save.disconnect(self.sim_raw_stack_save_worker.slot_save_to_path)
+        except (TypeError, RuntimeError):
+            pass
+        self.signal_request_raw_save.connect(self.sim_raw_stack_save_worker.slot_save_to_path)
         self.sim_raw_stack_save_thread.start()
 
     def connect_sim_raw_stack_save_worker_to_controller(self):
@@ -566,8 +575,14 @@ class MainWindow(qw.QWidget):
             )
         except (TypeError, RuntimeError):
             pass
+        try:
+            self.sim_acquisition_controller.signal_acquisition_ready.disconnect(
+                self._route_raw_stack_save
+            )
+        except (TypeError, RuntimeError):
+            pass
         self.sim_acquisition_controller.signal_acquisition_ready.connect(
-            self.sim_raw_stack_save_worker.slot_save
+            self._route_raw_stack_save
         )
 
     def disconnect_sim_raw_stack_save_worker_from_controller(self):
@@ -579,6 +594,21 @@ class MainWindow(qw.QWidget):
             )
         except (TypeError, RuntimeError):
             pass
+        try:
+            self.sim_acquisition_controller.signal_acquisition_ready.disconnect(
+                self._route_raw_stack_save
+            )
+        except (TypeError, RuntimeError):
+            pass
+
+    @pyqtSlot(object)
+    def _route_raw_stack_save(self, batch):
+        task_id = str(getattr(batch, "task_id", "") or "")
+        pending_paths = getattr(self, "_sim_raw_pending_save_path", {})
+        path = ""
+        if hasattr(pending_paths, "pop") and task_id:
+            path = str(pending_paths.pop(task_id, "") or "")
+        self.signal_request_raw_save.emit(batch, path)
 
     def shutdown_sim_raw_stack_save_worker(self):
         self.disconnect_sim_raw_stack_save_worker_from_controller()
@@ -588,6 +618,7 @@ class MainWindow(qw.QWidget):
             try:
                 worker.signal_stack_saved.disconnect(self.slot_handle_sim_raw_stack_saved)
                 worker.signal_stack_save_failed.disconnect(self.slot_handle_sim_raw_stack_save_failed)
+                self.signal_request_raw_save.disconnect(worker.slot_save_to_path)
             except (TypeError, RuntimeError):
                 pass
             self.sim_raw_stack_save_worker = None
@@ -756,34 +787,9 @@ class MainWindow(qw.QWidget):
         self.ui.spb_collectedROI_Y.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_collectedROI_width.valueChanged.connect(self.update_image_processing_para)
         self.ui.spb_collectedROI_height.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_collectedROI_angle.valueChanged.connect(self.update_image_processing_para)
 
         """Binary ROI 模块"""
         self.ui.spb_threshold_Bi.valueChanged.connect(self.update_image_processing_para)
-        """Flow Rate Detection ROI 模块"""
-        self.btn_flowRateROI_view_state = False
-        self.ui.btn_flowRateROI_view.clicked.connect(self.btn_flowRateROI_view_function)
-        self.ui.spb_flowRateROI_X.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_flowRateROI_Y.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_flowRateROI_width.valueChanged.connect(self.update_image_processing_para)
-        self.ui.spb_flowRateROI_height.valueChanged.connect(self.update_image_processing_para)
-        
-        self.ui.spb_flowRateValue.setStyleSheet("QDoubleSpinBox::up-button { width: 0px; } ""QDoubleSpinBox::down-button { width: 0px; }") # 取消流速的增减按钮
-        self.ui.spb_cellSpeedValue.setStyleSheet("QDoubleSpinBox::up-button { width: 0px; } ""QDoubleSpinBox::down-button { width: 0px; }")
-        self.ui.spb_flowRateValue.setEnabled(False)
-        self.ui.spb_cellSpeedValue.setEnabled(False)
-        self.ui.cmb_objective.setEnabled(False)
-        self.ui.btn_flowRateImageProcessing.setEnabled(False)
-        self.ui.spb_chipChannel_width.setEnabled(False)
-        self.ui.spb_chipChannel_height.setEnabled(False)
-        self.ui.spb_flowRateDetectFramesNumber.setEnabled(False)
-        self.ui.spb_flowRateDetectFramesNumber.valueChanged.connect(self.update_image_processing_para)
-        self.btn_enterSettingPara_flowRateDetection_state = False
-        self.ui.btn_enterSettingPara_flowRateDetection.clicked.connect(self.btn_enterSettingPara_flowRateDetection_function)
-        self.ui.btn_flowRateImageProcessing.clicked.connect(self.slot_btn_flowRateImageProcessing_function)
-
-        # 点击设置按钮后才能改：
-        self.ui.btn_enterSettingPara_flowRateDetection.clicked.connect(self.update_image_processing_para)
 
         """Trigger Control 模块"""
 
@@ -829,8 +835,6 @@ class MainWindow(qw.QWidget):
         self.ui.btn_runScreenCell_single.clicked.connect(self.update_image_processing_para)
         
         # 发送参数
-        # 物镜大小选择
-        self.ui.cmb_objective.currentIndexChanged.connect(self.update_image_processing_para)
         # 将Image trigger的按钮和函数连接
         self.ui.btn_recountCell_number.clicked.connect(self.btn_recountCell_number_function)
         self.ui.btn_saveROIImage.clicked.connect(self.btn_saveROIImage_function)
@@ -841,7 +845,7 @@ class MainWindow(qw.QWidget):
 
         # 导出roi的处理参数
         self.ui.btn_exportROIData.clicked.connect(self.btn_exportROIData_function)
-        self.ui.spb_roiDataNumber.setStyleSheet("QSpinBox::up-button { width: 0px; } ""QSpinBox::down-button { width: 0px; }") # 取消流速的增减按钮
+        self.ui.spb_roiDataNumber.setStyleSheet("QSpinBox::up-button { width: 0px; } ""QSpinBox::down-button { width: 0px; }") # 取消增减按钮
         self.ui.spb_roiDataNumber.setEnabled(False)
         """Rinse Channel 模块"""
         self.btn_rinseChannelCapture_state    = False
@@ -1869,6 +1873,8 @@ class MainWindow(qw.QWidget):
             refresh_dropdown = getattr(self, "refresh_immediate_ro_dropdown", None)
             if callable(refresh_dropdown):
                 refresh_dropdown()
+            # DAQ Test 下拉跟随采集波长（仅切波长时强制；须在 sim_camera_connected 早退前执行）。
+            self._select_daq_test_target_for_wavelength()
 
         # immediate-live 期间仅改 ROI/曝光：保住 immediate RO，绝不重选正式 RO（否则画面又黑）。
         immediate_live = bool(getattr(self, "sim_immediate_live_active", False)) and not wavelength_changed
@@ -2051,7 +2057,7 @@ class MainWindow(qw.QWidget):
 
     def setup_sim_runtime_status_widgets(self):
         runtime_devices = ("camera", "slm", "daq", "reconstruction")
-        # LED 与状态标签已由 CellSorting_ui 在 grp_simRuntime 内静态定义；此处仅复用并初始化为未连接。
+        # Runtime status widgets are optional; Save Path replaces the old runtime panel.
         existing_leds = {
             "camera": getattr(self.ui, "led_simRuntimeCamera", None),
             "slm": getattr(self.ui, "led_simRuntimeSlm", None),
@@ -2071,6 +2077,171 @@ class MainWindow(qw.QWidget):
                 self.set_sim_runtime_led_state(existing_leds[device], "gray")
             if existing_labels.get(device) is not None:
                 existing_labels[device].setText("Not initialized")
+
+    def setup_sim_save_path_module(self):
+        group = getattr(self.ui, "grp_savePath", None)
+        if group is None or getattr(self, "_sim_save_path_module_wired", False):
+            return
+        grid = getattr(self.ui, "gridLayout_savePath", None)
+        if grid is not None:
+            grid.setColumnStretch(0, 0)
+            grid.setColumnStretch(1, 1)
+            grid.setColumnStretch(2, 0)
+        prefix_edit = getattr(self.ui, "edit_main_savePath_prefix", None)
+        if prefix_edit is not None:
+            prefix_edit.setValidator(QRegExpValidator(QRegExp("[A-Za-z0-9_.-]+"), prefix_edit))
+        self._set_sim_save_path_controls(
+            folder=str(SIM_RAW_STACK_DEFAULT_FOLDER),
+            prefix=SIM_RAW_STACK_DEFAULT_PREFIX,
+            start_number=1,
+            next_number=getattr(self, "sim_save_next_number", 1),
+        )
+        browse = getattr(self.ui, "btn_main_savePath_browse", None)
+        if browse is not None:
+            browse.clicked.connect(self._browse_main_save_path_folder)
+        if prefix_edit is not None:
+            prefix_edit.textChanged.connect(self._refresh_sim_save_path_preview)
+            prefix_edit.editingFinished.connect(self._normalize_main_save_path_prefix)
+        start_spin = getattr(self.ui, "spb_main_savePath_startNumber", None)
+        if start_spin is not None:
+            start_spin.valueChanged.connect(self._on_main_save_path_start_number_changed)
+        self._sim_save_path_module_wired = True
+
+    def _coerce_sim_save_start_number(self, value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = 1
+        return max(1, min(99999, number))
+
+    def _coerce_sim_save_next_number(self, value, default=1):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = int(default)
+        return max(1, number)
+
+    def _normal_sim_save_folder(self, folder_text):
+        text = str(folder_text or "").strip()
+        folder = Path(text) if text else SIM_RAW_STACK_DEFAULT_FOLDER
+        if not folder.is_absolute():
+            folder = PROJECT_ROOT / folder
+        return str(folder)
+
+    def _sanitize_sim_save_prefix(self, prefix_text):
+        raw = str(prefix_text or "").strip() or SIM_RAW_STACK_DEFAULT_PREFIX
+        token = _safe_filename_token(raw)
+        while ".." in token:
+            token = token.replace("..", ".")
+        token = token.strip("._")
+        return token or SIM_RAW_STACK_DEFAULT_PREFIX
+
+    def _sim_save_filename_for_number(self, number, prefix=None):
+        prefix_edit = getattr(self.ui, "edit_main_savePath_prefix", None)
+        current_prefix = prefix if prefix is not None else (prefix_edit.text() if prefix_edit is not None else "")
+        safe_prefix = self._sanitize_sim_save_prefix(current_prefix)
+        return f"{safe_prefix}{self._coerce_sim_save_next_number(number):0{SIM_RAW_STACK_NUMBER_WIDTH}d}.tif"
+
+    def _current_sim_raw_save_path(self):
+        folder_edit = getattr(self.ui, "edit_main_savePath_folder", None)
+        folder = self._normal_sim_save_folder(folder_edit.text() if folder_edit is not None else "")
+        filename = self._sim_save_filename_for_number(getattr(self, "sim_save_next_number", 1))
+        if Path(filename).name != filename:
+            raise ValueError(f"Invalid SIM raw stack filename: {filename}")
+        return Path(folder) / filename
+
+    def _set_sim_save_path_controls(self, folder=None, prefix=None, start_number=None, next_number=None):
+        folder_edit = getattr(self.ui, "edit_main_savePath_folder", None)
+        prefix_edit = getattr(self.ui, "edit_main_savePath_prefix", None)
+        start_spin = getattr(self.ui, "spb_main_savePath_startNumber", None)
+        start_value = self._coerce_sim_save_start_number(start_number if start_number is not None else 1)
+        next_value = self._coerce_sim_save_next_number(next_number, default=start_value)
+        if folder_edit is not None:
+            folder_edit.blockSignals(True)
+            folder_edit.setText(self._normal_sim_save_folder(folder))
+            folder_edit.blockSignals(False)
+        if prefix_edit is not None:
+            prefix_edit.blockSignals(True)
+            prefix_edit.setText(self._sanitize_sim_save_prefix(prefix))
+            prefix_edit.blockSignals(False)
+        if start_spin is not None:
+            start_spin.blockSignals(True)
+            start_spin.setValue(start_value)
+            start_spin.blockSignals(False)
+        self.sim_save_next_number = next_value
+        self._refresh_sim_save_path_preview()
+
+    def _apply_loaded_sim_save_path_settings(self, configure_settings):
+        start_value = configure_settings.get("sim_save_start_number", 1)
+        next_value = configure_settings.get("sim_save_next_number", start_value)
+        self._set_sim_save_path_controls(
+            folder=configure_settings.get("sim_save_folder", str(SIM_RAW_STACK_DEFAULT_FOLDER)),
+            prefix=configure_settings.get("sim_save_prefix", SIM_RAW_STACK_DEFAULT_PREFIX),
+            start_number=start_value,
+            next_number=next_value,
+        )
+
+    def _refresh_sim_save_path_preview(self, *_args):
+        label = getattr(self.ui, "lbl_main_savePath_preview", None)
+        if label is None:
+            return
+        filename = self._sim_save_filename_for_number(getattr(self, "sim_save_next_number", 1))
+        label.setText(f"Next: {filename}")
+        try:
+            label.setToolTip(str(self._current_sim_raw_save_path()))
+        except Exception:
+            label.setToolTip("")
+
+    def _normalize_main_save_path_prefix(self):
+        edit = getattr(self.ui, "edit_main_savePath_prefix", None)
+        if edit is None:
+            return
+        normalized = self._sanitize_sim_save_prefix(edit.text())
+        if edit.text() != normalized:
+            edit.setText(normalized)
+        self._refresh_sim_save_path_preview()
+
+    def _on_main_save_path_start_number_changed(self, value):
+        if getattr(self, "_loading_configure_settings", False):
+            return
+        self.sim_save_next_number = self._coerce_sim_save_start_number(value)
+        self._refresh_sim_save_path_preview()
+
+    def _browse_main_save_path_folder(self):
+        edit = getattr(self.ui, "edit_main_savePath_folder", None)
+        current = edit.text().strip() if edit is not None else ""
+        start_dir = current if current else str(SIM_RAW_STACK_DEFAULT_FOLDER)
+        path = qw.QFileDialog.getExistingDirectory(self, "Select SIM9 Stack Save Folder", start_dir)
+        if path and edit is not None:
+            edit.setText(self._normal_sim_save_folder(path))
+            self._refresh_sim_save_path_preview()
+
+    def _reserve_sim_raw_save_path_for_task(self, task_id):
+        task_id = str(task_id or "")
+        if not task_id:
+            return
+        path = self._current_sim_raw_save_path()
+        pending_paths = getattr(self, "_sim_raw_pending_save_path", None)
+        if pending_paths is None:
+            pending_paths = {}
+            self._sim_raw_pending_save_path = pending_paths
+        pending_paths[task_id] = str(path)
+        self.sim_save_next_number = self._coerce_sim_save_next_number(
+            getattr(self, "sim_save_next_number", 1)
+        ) + 1
+        self._refresh_sim_save_path_preview()
+        try:
+            self.save_current_settings_to_default()
+        except Exception as exc:
+            print(f"SIM raw save numbering persistence failed: {exc}")
+
+    def _clear_sim_raw_pending_save_path(self, task_id):
+        try:
+            pending_paths = getattr(self, "_sim_raw_pending_save_path", None)
+        except RuntimeError:
+            return
+        if hasattr(pending_paths, "pop"):
+            pending_paths.pop(str(task_id or ""), None)
 
     def setup_sim_z_position_widgets(self):
         """lbl_z_position_label / lbl_z_position_value 已由 CellSorting_ui 在
@@ -2122,13 +2293,13 @@ class MainWindow(qw.QWidget):
         self._zscan_move_stop_event = None
         self._zscan_move_in_progress = False
 
-        # 列伸缩：col0-3 不拉伸、col4 吸收余量，使窄控件左对齐、不被拉伸。
+        # 列伸缩：Z-Scan 重排 2 列（2×2），col0/col1 不拉伸、col2 吸收余量，窄控件左对齐。
         # （.ui 的 columnStretch 属性不被 pyuic5 生成，故运行时补。）
         grid = getattr(self.ui, "gridLayout_zscan", None)
         if grid is not None:
-            for _col in range(4):
-                grid.setColumnStretch(_col, 0)
-            grid.setColumnStretch(4, 1)
+            grid.setColumnStretch(0, 0)
+            grid.setColumnStretch(1, 0)
+            grid.setColumnStretch(2, 1)
 
         # 填充下拉项（带 itemData，无法在 .ui 静态表达）；blockSignals+clear 防重复填充。
         self.ui.cmb_main_zscan_direction.blockSignals(True)
@@ -2406,7 +2577,7 @@ class MainWindow(qw.QWidget):
         """为静态定义的主 GUI DAQ 模块建角色映射、补列伸缩、从配置初始化并接线。
 
         控件（``*_main_daq_*`` 前缀）已由 CellSorting_ui 在 Z-Scan 组与 Recon 组之间静态定义：
-        设备下拉 + Refresh、8 路 TTL 线位下拉（2 列）、测试目标下拉 + Pulse Test 按钮、状态标签。
+        设备下拉 + Refresh、8 路 TTL 线位下拉（2 列）、测试目标下拉 + Test 按钮、状态标签。
         设备/线位的真实枚举走 Refresh（按需 ensure_sim_runtime 用 controller 共享 daq_adapter）；
         诊断测试在后台 ``_PulseTestWorker`` 执行、可取消，启动前做 immediate-live/preview 安全互锁。
         """
@@ -2420,7 +2591,7 @@ class MainWindow(qw.QWidget):
         self._daq_test_worker = None
         self._daq_test_stop_event = None
         self._daq_test_resume_preview = False
-        self._daq_test_btn_text = "Pulse Test"
+        self._daq_test_btn_text = "Test"
         # 角色 -> 线位下拉 映射（供 read_daq_config_from_line_combos / populate_daq_line_combos 复用）。
         self.main_daq_line_combos = {
             "slm_enable_line": self.ui.cmb_main_daq_slm_enable,
@@ -2489,6 +2660,11 @@ class MainWindow(qw.QWidget):
             for target_id, label in build_daq_test_target_items(self.sim_app_config.daq):
                 combo.addItem(label, target_id)
             index = combo.findData(selected)
+            if index < 0:
+                # 无前次选中（首次/换项）→ 默认当前采集波长对应的激光测试项。
+                index = combo.findData(
+                    self._daq_test_role_for_wavelength(self.sim_app_config.selected_laser_nm)
+                )
             if index < 0 and combo.count():
                 index = 0
             if index >= 0:
@@ -2499,6 +2675,31 @@ class MainWindow(qw.QWidget):
             self.ui.btn_main_daq_test.setEnabled(
                 combo.count() > 0 and getattr(self, "_daq_test_thread", None) is None
             )
+
+    def _daq_test_role_for_wavelength(self, wavelength_nm):
+        """采集波长(nm) → DAQ Test 激光角色键；复用 ``LASER_ROLE_MAP``（638/647 都→
+        ``laser_red_line``），未知波长回退 488 对应角色。"""
+        try:
+            nm = int(wavelength_nm)
+        except (TypeError, ValueError):
+            nm = 488
+        return LASER_ROLE_MAP.get(nm, LASER_ROLE_MAP[488])
+
+    def _select_daq_test_target_for_wavelength(self):
+        """把 DAQ Test 下拉选中项设为当前采集波长对应的激光测试项（切波长时强制跟随）。"""
+        combo = getattr(self.ui, "cmb_main_daq_test_target", None)
+        if combo is None:
+            return
+        index = combo.findData(
+            self._daq_test_role_for_wavelength(self.sim_app_config.selected_laser_nm)
+        )
+        if index < 0:
+            return
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(False)
 
     def _shared_main_daq_adapter(self):
         """返回与 controller 共享的 daq_adapter（先 ensure_sim_runtime）；不可用返回 None。"""
@@ -2716,7 +2917,7 @@ class MainWindow(qw.QWidget):
         self._daq_test_worker = None
         self._daq_test_stop_event = None
         if hasattr(self.ui, "btn_main_daq_test"):
-            self.ui.btn_main_daq_test.setText(getattr(self, "_daq_test_btn_text", "Pulse Test"))
+            self.ui.btn_main_daq_test.setText(getattr(self, "_daq_test_btn_text", "Test"))
             self.ui.btn_main_daq_test.setEnabled(True)
         self._set_main_daq_inputs_enabled(True)
         # B1：测试前若暂停了 live preview，结束后安全恢复。
@@ -3259,9 +3460,16 @@ class MainWindow(qw.QWidget):
                     "exposure_us": int(app_config_snapshot.camera.exposure_us),
                 }
             self.sim_current_task_id = self.sim_acquisition_controller.start_single_acquisition(task, **start_kwargs)
+            if raw_only:
+                reserve_raw_path = getattr(self, "_reserve_sim_raw_save_path_for_task", None)
+                if callable(reserve_raw_path):
+                    reserve_raw_path(self.sim_current_task_id)
             print(f"SIM acquisition started from {trigger_source}: {self.sim_current_task_id}")
         except Exception as e:
             self.sim_acquisition_in_progress = False
+            clear_raw_path = getattr(self, "_clear_sim_raw_pending_save_path", None)
+            if callable(clear_raw_path):
+                clear_raw_path(getattr(self, "sim_current_task_id", ""))
             restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
             if callable(restore_routing):
                 restore_routing()
@@ -3486,6 +3694,7 @@ class MainWindow(qw.QWidget):
     def slot_handle_sim_raw_stack_saved(self, task_id, path):
         task_id = str(task_id)
         path = str(path)
+        self._clear_sim_raw_pending_save_path(task_id)
         finished_task_ids = getattr(self, "sim_raw_stack_save_finished_task_ids", None)
         if finished_task_ids is None:
             finished_task_ids = set()
@@ -3639,6 +3848,7 @@ class MainWindow(qw.QWidget):
     def slot_handle_sim_raw_stack_save_failed(self, task_id, message):
         task_id = str(task_id)
         message = str(message)
+        self._clear_sim_raw_pending_save_path(task_id)
         finished_task_ids = getattr(self, "sim_raw_stack_save_finished_task_ids", None)
         if finished_task_ids is None:
             finished_task_ids = set()
@@ -3654,6 +3864,7 @@ class MainWindow(qw.QWidget):
 
     def slot_handle_sim_acquisition_failed(self, task_id, message):
         self.sim_acquisition_in_progress = False
+        self._clear_sim_raw_pending_save_path(task_id)
         restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
         if callable(restore_routing):
             restore_routing()
@@ -3680,6 +3891,7 @@ class MainWindow(qw.QWidget):
 
     def slot_handle_sim_acquisition_cancelled(self, task_id, message):
         self.sim_acquisition_in_progress = False
+        self._clear_sim_raw_pending_save_path(task_id)
         restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
         if callable(restore_routing):
             restore_routing()
@@ -3757,17 +3969,7 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_collectedCellsROI_Y']         = self.ui.spb_collectedROI_Y.value()
         configure_settings['spb_collectedCellsROI_width']     = self.ui.spb_collectedROI_width.value()
         configure_settings['spb_collectedCellsROI_height']    = self.ui.spb_collectedROI_height.value()
-        configure_settings['spb_collectedCellsROI_angle']     = self.ui.spb_collectedROI_angle.value()
 
-        # Flow Rate Detection ROI 模块
-        configure_settings['spb_flowRateROI_X']         = self.ui.spb_flowRateROI_X.value()
-        configure_settings['spb_flowRateROI_Y']         = self.ui.spb_flowRateROI_Y.value()
-        configure_settings['spb_flowRateROI_width']     = self.ui.spb_flowRateROI_width.value()
-        configure_settings['spb_flowRateROI_height']    = self.ui.spb_flowRateROI_height.value()
-        configure_settings['cmb_objective']             = self.ui.cmb_objective.currentIndex()
-        configure_settings['spb_chipChannel_width']     = self.ui.spb_chipChannel_width.value()
-        configure_settings['spb_chipChannel_height']    = self.ui.spb_chipChannel_height.value()
-        configure_settings['spb_flowRateDetectFramesNumber']    = self.ui.spb_flowRateDetectFramesNumber.value()
         #Trigger Control 模块
         configure_settings['spb_triggerCapture_time']       = self.ui.spb_triggerCapture_time.value()
         configure_settings['spb_triggerReleaseSort_time']   = self.ui.spb_triggerReleaseSort_time.value()
@@ -3788,6 +3990,14 @@ class MainWindow(qw.QWidget):
         configure_settings['spb_sCMOS_minArea']          = self.sCMOS_minArea
         #Binary ROI 模块
         configure_settings['spb_threshold_Bi'] = self.ui.spb_threshold_Bi.value()
+        configure_settings['sim_save_folder'] = self.ui.edit_main_savePath_folder.text().strip()
+        configure_settings['sim_save_prefix'] = self._sanitize_sim_save_prefix(
+            self.ui.edit_main_savePath_prefix.text()
+        )
+        configure_settings['sim_save_start_number'] = self.ui.spb_main_savePath_startNumber.value()
+        configure_settings['sim_save_next_number'] = self._coerce_sim_save_next_number(
+            getattr(self, "sim_save_next_number", self.ui.spb_main_savePath_startNumber.value())
+        )
         configure_settings['sim_control'] = app_config_to_dict(self.sim_app_config)
 
         # 添加其他需要保存的控件...
@@ -3949,7 +4159,7 @@ class MainWindow(qw.QWidget):
                 'spb_sCMOS_functionROI_height',
                 configure_settings.get('spb_sCMOS_elasticityMeasurementROI_height', 70),
             )
-            # 设置 cell flow rate ROI 模块
+            # 设置 cell flow through ROI 模块
             self.ui.spb_cellFlowThroughROI_X.setValue(configure_settings.get('spb_releaseROI_X', 0))
             self.ui.spb_cellFlowThroughROI_Y.setValue(configure_settings.get('spb_releaseROI_Y', 0))
             self.ui.spb_cellFlowThroughROI_width.setValue(configure_settings.get('spb_releaseROI_width', 320))
@@ -3959,16 +4169,6 @@ class MainWindow(qw.QWidget):
             self.ui.spb_collectedROI_Y.setValue(configure_settings.get('spb_collectedCellsROI_Y', 0))
             self.ui.spb_collectedROI_width.setValue(configure_settings.get('spb_collectedCellsROI_width', 0))
             self.ui.spb_collectedROI_height.setValue(configure_settings.get('spb_collectedCellsROI_height', 0))
-            self.ui.spb_collectedROI_angle.setValue(configure_settings.get('spb_collectedCellsROI_angle', 0))
-            #设置Flow Rate Detection ROI
-            self.ui.spb_flowRateROI_X.setValue(configure_settings.get('spb_flowRateROI_X', 0))
-            self.ui.spb_flowRateROI_Y.setValue(configure_settings.get('spb_flowRateROI_Y', 0))
-            self.ui.spb_flowRateROI_width.setValue(configure_settings.get('spb_flowRateROI_width', 0))
-            self.ui.spb_flowRateROI_height.setValue(configure_settings.get('spb_flowRateROI_height', 0))
-            self.ui.cmb_objective.setCurrentIndex(configure_settings.get('cmb_objective', 0))
-            self.ui.spb_chipChannel_width.setValue(configure_settings.get('spb_chipChannel_width', 0))
-            self.ui.spb_chipChannel_height.setValue(configure_settings.get('spb_chipChannel_height', 0))   
-            self.ui.spb_flowRateDetectFramesNumber.setValue(configure_settings.get('spb_flowRateDetectFramesNumber', 0))        
             # 设置 Trigger Control 模块
             self.ui.spb_triggerCapture_time.setValue(configure_settings.get('spb_triggerCapture_time', 1))
             self.ui.spb_triggerReleaseSort_time.setValue(
@@ -4004,6 +4204,7 @@ class MainWindow(qw.QWidget):
 
             # 设置 Binary ROI 模块
             self.ui.spb_threshold_Bi.setValue(configure_settings.get('spb_threshold_Bi', 120))
+            self._apply_loaded_sim_save_path_settings(configure_settings)
             MainWindow.apply_loaded_sim_settings_payload(
                 self,
                 configure_settings,
@@ -4054,32 +4255,6 @@ class MainWindow(qw.QWidget):
             # 如果需要，可以在这里添加错误提示框
             # QMessageBox.critical(self, "保存失败", f"保存文件时出错:\n{str(e)}")
     # 图像处理区域的模块 
-    # ROI细胞测速
-    def btn_enterSettingPara_flowRateDetection_function(self):
-        if self.btn_enterSettingPara_flowRateDetection_state:
-            self.ui.btn_enterSettingPara_flowRateDetection.setStyleSheet("background-color: #E1E1E1")
-            self.btn_enterSettingPara_flowRateDetection_state = False
-            self.ui.cmb_objective.setEnabled(False)
-            self.ui.spb_chipChannel_width.setEnabled(False)
-            self.ui.spb_chipChannel_height.setEnabled(False)
-            self.ui.spb_flowRateDetectFramesNumber.setEnabled(False)
-        else:
-            self.ui.btn_enterSettingPara_flowRateDetection.setStyleSheet("background-color: #4EEE94")
-            self.btn_enterSettingPara_flowRateDetection_state = True
-            self.ui.cmb_objective.setEnabled(True)
-            self.ui.spb_chipChannel_width.setEnabled(True)
-            self.ui.spb_chipChannel_height.setEnabled(True)
-            self.ui.spb_flowRateDetectFramesNumber.setEnabled(True)  
-    @pyqtSlot()         
-    def slot_btn_flowRateImageProcessing_function(self):
-        if self.btn_flowRateImageProcessing_state:
-            self.signal_setImageProcessingWay_UIThread.emit(-1)  #关闭ROI图像处理  
-            self.btn_flowRateImageProcessing_state = False
-            self.ui.btn_flowRateImageProcessing.setStyleSheet("background-color: #E1E1E1")            
-        else:
-            self.signal_setImageProcessingWay_UIThread.emit(5)
-            self.ui.btn_flowRateImageProcessing.setStyleSheet("background-color: #4EEE94")
-            self.btn_flowRateImageProcessing_state = True
     
     # ROI细胞筛选
     def btn_enterImageProcessingModel_function(self):
@@ -4160,7 +4335,6 @@ class MainWindow(qw.QWidget):
         self.collectedCell_miss  = 0
         self.functionMeasurement_start_miss = 0
         self.functionMeasurement_end_miss = 0
-        self.flowRate_ID          = 0 
         self.roi_data_queue.clear()
         self.ui.spb_roiDataNumber.setValue(0)
         for roi_key in self.roi_display_lb:
@@ -4266,26 +4440,11 @@ class MainWindow(qw.QWidget):
         para["collectedROI_Y"]               = self.ui.spb_collectedROI_Y.value()
         para["collectedROI_width"]           = self.ui.spb_collectedROI_width.value()
         para["collectedROI_height"]          = self.ui.spb_collectedROI_height.value()
-        para["collectedROI_angle"]           = self.ui.spb_collectedROI_angle.value()
 
-        # flowRate ROI
-        para["flowRateROI_X"]               = self.ui.spb_flowRateROI_X.value()
-        para["flowRateROI_Y"]               = self.ui.spb_flowRateROI_Y.value()
-        para["flowRateROI_width"]           = self.ui.spb_flowRateROI_width.value()
-        para["flowRateROI_height"]          = self.ui.spb_flowRateROI_height.value()
-        para["flowRateScanFrames"]          = self.ui.spb_flowRateDetectFramesNumber.value()
-
-        para["chipChannel_width"]           = self.ui.spb_chipChannel_width.value()   
-        para["chipChannel_height"]          = self.ui.spb_chipChannel_height.value()
-        para["cameraPixelSize"]             = 9 #9μm for MV-XG51GM-T fastCamera
         #图像保存模块（主要是missEventVideoSave）
         para["missEventSavePreFrames"]      = self.ui.spb_missEventSavePreFrames.value() # miss event 保存的帧数，当前帧往前数 
         para["missEventVideoSaveModel"]     = self.btn_missEventVideoSaveModel_state
 
-        if self.ui.cmb_objective.currentIndex() == 0:
-            para["objective_magnification"] = 10 # 10X物镜
-        elif self.ui.cmb_objective.currentIndex() == 1:
-            para["objective_magnification"] = 20 # 20X物镜
 
         #每当有参数接收就重新发送信号给图像处理线程，改变其参数
         self.signal_sendImageProcessingPara.emit(para)
@@ -4319,7 +4478,6 @@ class MainWindow(qw.QWidget):
         experiment_imfo["spb_triggerFunction_time"] = str(self.ui.spb_triggerFunction_time.value())
         experiment_imfo["spb_triggerRelease_time"] = str(self.ui.spb_triggerRelease_time.value())
         experiment_imfo["spb_triggerReleaseSort_time"] = str(self.ui.spb_triggerReleaseSort_time.value())
-        experiment_imfo["spb_cellSpeedValue"] = str(self.ui.spb_cellSpeedValue.value())
         experiment_imfo["spb_preTriggerBuffer"] = str(self.ui.spb_preTriggerBuffer.value())
         experiment_imfo["spb_sCMOS_preTriggerBuffer"] = str(self.ui.spb_sCMOS_preTriggerBuffer.value())
         experiment_imfo["fastCameraMaxGrayscale"] =  self.ui.spb_fastCamera_displayGray_max.value()        
@@ -4334,23 +4492,17 @@ class MainWindow(qw.QWidget):
             1: ("Trapped_ROI",self.ui.lb_trappedROIView_original,self.ui.lb_trappedROIView_processed,self.ui.lb_trappedROIView_target),
             2: ("Release_ROI",self.ui.lb_cellFlowThroughROIView_original,self.ui.lb_cellFlowThroughROIView_processed,self.ui.lb_cellFlowThroughROIView_target),
             4: ("Collected_ROI",self.ui.lb_collectedROIView_original,self.ui.lb_collectedROIView_processed,self.ui.lb_collectedROIView_target),
-            5: ("flowRate_ROI_start",self.ui.lb_flowRateDetectROIView_original_start,self.ui.lb_flowRateDetectROIView_processed_start,self.ui.lb_flowRateDetectROIView_target_start),
-            6: ("flowRate_ROI_end"  ,self.ui.lb_flowRateDetectROIView_original_end  ,self.ui.lb_flowRateDetectROIView_processed_end  ,self.ui.lb_flowRateDetectROIView_target_end),
         }
         #参数为0时-capture:1.ID; 2.area; 3.X; 4.Y; 5.total; 6.算法时间; 7. 间隔时间;
         #参数为1时-capture:1.ID; 2.area; 3.total; 4.miss;  5.ROI_result-state;
         #参数为2时-capture:1.ID;  2.total; 3.算法时间; 4. 间隔时间; 
         #参数为4时-capture:1.ID; 2.area; 3.X; 4.Y; 5.total; 6.miss;  7.算法时间; 8. 间隔时间; 9.ROI_result-state;
-        #参数为5时-capture:1.ID; 2.area; 3.X; 
-        #参数为6时-capture:1.ID; 2.area; 3.X; 4. 间隔时间; 5.ROI_result-state;
         #7代表Function Measurement ROI分析的参数。1.ID; 2.total; 3.miss; 4.state; 5.Lenth(pixel)就是轮廓最低点的y位置;
         self.roi_display_lb = {
             0: (self.ui.lb_captureCell_id,self.ui.lb_captureCellArea, self.ui.lb_captureCell_X,self.ui.lb_captureCell_Y,self.ui.lb_captureCell_total,self.ui.lb_captureCell_algorithmTime,self.ui.lb_captureCell_intervalTime),
             1: (self.ui.lb_trappedCell_id,self.ui.lb_trappedCellArea,self.ui.lb_trappedCell_total,self.ui.lb_trappedCell_miss,self.ui.lb_trappedROI_state),
             2: (self.ui.lb_releaseCell_id,self.ui.lb_releaseCell_total,self.ui.lb_releaseCell_algorithmTime,self.ui.lb_releaseCell_intervalTime),
             4: (self.ui.lb_collectedCell_id,self.ui.lb_collectedCellArea, self.ui.lb_collectedCell_X,self.ui.lb_collectedCell_Y,self.ui.lb_collectedCell_total,self.ui.lb_collectedCell_miss,self.ui.lb_collectiveCell_algorithmTime,self.ui.lb_collectedCell_intervalTime,self.ui.lb_collectedROI_state),
-            5: (self.ui.lb_flowRateCell_id_start,self.ui.lb_flowRateCell_id_start, self.ui.lb_flowRateDetectionCell_X_start),
-            6: (self.ui.lb_flowRateCell_id_end,self.ui.lb_flowRateDetectionCellArea_end, self.ui.lb_flowRateDetectionCell_X_end,self.ui.lb_flowRateDetectionCell_end_intervalTime,self.ui.lb_flowRateROI_state),
         }
         # 二值化阈值
         self.threshold_Bi = self.ui.spb_threshold_Bi.value()
@@ -4376,23 +4528,12 @@ class MainWindow(qw.QWidget):
         self.collectedROI_Y = self.ui.spb_collectedROI_Y.value()
         self.collectedROI_width = self.ui.spb_collectedROI_width.value()
         self.collectedROI_height = self.ui.spb_collectedROI_height.value()
-        self.collectedROI_angle = self.ui.spb_collectedROI_angle.value()
-        # flow rate ROI
-        self.flowRateROI_X = self.ui.spb_flowRateROI_X.value()
-        self.flowRateROI_Y = self.ui.spb_flowRateROI_Y.value()
-        self.flowRateROI_width  = self.ui.spb_flowRateROI_width.value()
-        self.flowRateROI_height = self.ui.spb_flowRateROI_height.value()
 
         self.roi_way = {
             0: (self.captureROI_X+self.cellFlowThroughROI_X, self.cellFlowThroughROI_Y, self.captureROI_width, self.cellFlowThroughROI_height),
             1: (self.trappedROI_X, self.trappedROI_Y, self.trappedROI_width, self.trappedROI_height),
             2: (self.cellFlowThroughROI_X, self.cellFlowThroughROI_Y, self.cellFlowThroughROI_width, self.cellFlowThroughROI_height),
             4: (self.collectedROI_X, self.collectedROI_Y, self.collectedROI_width, self.collectedROI_height),
-            5: (self.flowRateROI_X, self.flowRateROI_Y, self.flowRateROI_width, self.flowRateROI_height), #start flowRateROI 
-            6: (self.flowRateROI_X, self.flowRateROI_Y, self.flowRateROI_width, self.flowRateROI_height), #start flowRateROI 
-        }
-        self.roi_angles = {
-            4: self.collectedROI_angle,
         }
         self.roi_diff_disply_lb = {
             1:(self.ui.lb_trappedROIView_BgDiff_Bi),
@@ -4442,14 +4583,6 @@ class MainWindow(qw.QWidget):
         else:
             self.btn_collectedROI_view_state = True
             self.ui.btn_collectedROI_view.setStyleSheet("background-color: #E7DDFF")   
-    def btn_flowRateROI_view_function(self):
-        """flow rate ROI 启动按钮功能"""
-        if self.btn_flowRateROI_view_state:
-            self.btn_flowRateROI_view_state = False
-            self.ui.btn_flowRateROI_view.setStyleSheet("background-color: #E1E1E1")
-        else:
-            self.btn_flowRateROI_view_state = True
-            self.ui.btn_flowRateROI_view.setStyleSheet("background-color: #BBFFFF")  # 255 255 187 BGR
 
     # Hardvare Connection 模块
     def btn_refresh_camera_function(self):
@@ -4639,7 +4772,6 @@ class MainWindow(qw.QWidget):
             # 把singleRun和其关闭信号连接
             self.MCUTriggerThread.worker.signal_close_btn_runScreenCell_single_function.connect(self.slot_btn_runScreenCell_single_function)
             # 把singleRun和其关闭信号连接
-            self.MCUTriggerThread.worker.signal_close_btn_flowRateImageProcessing_function.connect(self.slot_btn_flowRateImageProcessing_function)
             #连接MCU信号和图像处理状态
             self.MCUTriggerThread.worker.signal_setImageProcessingWay_MCUThread.connect(self.FastCameraThread.image_processor.slot_set_image_processing_way)
 
@@ -4788,13 +4920,8 @@ class MainWindow(qw.QWidget):
             self.btn_cellFlowThroughROI_view_function()
         if self.btn_trappedROI_view_state:
             self.btn_trappedROI_view_function()
-        if self.btn_flowRateROI_view_state:
-            self.btn_flowRateROI_view_function()
         if self.btn_collectedROI_view_state:
             self.btn_collectedROI_view_function()            
-        if self.btn_flowRateImageProcessing_state:
-            self.slot_btn_flowRateImageProcessing_function()
-        self.ui.btn_flowRateImageProcessing.setEnabled(False)
         # 图像处理模块
         if self.btn_enterImageProcessingModel_state:
             self.btn_enterImageProcessingModel_function()
@@ -4871,8 +4998,6 @@ class MainWindow(qw.QWidget):
 
             #图像处理模块
             self.ui.btn_enterImageProcessingModel.setEnabled(True)
-            # flowRate ROI模块
-            self.ui.btn_flowRateImageProcessing.setEnabled(True)
             # 手动润洗管道模块
             self.ui.btn_enterRinseChannelModel.setEnabled(True)
     
@@ -4924,12 +5049,9 @@ class MainWindow(qw.QWidget):
                 # trapped ROI 显示 粉红色显示
                 self.ROI_live_view(display_frame,self.trappedROI_X,self.trappedROI_Y,self.trappedROI_width,self.trappedROI_height,204,204,255)  # BGR #FFCCCC
              
-            if self.btn_flowRateROI_view_state:
-                # 测试流速ROI淡蓝色
-                self.ROI_live_view(display_frame,self.flowRateROI_X,self.flowRateROI_Y,self.flowRateROI_width,self.flowRateROI_height,255,255,187)  # BGR #BBFFFF
             if self.btn_collectedROI_view_state:
                 # 搜集的细胞ROI鲜红色
-                self.ROI_live_view(display_frame,self.collectedROI_X,self.collectedROI_Y,self.collectedROI_width,self.collectedROI_height,255,221,231,self.collectedROI_angle) # BGR #E7DDFF
+                self.ROI_live_view(display_frame,self.collectedROI_X,self.collectedROI_Y,self.collectedROI_width,self.collectedROI_height,255,221,231) # BGR #E7DDFF
             
             # 将 numpy 格式的图像转换为 QImage
             h, w, ch = display_frame.shape
@@ -5064,7 +5186,7 @@ class MainWindow(qw.QWidget):
         """显示ROI图像"""
         """耗时400-800us"""
         imageProcessing_way = ROI_para["imageProcessing_way"] #非控件
-        #ID_add              = ROI_para["ID_add"] 这是固定的，只有0和5会+1
+        #ID_add              = ROI_para["ID_add"] 这是固定的，只有0会+1
         algorithm_time      = math.ceil(ROI_para["algorithm_time"])
         interval_time       = ROI_para["interval_time"]
         total_add           = ROI_para["total_add"]
@@ -5149,26 +5271,6 @@ class MainWindow(qw.QWidget):
             interval_time_lb.setText(str(interval_time))
             roi_state_lb.setText(str(processing_state))
 
-        elif imageProcessing_way == 5: # flowRate_roi
-            ID_lb ,area_lb, x_lb = self.roi_display_lb[imageProcessing_way]
-            self.flowRate_ID += 1
-            self.ui.spb_cellSpeedValue.setValue(0)
-            self.ui.spb_flowRateValue.setValue(0) 
-            ID = self.flowRate_ID
-            ID_lb.setText(str(self.flowRate_ID))
-            area_lb.setText(str(cell_area))
-            x_lb.setText(str(cell_cX))
-        elif imageProcessing_way == 6: # flowRate_roi
-            ID_lb ,area_lb, x_lb,interval_time_lb,roi_state_lb = self.roi_display_lb[imageProcessing_way]
-            self.ui.spb_cellSpeedValue.setValue(ROI_para["cellSpeedValue"])
-            self.ui.spb_flowRateValue.setValue(ROI_para["flowRateValue"]) 
-
-            ID = self.flowRate_ID
-            ID_lb.setText(str(self.flowRate_ID))
-            area_lb.setText(str(cell_area))
-            x_lb.setText(str(cell_cX))
-            interval_time_lb.setText(str(interval_time))
-            roi_state_lb.setText(str(processing_state))
         elif imageProcessing_way == 7: # function_measurement_roi
             ID_lb ,total_lb,miss_lb,roi_state_lb,bottom_lb = self.roi_display_lb[imageProcessing_way]
             ID = self.cell_ID
@@ -5182,31 +5284,27 @@ class MainWindow(qw.QWidget):
             bottom_lb.setText(str(bottom))
  
         #创建带有时间戳的数据记录
-        # 流速测试的不记录
-        if imageProcessing_way not in (5,6):
-            record = {
-                'ID':ID,
-                'roi_x': roi_x,
-                'roi_y': roi_y,
-                'roi_w': roi_w,
-                'roi_h': roi_h,
-                'roi_angle': ROI_para.get("roi_angle", self.roi_angles.get(imageProcessing_way, 0)),
-                'total_number':total_number,
-                'miss_number':miss_number,
-                'algorithm_time_μs' : algorithm_time,
-                'interval_time_μs' : interval_time,
-                'cell_area' : cell_area,
-                'cell_cX' : cell_cX,
-                'cell_cY' : cell_cY,
-                "cell_speed(μm/ms)" : self.ui.spb_cellSpeedValue.value(),
-                'timestamp': datetime.now().strftime("%H:%M:%S:%f")[:-3],#保留到毫秒
-                'processing_way': ROI_para["imageProcessing_way"],  # 保留处理类型标识
-                'Lenth(bottom)':bottom,
-            }
-            # 加入统一队列
-            self.roi_data_queue.append(record)
-            #显示队列的元素个数
-            self.ui.spb_roiDataNumber.setValue(len(self.roi_data_queue))
+        record = {
+            'ID':ID,
+            'roi_x': roi_x,
+            'roi_y': roi_y,
+            'roi_w': roi_w,
+            'roi_h': roi_h,
+            'total_number':total_number,
+            'miss_number':miss_number,
+            'algorithm_time_μs' : algorithm_time,
+            'interval_time_μs' : interval_time,
+            'cell_area' : cell_area,
+            'cell_cX' : cell_cX,
+            'cell_cY' : cell_cY,
+            'timestamp': datetime.now().strftime("%H:%M:%S:%f")[:-3],#保留到毫秒
+            'processing_way': ROI_para["imageProcessing_way"],  # 保留处理类型标识
+            'Lenth(bottom)':bottom,
+        }
+        # 加入统一队列
+        self.roi_data_queue.append(record)
+        #显示队列的元素个数
+        self.ui.spb_roiDataNumber.setValue(len(self.roi_data_queue))
         
         #显示原始图像
         self.display_ROI_image(roi_frame,original_view)
@@ -5259,10 +5357,9 @@ class MainWindow(qw.QWidget):
             print(f"显示错误: {str(e)}")
 
     def _collected_background_diff_roi(self, frame_16bit, roi_x, roi_y, roi_w, roi_h):
-        angle = self.roi_angles.get(4, 0)
-        roi_frame = crop_rotated_roi(frame_16bit, roi_x, roi_y, roi_w, roi_h, angle)
+        roi_frame = frame_16bit[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
         blur_roi_frame = cv2.GaussianBlur(roi_frame.astype(np.float32), (3,3), sigmaX=0.8).astype(np.uint16)
-        roi_background_frame = crop_rotated_roi(self.background_frame, roi_x, roi_y, roi_w, roi_h, angle)
+        roi_background_frame = self.background_frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
         diff_roi_frame = cv2.absdiff(roi_background_frame, blur_roi_frame)
         _, binary = cv2.threshold(
             diff_roi_frame,
@@ -5275,15 +5372,12 @@ class MainWindow(qw.QWidget):
         closed = cv2.morphologyEx(binary_8bit, cv2.MORPH_CLOSE, collected_kernel, iterations=1)
         return cv2.morphologyEx(closed, cv2.MORPH_OPEN, collected_kernel, iterations=1)
 
-    def ROI_live_view(self,display_frame,roi_x,roi_y,width,height,B,G,R,angle=0):
+    def ROI_live_view(self,display_frame,roi_x,roi_y,width,height,B,G,R):
         """显示框选ROI的区域"""
         x_scaled = int(roi_x * self.Ratio_x)
         y_scaled = int(roi_y * self.Ratio_y)
         width_scaled = int(width * self.Ratio_x)
         height_scaled = int(height * self.Ratio_y)
-        if abs(float(angle or 0)) > 1e-6:
-            draw_rotated_roi(display_frame, roi_x, roi_y, width, height, angle, (B,G,R), self.Ratio_x, self.Ratio_y)
-            return
         cv2.rectangle(display_frame,(x_scaled , y_scaled),(x_scaled + width_scaled, y_scaled + height_scaled),(B,G,R),1)
 
     def save_ROI_image(self,frame,imgROIName,imgClassName):

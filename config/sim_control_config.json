@@ -12,12 +12,12 @@
   },
   "camera": {
     "device_index": 0,
-    "device_label": "0: C13440-20C [S/N: 305209]",
-    "roi_x": 512,
-    "roi_y": 512,
-    "roi_width": 1024,
-    "roi_height": 1024,
-    "exposure_us": 150000,
+    "device_label": "",
+    "roi_x": 0,
+    "roi_y": 0,
+    "roi_width": 2304,
+    "roi_height": 2304,
+    "exposure_us": 100000,
     "bit_depth": 16,
     "timeout_ms": 5000,
     "trigger_mode": "external_level"
@@ -41,7 +41,7 @@
     "direction": "positive_z",
     "step_um": 0.3,
     "num_steps": 10,
-    "exposure_preset_ms": 8,
+    "exposure_preset_ms": 20,
     "focus_metric": "sml"
   },
   "reconstruction": {
@@ -58,7 +58,7 @@
     "output_path": "data/reconstruction",
     "wiener": 2.0,
     "pixel_size_nm": 65.0,
-    "excitation_na": 1.47,
+    "excitation_na": 1.48,
     "theta_ratio": [
       1,
       1,
@@ -87,7 +87,7 @@
     "",
     ""
   ],
-  "selected_running_order": "488_3.5_2d_50ms",
+  "selected_running_order": "",
   "selected_laser_nm": 488,
   "red_laser_nm": 638,
   "config_version": 13

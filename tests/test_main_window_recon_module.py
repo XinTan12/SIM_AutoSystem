@@ -1,4 +1,4 @@
-"""主 GUI Recon 模块（位于 DAQ 之后、列末 spacer 之前；SIM Runtime 已移至 SIM Configuration 列顶）的回归测试。
+"""主 GUI Recon 模块（位于 DAQ 之后、列末 spacer 之前；Save Path 位于 SIM Configuration 列顶）的回归测试。
 
 复用 ``test_main_window_zscan_module`` 的 stub/host 模式。覆盖（含从已删 ``SimSettingsDialog``
 迁来的 recon 行为）：控件存在、波长下拉 405/488/561/638、按当前采集波长初始化参数 + OTF、

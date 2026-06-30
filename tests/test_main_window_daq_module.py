@@ -4,7 +4,7 @@
 ``MainWindow`` 方法以 ``legacy_main.MainWindow.<m>(host)`` 直接调用，外部依赖打桩。
 
 覆盖：控件存在、8 路线位下拉从配置初始化、测试目标下拉（5 脉冲 + SIM采集 + SLM激活时序）、
-插入顺序（SLM < Z-Scan < DAQ < Recon < Runtime）、幂等、配置改值往返（写回 + 落盘 + 同步
+插入顺序（Save Path < SLM < Z-Scan < DAQ < Recon）、幂等、配置改值往返（写回 + 落盘 + 同步
 controller + 刷新摘要）、DAQ 测试按钮的 B1 安全互锁（关 immediate-live + 暂停 preview + 结束恢复）、
 与 SIM9 采集互斥。注意：用 ``_PulseTestWorker`` / ``QThread`` 的 fake 替身，断言状态转换而不真正跑硬件。
 """
@@ -122,6 +122,12 @@ class _DaqHost(QtWidgets.QWidget):
     def _refresh_main_daq_test_targets(self):
         legacy_main.MainWindow._refresh_main_daq_test_targets(self)
 
+    def _daq_test_role_for_wavelength(self, wavelength_nm):
+        return legacy_main.MainWindow._daq_test_role_for_wavelength(self, wavelength_nm)
+
+    def _select_daq_test_target_for_wavelength(self):
+        legacy_main.MainWindow._select_daq_test_target_for_wavelength(self)
+
     def on_main_daq_setting_changed(self, *args):
         legacy_main.MainWindow.on_main_daq_setting_changed(self, *args)
 
@@ -207,11 +213,29 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             host.setup_sim_daq_module()
             combo = host.ui.cmb_main_daq_test_target
             ids = [combo.itemData(i) for i in range(combo.count())]
+            # "Camera Trigger + Capture" 项已删除；只剩 4 路激光 + SIM采集 + SLM激活时序。
             self.assertEqual(
                 ids,
-                ["camera_trigger_line", "laser_405_line", "laser_488_line",
-                 "laser_561_line", "laser_red_line", "sim_acquisition", "slm_activation_timing"],
+                ["laser_405_line", "laser_488_line", "laser_561_line",
+                 "laser_red_line", "sim_acquisition", "slm_activation_timing"],
             )
+            # 默认选中项跟随当前采集波长（_DaqHost 默认 selected_laser_nm=488 → laser_488_line）。
+            self.assertEqual(combo.currentData(), "laser_488_line")
+        finally:
+            host.close()
+
+    def test_default_target_follows_acquisition_wavelength(self):
+        """DAQ Test 下拉默认项=当前采集波长；切波长调 _select 后强制跟随（638/647→laser_red_line）。"""
+        host = _DaqHost()
+        try:
+            host.sim_app_config.selected_laser_nm = 561
+            host.setup_sim_daq_module()
+            combo = host.ui.cmb_main_daq_test_target
+            self.assertEqual(combo.currentData(), "laser_561_line")
+            # 切到本机红光波长，调联动方法后下拉跟随到红光激光项。
+            host.sim_app_config.selected_laser_nm = host.sim_app_config.red_laser_nm
+            host._select_daq_test_target_for_wavelength()
+            self.assertEqual(combo.currentData(), "laser_red_line")
         finally:
             host.close()
 
@@ -262,10 +286,20 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             self.assertGreaterEqual(ui.hbox_daq_device.indexOf(ui.lbl_main_red_laser), 0)
             self.assertIs(grid.itemAtPosition(9, 0).layout(), ui.hbox_daq_test)
             self.assertIs(grid.itemAtPosition(10, 0).widget(), ui.lbl_main_daq_status)
-            # 几何：SIM 列收窄 grp 455→372 / 内部 443→360，摘要列左移 x 1965→1882
-            self.assertEqual(ui.grp_simConfiguration.geometry().width(), 372)
-            self.assertEqual(ui.layoutWidget_simConfiguration.geometry().width(), 360)
-            self.assertEqual(ui.grp_simSummary.geometry().x(), 1882)
+            # DAQ Test 行：删 "Test" 标签；下拉固定 235、按钮 "Test" 固定 52（同一行完整显示）。
+            self.assertFalse(hasattr(ui, "lbl_main_daq_test"))
+            self.assertEqual(ui.cmb_main_daq_test_target.maximumWidth(), 235)
+            self.assertEqual(ui.btn_main_daq_test.maximumWidth(), 52)
+            # 设备行收窄：Refresh 改 "↻" 固定 36、Red(nm) 标签 maxWidth 60、device/Red 下拉微缩。
+            self.assertEqual(ui.btn_main_daq_refresh.text(), "↻")
+            self.assertEqual(ui.btn_main_daq_refresh.maximumWidth(), 36)
+            self.assertEqual(ui.lbl_main_red_laser.maximumWidth(), 60)
+            self.assertEqual(ui.cmb_main_daq_device.maximumWidth(), 95)
+            self.assertEqual(ui.cmb_main_red_laser.maximumWidth(), 78)
+            # 几何：保留 Save Path，但 SIM Configuration 列宽恢复到本轮前的窄面板尺寸。
+            self.assertEqual(ui.grp_simConfiguration.geometry().width(), 314)
+            self.assertEqual(ui.layoutWidget_simConfiguration.geometry().width(), 302)
+            self.assertEqual(ui.grp_simSummary.geometry().x(), 809)
         finally:
             host.close()
 
@@ -277,8 +311,9 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             idx_zscan = layout.indexOf(host.ui.grp_zscan)
             idx_daq = layout.indexOf(host.ui.grp_daq)
             idx_recon = layout.indexOf(host.ui.grp_recon)
-            idx_runtime = layout.indexOf(host.ui.grp_simRuntime)
-            self.assertEqual(idx_runtime, 0)  # SIM Runtime 已移到 SIM Configuration 列最顶
+            idx_save_path = layout.indexOf(host.ui.grp_savePath)
+            self.assertFalse(hasattr(host.ui, "grp_simRuntime"))
+            self.assertEqual(idx_save_path, 0)
             self.assertLess(idx_zscan, idx_daq)
             self.assertLess(idx_daq, idx_recon)
             self.assertEqual(idx_daq, 3)
@@ -334,7 +369,7 @@ class MainWindowDaqModuleTests(unittest.TestCase):
             host._on_main_daq_test_finished()
             host.start_sim_preview.assert_called()
             self.assertIsNone(host._daq_test_thread)
-            self.assertEqual(host.ui.btn_main_daq_test.text(), "Pulse Test")
+            self.assertEqual(host.ui.btn_main_daq_test.text(), "Test")
         finally:
             host.close()
 

@@ -101,7 +101,6 @@ class VideoSaver(QObject):
         self.sort             =None
         self.releaseSort      =None
         self.function       =None
-        self.speed            =None
         self.pre_fast         =None
         self.pre_sCMOS        =None
     @pyqtSlot(dict)   
@@ -111,7 +110,6 @@ class VideoSaver(QObject):
         self.release          = experiment_imfo["spb_triggerRelease_time"]
         self.releaseSort      = experiment_imfo["spb_triggerReleaseSort_time"]
         self.function       = experiment_imfo["spb_triggerFunction_time"]
-        self.speed            = experiment_imfo["spb_cellSpeedValue"]
         self.pre_fast         = experiment_imfo["spb_preTriggerBuffer"]
         self.pre_sCMOS        = experiment_imfo["spb_sCMOS_preTriggerBuffer"]
         self.fastCameraMaxGrayscale = experiment_imfo["fastCameraMaxGrayscale"]
@@ -133,8 +131,8 @@ class VideoSaver(QObject):
                     filename = f"{folder_name}/{timestamp}_[({self.pre_sCMOS})pre] [{average_fps}fps].tiff"
                     self._save_as_tiff(frames, filename)
                 elif save_type.lower() == "avi":
-                    #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"pressure_(b1_c_b2_trig_cap_Drug)"_speed_um/ms
-                    filename = f"{folder_name}/{timestamp}_[({self.pre_fast})pre] [Trig.({self.cap}_{self.function}_{self.release}_{self.sort})ms] [({self.speed})μm_ms] [{average_fps}fps].avi"
+                    #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"pressure_(b1_c_b2_trig_cap_Drug)"
+                    filename = f"{folder_name}/{timestamp}_[({self.pre_fast})pre] [Trig.({self.cap}_{self.function}_{self.release}_{self.sort})ms] [{average_fps}fps].avi"
                     frames_8bit = self.compress_16bit_to_8bit_fast(frames,self.fastCameraMaxGrayscale)
                     self._save_as_avi(frames_8bit, filename)
                 self.signal_finished_triggerSaveVideo.emit(1)
@@ -224,8 +222,8 @@ class VideoSaver(QObject):
                     # 创建日期文件夹
                     if not os.path.exists(folder_name):
                         os.makedirs(folder_name)
-                    #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"pressure_(b1_c_b2_trig_cap_Drug)"_speed_um/ms
-                    filename = f"{folder_name}/{timestamp}_[{self.average_fps}fps] [Trigger ({self.cap}_{self.release}_{self.sort})ms] [speed ({self.speed})μm_ms][preBuffer ({missEventSavePreFrames})].avi"    
+                    #图像命名规则："time"_"fps"_"triggerTime_(c_r_s)"_"pressure_(b1_c_b2_trig_cap_Drug)"
+                    filename = f"{folder_name}/{timestamp}_[{self.average_fps}fps] [Trigger ({self.cap}_{self.release}_{self.sort})ms][preBuffer ({missEventSavePreFrames})].avi"
                     # 初始化视频写入器
                     writer = cv2.VideoWriter(
                         filename,
@@ -243,4 +241,4 @@ class VideoSaver(QObject):
             finally:
                 if 'writer' in locals():
                     writer.release()
-                    print("视频写入器已释放") 
+                    print("视频写入器已释放")
