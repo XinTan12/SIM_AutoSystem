@@ -468,6 +468,32 @@ class UiRegressionTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_sim_control_window_propagates_machine_red_identity_to_controller(self):
+        import tempfile
+
+        from sim_control.config_store import save_app_config
+        from sim_control.gui import SimControlWindow
+        from sim_control.models import AppConfig, BackendConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "sim_config.json"
+            save_app_config(
+                AppConfig(
+                    backend=BackendConfig(simulation_mode=True),
+                    red_laser_nm=647,
+                    selected_laser_nm=647,
+                ),
+                config_path,
+            )
+            window = SimControlWindow(config_path=str(config_path))
+            try:
+                self.assertEqual(window.controller.red_laser_nm, 647)
+                window.config.red_laser_nm = 638
+                window._sync_config_from_widgets()
+                self.assertEqual(window.controller.red_laser_nm, 638)
+            finally:
+                window.close()
+
     def test_sim_control_window_prepare_experiment_uses_running_order_not_manual_patterns(self):
         """``_prepare_experiment`` 必须把 4 个预备开关都置 True，且**不**直接调 ``prepare_patterns``。"""
         import tempfile

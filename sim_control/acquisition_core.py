@@ -33,7 +33,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Literal, Protocol
 
 import numpy as np
 
@@ -49,7 +50,13 @@ from .models import (
 )
 from .protocols import CameraAdapter, DaqAdapter, SlmAdapter
 from .waveform import NIDaqWaveformBuilder, validate_daq_line_config
-from .z_scan_core import ZScanCancelled, ZScanResult, run_z_scan
+from .z_scan_core import (
+    FocusFrameCallback,
+    ZScanCancelled,
+    ZScanResult,
+    preflight_z_scan_positions,
+    run_z_scan,
+)
 
 # 状态回调签名：``(status_name, payload_dict) -> None``。
 # 用 ``Callable`` 而不是直接绑定 Qt signal，保持本模块 Qt 无感。
@@ -67,6 +74,52 @@ class AcquisitionCancelled(RuntimeError):
     而真正的硬件失败应当让用户看到原因。
     """
     pass
+
+
+@dataclass(frozen=True)
+class ZStackAcquisitionResult:
+    """Lightweight terminal state for one multi-plane formal SIM9 series."""
+
+    task_id: str
+    requested_z_um: tuple[float, ...]
+    measured_z_um: tuple[float, ...]
+    completed_layers: int
+    total_layers: int
+    layer_shape: tuple[int, int, int] | None
+    status: Literal["complete", "cancelled", "failed"]
+    output_paths: tuple[str, ...] = ()
+    message: str = ""
+
+
+class ZStackAcquisitionCancelled(AcquisitionCancelled):
+    """Z-stack cancellation carrying safely accepted partial progress."""
+
+    def __init__(self, message: str, partial_result: ZStackAcquisitionResult) -> None:
+        super().__init__(message)
+        self.partial_result = partial_result
+
+
+class ZStackAcquisitionFailed(RuntimeError):
+    """Z-stack failure carrying safely accepted partial progress."""
+
+    def __init__(self, message: str, partial_result: ZStackAcquisitionResult) -> None:
+        super().__init__(message)
+        self.partial_result = partial_result
+
+
+class ZStackLayerSink(Protocol):
+    """Backpressure boundary compatible with ``ZStackAsyncWriter.submit_z_layer``."""
+
+    def submit_z_layer(
+        self,
+        *,
+        plane_index: int,
+        frames: np.ndarray,
+        requested_z_um: float,
+        measured_z_um: float,
+        batch_id: str,
+        stop_event: Any | None = None,
+    ) -> None: ...
 
 
 def _noop_status(status: str, payload: dict[str, Any]) -> None:
@@ -136,6 +189,8 @@ def run_single_acquisition(
     stage_adapter: Any | None = None,
     z_scan_config: ZScanConfig | None = None,
     z_scan_pattern_result: PatternPreparationResult | None = None,
+    formal_running_order_restore: Callable[[str], None] | None = None,
+    on_focus_frame: FocusFrameCallback | None = None,
 ) -> AcquisitionBatch:
     """同步运行一次 9 帧 SIM 采集；不依赖 Qt。
 
@@ -189,6 +244,9 @@ def run_single_acquisition(
         on_status("frame_captured", {"task_id": task_id, "frame_index": int(frame_index), "timestamp": float(timestamp)})
 
     def restore_formal_running_order_after_z_scan(status: str = "running_order_restored") -> None:
+        if formal_running_order_restore is not None:
+            formal_running_order_restore(status)
+            return
         formal_ro_index = pattern_result.metadata.get("running_order_index")
         if formal_ro_index is not None:
             slm.select_running_order(int(formal_ro_index))
@@ -203,24 +261,56 @@ def run_single_acquisition(
         elif pattern_result.metadata.get("mode") == "running_order":
             raise HardwareError("Cannot restore formal SIM running order after z-scan: missing running_order_index.")
 
-    def try_restore_formal_running_order_after_z_scan_failure() -> str | None:
+    def report_restore_warning(event: str, payload: dict[str, Any]) -> None:
         try:
-            restore_formal_running_order_after_z_scan("running_order_restored_after_z_scan_failure")
-            return None
+            on_status(event, payload)
+        except Exception:
+            logger.warning(
+                "Failed to report Z-scan restore warning %s without masking the acquisition error.",
+                event,
+                exc_info=True,
+            )
+
+    def restore_formal_state_after_z_scan(
+        *,
+        running_order_status: str,
+        restore_camera_config: bool,
+    ) -> list[tuple[str, Exception]]:
+        restore_errors: list[tuple[str, Exception]] = []
+        try:
+            restore_formal_running_order_after_z_scan(running_order_status)
         except Exception as restore_exc:
             warning = (
                 "Z-scan failed and formal SIM running order could not be restored; "
                 f"SLM may still be on z-scan RO: {restore_exc}"
             )
-            on_status(
+            report_restore_warning(
                 "running_order_restore_warning",
                 {
                     "task_id": task_id,
                     "message": warning,
                 },
             )
-            return warning
+            restore_errors.append((warning, restore_exc))
+        if restore_camera_config:
+            try:
+                camera.apply_config(task.camera)
+            except Exception as restore_exc:
+                warning = (
+                    "Z-scan ended and formal camera configuration could not be restored; "
+                    f"camera may still use the Z-scan exposure: {restore_exc}"
+                )
+                report_restore_warning(
+                    "camera_config_restore_warning",
+                    {
+                        "task_id": task_id,
+                        "message": warning,
+                    },
+                )
+                restore_errors.append((warning, restore_exc))
+        return restore_errors
 
+    formal_camera_config_applied = False
     if z_scan_config is not None and z_scan_config.enabled:
         if stage_adapter is None:
             raise HardwareError("Z-scan is enabled but no Z stage adapter is available.")
@@ -234,7 +324,10 @@ def run_single_acquisition(
                 "z_scan_running_order_name": z_scan_pattern_result.metadata.get("running_order_name", ""),
             },
         )
+        z_scan_invoked = False
         try:
+            preflight_z_scan_positions(stage_adapter, z_scan_config)
+            z_scan_invoked = True
             z_scan_result = run_z_scan(
                 stage_adapter=stage_adapter,
                 camera_adapter=camera,
@@ -244,28 +337,47 @@ def run_single_acquisition(
                 camera_config=task.camera,
                 timing=task.timing,
                 z_scan_config=z_scan_config,
+                laser_wavelength_nm=int(task.laser_wavelength_nm),
                 waveform_builder=waveform_builder,
                 stop_event=stop_event,
                 on_status=on_status,
+                task_id=task_id,
+                on_focus_frame=on_focus_frame,
             )
         except ZScanCancelled as exc:
-            restore_warning = try_restore_formal_running_order_after_z_scan_failure()
-            if restore_warning:
-                raise HardwareError(f"Acquisition cancelled.\n{restore_warning}") from exc
+            restore_errors = restore_formal_state_after_z_scan(
+                running_order_status="running_order_restored_after_z_scan_failure",
+                restore_camera_config=z_scan_invoked,
+            )
+            if restore_errors:
+                messages = "\n".join(message for message, _error in restore_errors)
+                raise HardwareError(f"Acquisition cancelled.\n{messages}") from exc
             raise AcquisitionCancelled("Acquisition cancelled.") from exc
         except Exception as exc:
-            restore_warning = try_restore_formal_running_order_after_z_scan_failure()
-            if restore_warning:
-                raise HardwareError(f"{exc}\n{restore_warning}") from exc
+            restore_errors = restore_formal_state_after_z_scan(
+                running_order_status="running_order_restored_after_z_scan_failure",
+                restore_camera_config=z_scan_invoked,
+            )
+            if restore_errors:
+                messages = "\n".join(message for message, _error in restore_errors)
+                raise HardwareError(f"{exc}\n{messages}") from exc
             raise
 
-        restore_formal_running_order_after_z_scan()
+        restore_errors = restore_formal_state_after_z_scan(
+            running_order_status="running_order_restored",
+            restore_camera_config=True,
+        )
+        if restore_errors:
+            messages = "\n".join(message for message, _error in restore_errors)
+            raise HardwareError(messages) from restore_errors[0][1]
+        formal_camera_config_applied = True
 
     # 6) 主流程：arm → 激活 → 播波形 → 读帧。任何阶段抛错或取消都要走 finally 收尾。
     try:
         _raise_if_cancelled(stop_event)
         # 6a) 把 task.camera 参数下发给相机（曝光、ROI、bit depth、超时）。
-        camera.apply_config(task.camera)
+        if not formal_camera_config_applied:
+            camera.apply_config(task.camera)
         _raise_if_cancelled(stop_event)
         # 6b) arm：相机进入"等待外触发"状态，frame_count 必须与 9 一致。
         camera.arm(frame_count=9)
@@ -362,3 +474,150 @@ def run_single_acquisition(
         pattern_files=list(pattern_result.pattern_files),
         metadata=metadata,
     )
+
+
+def run_z_stack_acquisition(
+    *,
+    task: SimTaskConfig,
+    daq_config: DaqLineConfig,
+    pattern_result: PatternPreparationResult,
+    camera: CameraAdapter,
+    slm: SlmAdapter,
+    daq: DaqAdapter,
+    stage_adapter: Any,
+    z_scan_config: ZScanConfig,
+    layer_sink: ZStackLayerSink,
+    waveform_builder: NIDaqWaveformBuilder | None = None,
+    task_id: str | None = None,
+    on_status: StatusCallback = _noop_status,
+    stop_event: Any | None = None,
+) -> ZStackAcquisitionResult:
+    """Capture one complete formal SIM9 batch at each preflighted Z position.
+
+    The current stage position is always the first layer. Each accepted layer is
+    handed synchronously to ``layer_sink`` so its bounded queue provides natural
+    backpressure without adding disk I/O to this acquisition thread.
+    """
+    parent_task_id = str(task_id or new_task_id())
+    stack_config = replace(z_scan_config, start_um=None)
+    requested_positions = tuple(preflight_z_scan_positions(stage_adapter, stack_config))
+    total_layers = len(requested_positions)
+    measured_positions: list[float] = []
+    completed_layers = 0
+    layer_shape: tuple[int, int, int] | None = None
+
+    def terminal_result(
+        status: Literal["complete", "cancelled", "failed"],
+        message: str = "",
+    ) -> ZStackAcquisitionResult:
+        return ZStackAcquisitionResult(
+            task_id=parent_task_id,
+            requested_z_um=requested_positions,
+            measured_z_um=tuple(measured_positions),
+            completed_layers=completed_layers,
+            total_layers=total_layers,
+            layer_shape=layer_shape,
+            status=status,
+            message=message,
+        )
+
+    def emit_child_status(event: str, payload: dict[str, Any]) -> None:
+        enriched = dict(payload)
+        enriched.setdefault("parent_task_id", parent_task_id)
+        on_status(event, enriched)
+
+    on_status(
+        "z_stack_starting",
+        {
+            "parent_task_id": parent_task_id,
+            "total_layers": total_layers,
+            "requested_z_um": list(requested_positions),
+        },
+    )
+
+    try:
+        for plane_index, requested_z_um in enumerate(requested_positions):
+            _raise_if_cancelled(stop_event)
+            check_sink_health = getattr(layer_sink, "check_health", None)
+            if callable(check_sink_health):
+                check_sink_health()
+            stage_adapter.move_z_um(float(requested_z_um))
+            measured_z_um = float(stage_adapter.get_position_um())
+            _raise_if_cancelled(stop_event)
+
+            child_task_id = f"{parent_task_id}:z{plane_index:04d}"
+            batch = run_single_acquisition(
+                task=task,
+                daq_config=daq_config,
+                pattern_result=pattern_result,
+                camera=camera,
+                slm=slm,
+                daq=daq,
+                waveform_builder=waveform_builder,
+                task_id=child_task_id,
+                on_status=emit_child_status,
+                stop_event=stop_event,
+                z_scan_config=None,
+            )
+            frames = _validate_acquisition_result(batch.stack, batch.timestamps, expected_frames=9)
+            current_shape = tuple(int(value) for value in frames.shape)
+            if layer_shape is None:
+                layer_shape = current_shape
+            elif current_shape != layer_shape:
+                raise HardwareError(
+                    f"Z-stack layer shape changed from {layer_shape!r} to {current_shape!r}."
+                )
+            _raise_if_cancelled(stop_event)
+
+            layer_sink.submit_z_layer(
+                plane_index=int(plane_index),
+                frames=frames,
+                requested_z_um=float(requested_z_um),
+                measured_z_um=measured_z_um,
+                batch_id=child_task_id,
+                stop_event=stop_event,
+            )
+            measured_positions.append(measured_z_um)
+            completed_layers += 1
+            on_status(
+                "z_stack_layer_accepted",
+                {
+                    "parent_task_id": parent_task_id,
+                    "batch_id": child_task_id,
+                    "plane_index": int(plane_index),
+                    "total_layers": total_layers,
+                    "requested_z_um": float(requested_z_um),
+                    "measured_z_um": measured_z_um,
+                    "layer_shape": list(current_shape),
+                },
+            )
+
+        result = terminal_result("complete")
+        on_status(
+            "z_stack_complete",
+            {
+                "parent_task_id": parent_task_id,
+                "completed_layers": result.completed_layers,
+                "total_layers": result.total_layers,
+                "layer_shape": list(result.layer_shape) if result.layer_shape is not None else None,
+            },
+        )
+        return result
+    except AcquisitionCancelled as exc:
+        partial = terminal_result("cancelled", str(exc))
+        raise ZStackAcquisitionCancelled(str(exc), partial) from exc
+    except Exception as exc:
+        if _stop_requested(stop_event):
+            partial = terminal_result("cancelled", str(exc))
+            raise ZStackAcquisitionCancelled(str(exc), partial) from exc
+        partial = terminal_result("failed", str(exc))
+        raise ZStackAcquisitionFailed(str(exc), partial) from exc
+    finally:
+        try:
+            camera.disarm()
+        except Exception:
+            logger.warning("Failed to disarm camera during Z-stack cleanup.", exc_info=True)
+        try:
+            daq.set_all_low(daq_config.device_name)
+        except Exception:
+            logger.warning("Failed to set DAQ outputs low during Z-stack cleanup.", exc_info=True)

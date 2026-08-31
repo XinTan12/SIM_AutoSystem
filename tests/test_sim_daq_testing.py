@@ -26,7 +26,10 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+
+import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +148,90 @@ class DaqTestTargetTests(unittest.TestCase):
         # 4) packed value = bit0(SLM enable) + bit1(SLM trigger) + bit8(camera) + bit12(red laser)
         #    = 1 + 2 + 256 + 4096 = 4355。该值证明位掩码按稀疏线位正确合成。
         self.assertEqual(int(plan.packed_port_values[1]), 4355)
+
+
+class SimAcquisitionTimingFlowTests(unittest.TestCase):
+    """覆盖 SIM9 DAQ 测试从相机 timing 推荐值到波形构建的调用顺序。"""
+
+    def _run_timing_case(self, apply_result):
+        from sim_control.daq_testing import DaqTestRunner
+        from sim_control.models import AppConfig, TimingConfig
+
+        events = []
+        observed = {}
+        config = AppConfig(timing=TimingConfig(inter_frame_gap_us=12_345))
+
+        slm_adapter = mock.Mock()
+        slm_adapter.is_connected.return_value = True
+        slm_adapter.list_running_orders.return_value = [(1, "488_3.5_2d_50ms")]
+        slm_adapter.select_running_order.return_value = {
+            "running_order_name": "488_3.5_2d_50ms",
+            "pattern_result": mock.Mock(pattern_files=["488_3.5_2d_50ms"] * 9, handles=[-1]),
+        }
+
+        camera_adapter = mock.Mock()
+        camera_adapter.is_connected.return_value = True
+
+        def _apply_config(camera_config):
+            events.append("apply_config")
+            observed["camera_config"] = camera_config
+            return apply_result
+
+        camera_adapter.apply_config.side_effect = _apply_config
+        camera_adapter.arm.side_effect = lambda **_kwargs: events.append("arm")
+        camera_adapter.read_frame_sequence.return_value = (
+            np.zeros((9, 2, 2), dtype=np.uint16),
+            [],
+        )
+
+        waveform_plan = SimpleNamespace(duration_s=4.5)
+        waveform_builder = mock.Mock()
+
+        def _build_waveform(**kwargs):
+            events.append("build")
+            observed["timing"] = kwargs["timing"]
+            return waveform_plan
+
+        waveform_builder.build.side_effect = _build_waveform
+        runner = DaqTestRunner(
+            camera_adapter=camera_adapter,
+            slm_adapter=slm_adapter,
+            daq_adapter=mock.Mock(),
+            config=config,
+            selected_laser_nm=488,
+        )
+
+        with mock.patch.object(
+            runner,
+            "_test_capture_path",
+            return_value=Path("dummy.tiff"),
+        ), mock.patch.object(runner, "_write_uint16_tiff"), mock.patch(
+            "sim_control.daq_testing.NIDaqWaveformBuilder",
+            return_value=waveform_builder,
+        ):
+            runner._run_sim_acquisition_test(config.daq)
+
+        return camera_adapter, events, observed, config
+
+    def test_camera_recommended_gap_is_applied_before_waveform_build_without_duplicate_apply(self):
+        """先 apply 相机，再用推荐 gap 构建波形，之后才 arm；相机配置不得重复下发。"""
+        camera, events, observed, config = self._run_timing_case(
+            {"recommended_inter_frame_gap_us": 6_500}
+        )
+
+        self.assertEqual(events, ["apply_config", "build", "arm"])
+        camera.apply_config.assert_called_once_with(observed["camera_config"])
+        self.assertEqual(observed["timing"].inter_frame_gap_us, 6_500)
+        self.assertEqual(config.timing.inter_frame_gap_us, 12_345)
+
+    def test_missing_camera_recommended_gap_falls_back_to_50ms_before_waveform_build(self):
+        """相机未返回推荐 gap 时仍先 apply，再以 50 ms 回退值构建波形。"""
+        camera, events, observed, config = self._run_timing_case({})
+
+        self.assertEqual(events, ["apply_config", "build", "arm"])
+        camera.apply_config.assert_called_once_with(observed["camera_config"])
+        self.assertEqual(observed["timing"].inter_frame_gap_us, 50_000)
+        self.assertEqual(config.timing.inter_frame_gap_us, 12_345)
 
 
 class NIDaqAdapterPulseTests(unittest.TestCase):

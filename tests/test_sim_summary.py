@@ -4,13 +4,14 @@
     覆盖 ``summary.build_sim_settings_summary`` 五类场景：
         1. ``backend`` 段不出现在摘要里（避免暴露本机 SDK 绝对路径）；旧 640nm
            配置经迁移后，DAQ 线位等主 GUI 已显示字段也不再出现在摘要里。
-        2. 给定 runtime_timing 时，``TIMING_READOUTTIME`` 与
-           ``SIM9_ESTIMATED_TOTAL_TIME`` 都按相机回报的实际值显示，且最后一段
-           是完整的 Timing 只读区块。
+        2. 给定且相机配置签名匹配的 runtime_timing 时，完整显示三个原始 timing、
+           理论最小 gap、安全余量、最终有效 gap 与 fallback 状态。
         3. 没有 runtime_timing 时使用默认 50ms 帧间隔；总时长公式不变。
         4. 总时长会随相机曝光变化（10ms → 550.100 ms vs 20ms → 640.100 ms）。
-        5. 相机推荐间隔 ≥ 50ms 时仍使用 50ms 默认（不允许放慢默认时序）。
-        6. ``selected_running_order`` 非空时摘要显示具体 RO 名而非"SLM 未连接"。
+        5. 相机推荐间隔 ≥ 50ms 时仍使用相机给出的合法值，不得截短为 50ms。
+        6. preview 等旧 runtime_timing 的相机配置签名不匹配时，全部运行时值显示未知，
+           并用 50ms fallback 估时。
+        7. ``selected_running_order`` 非空时摘要显示具体 RO 名而非"SLM 未连接"。
 
 协作关系：
     上游：``unittest``。
@@ -35,6 +36,21 @@ if str(PROJECT_ROOT) not in sys.path:
 
 class SimSettingsSummaryTests(unittest.TestCase):
     """覆盖主界面 SIM 设置摘要的字段顺序、命名迁移与总时长估算。"""
+
+    @staticmethod
+    def _runtime_camera_config(camera):
+        """返回 summary 用于拒绝 stale preview timing 的完整相机配置签名。"""
+        return {
+            "device_index": camera.device_index,
+            "device_label": camera.device_label,
+            "roi_x": camera.roi_x,
+            "roi_y": camera.roi_y,
+            "roi_width": camera.roi_width,
+            "roi_height": camera.roi_height,
+            "exposure_us": camera.exposure_us,
+            "bit_depth": camera.bit_depth,
+            "trigger_mode": camera.trigger_mode,
+        }
 
     def test_build_sim_settings_summary_omits_backend_and_repeated_gui_config(self):
         """摘要不暴露 backend，也不重复显示主 GUI DAQ/相机/激光配置。"""
@@ -122,12 +138,20 @@ class SimSettingsSummaryTests(unittest.TestCase):
             ),
         )
 
-        # 2) 模拟相机回报：31.649 ms 读出 + 32649 µs 推荐间隔（< 50 ms 触发覆盖）。
+        # 2) 模拟与当前正式配置完全匹配的相机回报；严格不等式下理论最小
+        #    gap=5.501 ms，固定安全余量=0.5 ms，最终有效 gap=6.001 ms。
         summary = build_sim_settings_summary(
             config,
             runtime_timing={
+                "camera_config": self._runtime_camera_config(config.camera),
                 "timing_readout_time_s": 0.031649,
-                "recommended_inter_frame_gap_us": 32649,
+                "timing_cyclic_trigger_period_s": 0.0255,
+                "timing_min_trigger_blanking_s": 0.0003,
+                "theoretical_min_inter_frame_gap_us": 5501,
+                "inter_frame_gap_safety_margin_us": 500,
+                "recommended_inter_frame_gap_us": 6001,
+                "timing_fallback_used": False,
+                "timing_fallback_reason": "",
             },
         )
 
@@ -138,12 +162,19 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertNotIn("ROI:", summary)
         self.assertIn("Pattern RO: (SLM 未连接)", summary)
         self.assertIn("TIMING_READOUTTIME: 31.649 ms", summary)
-        self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 483.941 ms", summary)
-        # 4) ``TIMING_READOUTTIME`` 必须紧邻 ``SIM9_ESTIMATED_TOTAL_TIME``。
+        self.assertIn("TIMING_CYCLICTRIGGERPERIOD: 25.500 ms", summary)
+        self.assertIn("TIMING_MINTRIGGERBLANKING: 0.300 ms", summary)
+        self.assertIn("TIMING_THEORETICAL_MIN_INTER_FRAME_GAP: 5.501 ms", summary)
+        self.assertIn("TIMING_INTER_FRAME_GAP_SAFETY_MARGIN: 0.500 ms", summary)
+        self.assertIn("TIMING_EFFECTIVE_INTER_FRAME_GAP: 6.001 ms", summary)
+        self.assertIn("TIMING_FALLBACK_USED: no", summary)
+        self.assertIn("TIMING_FALLBACK_REASON: -", summary)
+        self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 244.109 ms", summary)
+        # 4) 全部 timing 明细后才紧接 ``SIM9_ESTIMATED_TOTAL_TIME``。
         lines = summary.splitlines()
-        readout_index = lines.index("TIMING_READOUTTIME: 31.649 ms")
-        self.assertEqual(lines[readout_index + 1], "SIM9_ESTIMATED_TOTAL_TIME: 483.941 ms")
-        # 5) 末尾固定是只读 Timing 区块，含 4 个字段；``inter_frame_gap_us`` 使用推荐值。
+        effective_index = lines.index("TIMING_EFFECTIVE_INTER_FRAME_GAP: 6.001 ms")
+        self.assertEqual(lines[effective_index + 3], "SIM9_ESTIMATED_TOTAL_TIME: 244.109 ms")
+        # 5) 末尾固定是只读 Timing 区块，``inter_frame_gap_us`` 使用最终有效值。
         self.assertTrue(
             summary.endswith(
                 "\n".join(
@@ -151,7 +182,7 @@ class SimSettingsSummaryTests(unittest.TestCase):
                         "Timing:",
                         "  sample_rate_hz: 1000000",
                         "  edge_pulse_us: 50",
-                        "  inter_frame_gap_us: 32649",
+                        "  inter_frame_gap_us: 6001",
                         "  slm_enable_guard_us: 50",
                     ]
                 )
@@ -174,6 +205,13 @@ class SimSettingsSummaryTests(unittest.TestCase):
 
         self.assertNotIn("Bit Depth: 16-bit", summary)
         self.assertIn("TIMING_READOUTTIME: -", summary)
+        self.assertIn("TIMING_CYCLICTRIGGERPERIOD: -", summary)
+        self.assertIn("TIMING_MINTRIGGERBLANKING: -", summary)
+        self.assertIn("TIMING_THEORETICAL_MIN_INTER_FRAME_GAP: -", summary)
+        self.assertIn("TIMING_INTER_FRAME_GAP_SAFETY_MARGIN: -", summary)
+        self.assertIn("TIMING_EFFECTIVE_INTER_FRAME_GAP: 50.000 ms", summary)
+        self.assertIn("TIMING_FALLBACK_USED: yes", summary)
+        self.assertIn("TIMING_FALLBACK_REASON: runtime_timing_unavailable", summary)
         # 2) 总时长 = 2 × 1000 µs 默认 guard + 9 × (10 ms exposure + 50 ms gap) + 10 ms 整理 = 552.000 ms。
         self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 552.000 ms", summary)
         # 3) 默认间隔显示为 50000 µs；用户在 timing 字段填的 15000 不生效。
@@ -201,22 +239,138 @@ class SimSettingsSummaryTests(unittest.TestCase):
         self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 550.100 ms", ten_ms_summary)
         self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 640.100 ms", twenty_ms_summary)
 
-    def test_build_sim_settings_summary_ignores_calculated_gap_at_or_above_default(self):
-        """相机推荐间隔 ≥ 50 ms 时摘要继续显示 50 ms，不允许放慢默认时序。"""
-        from sim_control.models import AppConfig, TimingConfig
+    def test_build_sim_settings_summary_uses_valid_calculated_gap_at_or_above_default(self):
+        """签名匹配的合法推荐值即使 ≥50 ms 也不得被截短。"""
+        from sim_control.models import AppConfig, CameraConfig, TimingConfig
         from sim_control.summary import build_sim_settings_summary
 
-        config = AppConfig(timing=TimingConfig(inter_frame_gap_us=15_000))
+        config = AppConfig(
+            camera=CameraConfig(exposure_us=10_000),
+            timing=TimingConfig(inter_frame_gap_us=15_000),
+        )
 
-        # 50_000 与 65_000 都属于"≥ 50 ms"分支；摘要必须显示 50000。
-        for recommended_gap_us in (50_000, 65_000):
+        # 50_000 与 65_000 都属于合法计算结果；摘要必须保留原值。
+        for recommended_gap_us, expected_total_ms in ((50_000, 552.0), (65_000, 687.0)):
             with self.subTest(recommended_gap_us=recommended_gap_us):
                 summary = build_sim_settings_summary(
                     config,
-                    runtime_timing={"recommended_inter_frame_gap_us": recommended_gap_us},
+                    runtime_timing={
+                        "camera_config": self._runtime_camera_config(config.camera),
+                        "timing_readout_time_s": 0.005,
+                        "timing_cyclic_trigger_period_s": 0.074,
+                        "timing_min_trigger_blanking_s": 0.001,
+                        "theoretical_min_inter_frame_gap_us": recommended_gap_us - 500,
+                        "inter_frame_gap_safety_margin_us": 500,
+                        "recommended_inter_frame_gap_us": recommended_gap_us,
+                        "timing_fallback_used": False,
+                        "timing_fallback_reason": "",
+                    },
                 )
 
-                self.assertIn("  inter_frame_gap_us: 50000", summary)
+                self.assertIn(f"  inter_frame_gap_us: {recommended_gap_us}", summary)
+                self.assertIn(
+                    f"TIMING_EFFECTIVE_INTER_FRAME_GAP: {recommended_gap_us / 1000.0:.3f} ms",
+                    summary,
+                )
+                self.assertIn(f"SIM9_ESTIMATED_TOTAL_TIME: {expected_total_ms:.3f} ms", summary)
+
+    def test_build_sim_settings_summary_rejects_stale_preview_timing_signature(self):
+        """preview 1 ms timing 不得被 10 ms 正式采集摘要复用。"""
+        from sim_control.models import AppConfig, CameraConfig, TimingConfig
+        from sim_control.summary import build_sim_settings_summary
+
+        config = AppConfig(
+            camera=CameraConfig(
+                device_index=0,
+                device_label="0: ORCA-Fusion BT [CAM-001]",
+                roi_x=568,
+                roi_y=764,
+                roi_width=512,
+                roi_height=512,
+                exposure_us=10_000,
+                bit_depth=16,
+                trigger_mode="external_level",
+            ),
+            timing=TimingConfig(sample_rate_hz=1_000_000, slm_enable_guard_us=1000),
+        )
+        stale_camera_config = self._runtime_camera_config(config.camera)
+        stale_camera_config["exposure_us"] = 1000
+
+        summary = build_sim_settings_summary(
+            config,
+            runtime_timing={
+                "camera_config": stale_camera_config,
+                "timing_readout_time_s": 0.002534,
+                "timing_cyclic_trigger_period_s": 0.0035,
+                "timing_min_trigger_blanking_s": 0.002583,
+                "theoretical_min_inter_frame_gap_us": 2583,
+                "inter_frame_gap_safety_margin_us": 1000,
+                "recommended_inter_frame_gap_us": 3583,
+                "timing_fallback_used": False,
+                "timing_fallback_reason": "",
+            },
+        )
+
+        for label in (
+            "TIMING_READOUTTIME",
+            "TIMING_CYCLICTRIGGERPERIOD",
+            "TIMING_MINTRIGGERBLANKING",
+            "TIMING_THEORETICAL_MIN_INTER_FRAME_GAP",
+            "TIMING_INTER_FRAME_GAP_SAFETY_MARGIN",
+        ):
+            self.assertIn(f"{label}: -", summary)
+        self.assertIn("TIMING_EFFECTIVE_INTER_FRAME_GAP: 50.000 ms", summary)
+        self.assertIn("TIMING_FALLBACK_USED: yes", summary)
+        self.assertIn("TIMING_FALLBACK_REASON: camera_config_mismatch", summary)
+        self.assertIn("SIM9_ESTIMATED_TOTAL_TIME: 552.000 ms", summary)
+        self.assertIn("  inter_frame_gap_us: 50000", summary)
+
+    def test_build_sim_settings_summary_requires_every_camera_signature_field_to_match(self):
+        """9 个时序相关相机字段任一变化都必须拒绝 stale timing。"""
+        from sim_control.models import AppConfig, CameraConfig
+        from sim_control.summary import build_sim_settings_summary
+
+        config = AppConfig(
+            camera=CameraConfig(
+                device_index=1,
+                device_label="1: ORCA-Fusion BT [CAM-002]",
+                roi_x=12,
+                roi_y=24,
+                roi_width=512,
+                roi_height=256,
+                exposure_us=3000,
+                bit_depth=12,
+                trigger_mode="external_level",
+            )
+        )
+        replacements = {
+            "device_index": 0,
+            "device_label": "0: other",
+            "roi_x": 16,
+            "roi_y": 28,
+            "roi_width": 1024,
+            "roi_height": 512,
+            "exposure_us": 5000,
+            "bit_depth": 16,
+            "trigger_mode": "internal",
+        }
+
+        for field_name, replacement in replacements.items():
+            with self.subTest(field_name=field_name):
+                stale_camera_config = self._runtime_camera_config(config.camera)
+                stale_camera_config[field_name] = replacement
+                summary = build_sim_settings_summary(
+                    config,
+                    runtime_timing={
+                        "camera_config": stale_camera_config,
+                        "recommended_inter_frame_gap_us": 4000,
+                    },
+                )
+
+                self.assertIn("TIMING_READOUTTIME: -", summary)
+                self.assertIn("TIMING_EFFECTIVE_INTER_FRAME_GAP: 50.000 ms", summary)
+                self.assertIn("TIMING_FALLBACK_USED: yes", summary)
+                self.assertIn("TIMING_FALLBACK_REASON: camera_config_mismatch", summary)
 
     def test_build_sim_settings_summary_shows_selected_running_order(self):
         """``selected_running_order`` 非空时摘要显示具体 RO 名而非"SLM 未连接"。"""

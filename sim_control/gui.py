@@ -390,7 +390,11 @@ class SimControlWindow(QMainWindow):
         # 2) 加载配置；缺失文件 ``load_app_config`` 会自建默认。
         self.config = load_app_config(config_path or DEFAULT_CONFIG_PATH)
         # 3) 创建采集控制器并接管所有硬件 adapter（真实/仿真由 backend 决定）。
-        self.controller = SimAcquisitionController(self.config.backend, self)
+        self.controller = SimAcquisitionController(
+            self.config.backend,
+            self,
+            red_laser_nm=int(self.config.red_laser_nm),
+        )
         self.controller.z_scan_config = self.config.z_scan
         self.controller.reconstruction_config = self.config.reconstruction
         # 4) 占位决策器单实例就够；不需要独立 QThread。
@@ -779,6 +783,7 @@ class SimControlWindow(QMainWindow):
         self.config.timing = self._current_timing_config()
         self.config.pattern_files = self._current_pattern_files()
         self.config.selected_laser_nm = self._selected_laser_nm()
+        self.controller.red_laser_nm = int(self.config.red_laser_nm)
         self.controller.z_scan_config = self.config.z_scan
         self.controller.reconstruction_config = self.config.reconstruction
         # 跨线程下发配置快照（deepcopy），不在 GUI 线程直接改重建 worker 内部状态。
@@ -822,6 +827,9 @@ class SimControlWindow(QMainWindow):
     def _load_config_from_disk(self) -> None:
         """Load Config 按钮：从磁盘重读配置 → 写回控件 → 刷新线位。"""
         self.config = load_app_config(self.config.config_path or DEFAULT_CONFIG_PATH)
+        self.controller.red_laser_nm = int(self.config.red_laser_nm)
+        self.controller.z_scan_config = self.config.z_scan
+        self.controller.reconstruction_config = self.config.reconstruction
         self._populate_widgets_from_config(self.config)
         self.signal_reconstruction_config_changed.emit(self.config.reconstruction.snapshot())
         self._refresh_device_lines()

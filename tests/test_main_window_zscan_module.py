@@ -57,6 +57,13 @@ class _ZScanHost(QtWidgets.QWidget):
         self.stop_immediate_live_mode = mock.Mock(name="stop_immediate_live_mode")
         self.apply_connected_sim_camera_config = mock.Mock(name="apply_connected_sim_camera_config")
         self.stop_sim_preview = mock.Mock(name="stop_sim_preview", return_value=True)
+        self.sync_sim_camera_config_from_ui = mock.Mock(name="sync_sim_camera_config_from_ui")
+        self.sync_sim_camera_controls_from_config = mock.Mock(name="sync_sim_camera_controls_from_config")
+        self._persist_main_daq_config_from_ui = mock.Mock(name="persist_main_daq")
+        self._persist_main_recon_config_from_ui = mock.Mock(name="persist_main_recon")
+        self._apply_sim_red_laser_options = mock.Mock(name="apply_red_laser_options")
+        self._immediate_live_active_or_pending = mock.Mock(return_value=False)
+        self.refresh_sim_settings_summary = mock.Mock(name="refresh_summary")
 
     # --- 委托被测方法 ---
     def setup_sim_zscan_module(self):
@@ -69,11 +76,20 @@ class _ZScanHost(QtWidgets.QWidget):
         self.setting_changed_calls += 1
         legacy_main.MainWindow.on_main_zscan_setting_changed(self, *args)
 
+    def _persist_main_zscan_config_from_ui(self):
+        legacy_main.MainWindow._persist_main_zscan_config_from_ui(self)
+
+    def persist_sim_app_config_from_ui(self):
+        legacy_main.MainWindow.persist_sim_app_config_from_ui(self)
+
     def _set_zscan_inputs_enabled(self, enabled):
         legacy_main.MainWindow._set_zscan_inputs_enabled(self, enabled)
 
-    def _run_zscan_blocking(self, *args):
-        return legacy_main.MainWindow._run_zscan_blocking(self, *args)
+    def _set_zscan_formal_controls_enabled(self, enabled):
+        legacy_main.MainWindow._set_zscan_formal_controls_enabled(self, enabled)
+
+    def _run_zscan_blocking(self, *args, **kwargs):
+        return legacy_main.MainWindow._run_zscan_blocking(self, *args, **kwargs)
 
     def on_main_zscan_run_clicked(self):
         legacy_main.MainWindow.on_main_zscan_run_clicked(self)
@@ -144,6 +160,58 @@ class _FakeConnectWorker:
 
 
 class MainWindowZScanModuleTests(unittest.TestCase):
+    def test_formal_acquisition_mode_matrix_matches_three_state_contract(self):
+        disabled = ZScanConfig(enabled=False)
+        autofocus = ZScanConfig(enabled=True, select_focus_plane=True)
+        stack = ZScanConfig(enabled=True, select_focus_plane=False)
+
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(disabled, raw_only=False),
+            "single",
+        )
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(disabled, raw_only=True),
+            "single",
+        )
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(autofocus, raw_only=False),
+            "autofocus",
+        )
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(autofocus, raw_only=True),
+            "autofocus",
+        )
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(stack, raw_only=True),
+            "z_stack",
+        )
+        self.assertEqual(
+            legacy_main.classify_sim_z_scan_acquisition(stack, raw_only=False),
+            "blocked_z_stack",
+        )
+
+    def test_formal_acquisition_interlock_disables_and_restores_every_zscan_control(self):
+        host = _ZScanHost()
+        try:
+            host.setup_sim_zscan_module()
+            control_names = (
+                "cmb_main_zscan_direction",
+                "spb_main_zscan_step_nm",
+                "spb_main_zscan_num_steps",
+                "cmb_main_zscan_exposure",
+                "chk_main_zscan_enabled",
+                "chk_main_zscan_capture",
+                "btn_main_zscan_run",
+            )
+
+            host._set_zscan_formal_controls_enabled(False)
+            self.assertTrue(all(not getattr(host.ui, name).isEnabled() for name in control_names))
+
+            host._set_zscan_formal_controls_enabled(True)
+            self.assertTrue(all(getattr(host.ui, name).isEnabled() for name in control_names))
+        finally:
+            host.close()
+
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -175,24 +243,54 @@ class MainWindowZScanModuleTests(unittest.TestCase):
             self.assertEqual(ui.spb_main_zscan_step_nm.suffix(), "")
             self.assertEqual(ui.chk_main_zscan_capture.text(), "Select Focus Plane")
             self.assertEqual(ui.btn_main_zscan_run.text(), "Test Z-Scan")
-            self.assertIn("SIM9 acquisition", ui.chk_main_zscan_enabled.toolTip())
-            self.assertIn("Test Z-Scan", ui.chk_main_zscan_capture.toolTip())
+            mode_tooltips = (
+                ui.chk_main_zscan_enabled.toolTip(),
+                ui.chk_main_zscan_capture.toolTip(),
+                ui.btn_main_zscan_run.toolTip(),
+            )
+            self.assertTrue(all(mode_tooltips))
+            self.assertEqual(len(set(mode_tooltips)), 1)
+            for tooltip in mode_tooltips:
+                self.assertIn("Off: formal acquisition captures one SIM9 at the current Z.", tooltip)
+                self.assertIn("On + Select Focus Plane:", tooltip)
+                self.assertIn("SML focus scan", tooltip)
+                self.assertIn("On + Select Focus Plane cleared:", tooltip)
+                self.assertIn("one SIM9 per layer", tooltip)
+                self.assertIn("Select OFF moves the stage only", tooltip)
+                self.assertIn("Select ON runs only the SML focus scan", tooltip)
+                self.assertIn("neither test mode appends a formal SIM9", tooltip)
+                self.assertNotIn("routing will be added separately", tooltip)
+                self.assertNotIn("reserved", tooltip)
 
-            grid = ui.grp_zscan.layout()
-            # Z-Scan 重排 2×2（label-on-top）：开关 row0(colspan2)；方向/步进 标签row1·控件row2，
-            # 步数/曝光 标签row3·控件row4；选择焦面+测试按钮 row5；状态 row6。
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.chk_main_zscan_enabled))[0], 0)
+            # 保留 legacy Z-Scan 的紧凑几何：group 本身无 layout，四列 grid 位于固定
+            # layoutWidget 内；新增功能不得把它改成 group-owned 2×2 排布。
+            self.assertIsNone(ui.grp_zscan.layout())
+            self.assertEqual(ui.grp_zscan.maximumHeight(), 150)
+            layout_widget = ui.cmb_main_zscan_direction.parentWidget()
+            self.assertIsNotNone(layout_widget)
+            self.assertIs(layout_widget.parentWidget(), ui.grp_zscan)
+            self.assertEqual(layout_widget.geometry(), QtCore.QRect(0, 20, 312, 121))
+            grid = layout_widget.layout()
+            self.assertIs(grid, ui.gridLayout_zscan)
+            self.assertEqual(grid.columnCount(), 4)
+            self.assertEqual(
+                grid.getItemPosition(grid.indexOf(ui.chk_main_zscan_enabled)),
+                (0, 0, 1, 2),
+            )
             self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_direction)), (2, 0, 1, 1))
             self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_step_nm)), (2, 1, 1, 1))
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_num_steps)), (4, 0, 1, 1))
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_exposure)), (4, 1, 1, 1))
-            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.lbl_main_zscan_status))[0], 6)
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.spb_main_zscan_num_steps)), (2, 2, 1, 1))
+            self.assertEqual(grid.getItemPosition(grid.indexOf(ui.cmb_main_zscan_exposure)), (2, 3, 1, 1))
+            run_item = grid.itemAtPosition(3, 0)
+            self.assertIsNotNone(run_item)
+            self.assertIs(run_item.layout(), ui.hbox_zscan_run)
+            self.assertEqual(ui.lbl_main_zscan_status.geometry(), QtCore.QRect(5, 164, 16, 16))
 
             # 每个参数控件正上方一格 (row-1, 同列) 应是其文字标签（label-on-top）。
             for control, expected_text in (
                 (ui.cmb_main_zscan_direction, "Direction"),
                 (ui.spb_main_zscan_step_nm, "Step (nm)"),
-                (ui.spb_main_zscan_num_steps, "Steps"),
+                (ui.spb_main_zscan_num_steps, "Layers"),
                 (ui.cmb_main_zscan_exposure, "Exposure (ms)"),
             ):
                 row, col, _, _ = grid.getItemPosition(grid.indexOf(control))
@@ -203,14 +301,16 @@ class MainWindowZScanModuleTests(unittest.TestCase):
                 self.assertEqual(label_above.text(), expected_text)
                 self.assertEqual(label_above.font().pointSize(), 10)
 
-            # 控件宽沿用既有 2x2 Z-Scan 排布，不因 Save Path 模块新增而扩宽。
-            self.assertEqual(ui.cmb_main_zscan_direction.maximumWidth(), 76)
-            self.assertEqual(ui.spb_main_zscan_step_nm.maximumWidth(), 82)
-            self.assertEqual(ui.spb_main_zscan_num_steps.maximumWidth(), 76)
-            self.assertEqual(ui.cmb_main_zscan_exposure.maximumWidth(), 76)
+            # 控件宽恢复 legacy 四列排布，不因 Z-Scan 新功能而扩宽。
+            self.assertEqual(ui.cmb_main_zscan_direction.maximumWidth(), 50)
+            self.assertEqual(ui.spb_main_zscan_step_nm.maximumWidth(), 50)
+            self.assertEqual(ui.spb_main_zscan_num_steps.maximumWidth(), 50)
+            self.assertEqual(ui.cmb_main_zscan_exposure.maximumWidth(), 60)
             self.assertEqual(ui.btn_main_zscan_run.maximumWidth(), 100)
             self.assertEqual(ui.btn_main_zscan_run.font().pointSize(), 10)
-            # 重排 2×2 后给 Select Focus Plane 加 maxWidth 165（防 row5 撑宽、真实不裁切）。
+            self.assertEqual(ui.spb_main_zscan_num_steps.minimum(), 2)
+            self.assertEqual(ui.spb_main_zscan_num_steps.maximum(), 1001)
+            # Select Focus Plane 与 Test Z-Scan 仍位于底部同一行。
             self.assertEqual(ui.chk_main_zscan_capture.maximumWidth(), 165)
             # 控件字体 12pt（与 SIM Camera Settings 数值控件一致）
             self.assertEqual(ui.cmb_main_zscan_direction.font().pointSize(), 12)
@@ -245,30 +345,49 @@ class MainWindowZScanModuleTests(unittest.TestCase):
         finally:
             host.close()
 
-    def test_module_fits_panel_width(self):
+    def test_module_preserves_legacy_fixed_width_within_panel(self):
         host = _ZScanHost()
         try:
             host.setup_sim_zscan_module()
             panel_w = host.ui.layoutWidget_simConfiguration.width()
             self.assertGreaterEqual(panel_w, 280)
-            self.assertLessEqual(host.ui.grp_zscan.layout().minimumSize().width(), panel_w)
+            layout_widget = host.ui.cmb_main_zscan_direction.parentWidget()
+            self.assertIsNotNone(layout_widget)
+            self.assertIs(layout_widget.parentWidget(), host.ui.grp_zscan)
+            self.assertEqual(layout_widget.width(), 312)
+            self.assertLessEqual(layout_widget.width(), panel_w)
         finally:
             host.close()
 
     # ---- 配置初值 / 回写 ----
     def test_init_fills_controls_from_config(self):
-        cfg = AppConfig(z_scan=ZScanConfig(
+        z_scan = ZScanConfig(
             direction="negative_z", step_um=0.3, num_steps=7, exposure_preset_ms=14, enabled=False,
-        ))
+        )
+        z_scan.select_focus_plane = False
+        cfg = AppConfig(z_scan=z_scan)
         host = _ZScanHost(app_config=cfg)
         try:
             host.setup_sim_zscan_module()  # 末尾调 _init_zscan_module_from_config
             ui = host.ui
             self.assertEqual(ui.cmb_main_zscan_direction.currentData(), "negative_z")
             self.assertAlmostEqual(ui.spb_main_zscan_step_nm.value(), 300.0)
-            self.assertEqual(ui.spb_main_zscan_num_steps.value(), 7)
+            self.assertEqual(ui.spb_main_zscan_num_steps.value(), 8)
             self.assertEqual(ui.cmb_main_zscan_exposure.currentData(), 14)
             self.assertFalse(ui.chk_main_zscan_enabled.isChecked())
+            self.assertFalse(ui.chk_main_zscan_capture.isChecked())
+        finally:
+            host.close()
+
+    def test_maximum_move_count_round_trips_as_1001_layers_without_clamping(self):
+        host = _ZScanHost(app_config=AppConfig(z_scan=ZScanConfig(num_steps=1000)))
+        try:
+            host.setup_sim_zscan_module()
+            self.assertEqual(host.ui.spb_main_zscan_num_steps.value(), 1001)
+
+            host._persist_main_zscan_config_from_ui()
+
+            self.assertEqual(host.sim_app_config.z_scan.num_steps, 1000)
         finally:
             host.close()
 
@@ -277,20 +396,42 @@ class MainWindowZScanModuleTests(unittest.TestCase):
         try:
             host.setup_sim_zscan_module()
             host.setting_changed_calls = 0
-            host.sim_app_config = AppConfig(z_scan=ZScanConfig(
+            z_scan = ZScanConfig(
                 direction="negative_z", step_um=0.9, num_steps=3, exposure_preset_ms=20, enabled=False,
-            ))
+            )
+            z_scan.select_focus_plane = False
+            host.sim_app_config = AppConfig(z_scan=z_scan)
             host._init_zscan_module_from_config()
             self.assertEqual(host.setting_changed_calls, 0)
             # 控件确已被填充为新值（证明 _init 真改了控件，只是没触发回写）。
-            self.assertEqual(host.ui.spb_main_zscan_num_steps.value(), 3)
+            self.assertEqual(host.ui.spb_main_zscan_num_steps.value(), 4)
+            self.assertFalse(host.ui.chk_main_zscan_capture.isChecked())
         finally:
+            host.close()
+
+    def test_init_restores_each_widgets_existing_blocksignals_state(self):
+        host = _ZScanHost()
+        try:
+            host.setup_sim_zscan_module()
+            already_blocked = host.ui.spb_main_zscan_num_steps
+            initially_unblocked = host.ui.chk_main_zscan_capture
+            already_blocked.blockSignals(True)
+            self.assertTrue(already_blocked.signalsBlocked())
+            self.assertFalse(initially_unblocked.signalsBlocked())
+
+            host._init_zscan_module_from_config()
+
+            self.assertTrue(already_blocked.signalsBlocked())
+            self.assertFalse(initially_unblocked.signalsBlocked())
+        finally:
+            host.ui.spb_main_zscan_num_steps.blockSignals(False)
             host.close()
 
     def test_setting_change_writes_back_to_config_and_saves(self):
         host = _ZScanHost()
         try:
             host.setup_sim_zscan_module()
+            host.sim_app_config.z_scan.start_um = 1234.5
             with mock.patch.object(legacy_main, "save_app_config") as save_mock:
                 host.ui.cmb_main_zscan_direction.setCurrentIndex(
                     host.ui.cmb_main_zscan_direction.findData("negative_z")
@@ -301,13 +442,56 @@ class MainWindowZScanModuleTests(unittest.TestCase):
                     host.ui.cmb_main_zscan_exposure.findData(20)
                 )
                 host.ui.chk_main_zscan_enabled.setChecked(True)
+                host.ui.chk_main_zscan_capture.setChecked(False)
             cfg = host.sim_app_config.z_scan
             self.assertEqual(cfg.direction, "negative_z")
             self.assertAlmostEqual(cfg.step_um, 0.5)
-            self.assertEqual(cfg.num_steps, 4)
+            self.assertEqual(cfg.num_steps, 3)
             self.assertEqual(cfg.exposure_preset_ms, 20)
             self.assertTrue(cfg.enabled)
+            self.assertFalse(cfg.select_focus_plane)
+            self.assertIsNone(cfg.start_um)
             self.assertTrue(save_mock.called)
+        finally:
+            host.close()
+
+    def test_save_config_defensively_persists_layers_and_focus_selection(self):
+        host = _ZScanHost()
+        try:
+            host.setup_sim_zscan_module()
+            host.ui.spb_main_zscan_num_steps.blockSignals(True)
+            host.ui.chk_main_zscan_capture.blockSignals(True)
+            try:
+                host.ui.spb_main_zscan_num_steps.setValue(6)
+                host.ui.chk_main_zscan_capture.setChecked(False)
+            finally:
+                host.ui.spb_main_zscan_num_steps.blockSignals(False)
+                host.ui.chk_main_zscan_capture.blockSignals(False)
+
+            with mock.patch.object(legacy_main, "save_app_config") as save_mock:
+                host.persist_sim_app_config_from_ui()
+
+            self.assertEqual(host.sim_app_config.z_scan.num_steps, 5)
+            self.assertFalse(host.sim_app_config.z_scan.select_focus_plane)
+            save_mock.assert_called_once()
+        finally:
+            host.close()
+
+    def test_load_payload_refills_layers_and_focus_selection(self):
+        host = _ZScanHost()
+        try:
+            host.setup_sim_zscan_module()
+            z_scan = ZScanConfig(num_steps=2)
+            z_scan.select_focus_plane = False
+            loaded = AppConfig(z_scan=z_scan)
+            payload = {"sim_control": legacy_main.app_config_to_dict(loaded)}
+
+            with mock.patch.object(legacy_main, "save_app_config"):
+                legacy_main.MainWindow.apply_loaded_sim_settings_payload(host, payload)
+
+            self.assertEqual(host.ui.spb_main_zscan_num_steps.value(), 3)
+            self.assertFalse(host.ui.chk_main_zscan_capture.isChecked())
+            self.assertFalse(host.sim_app_config.z_scan.select_focus_plane)
         finally:
             host.close()
 
@@ -359,7 +543,9 @@ class MainWindowZScanModuleTests(unittest.TestCase):
             status = mock.Mock()
             with mock.patch.object(legacy_main, "run_z_scan_autofocus", return_value="A") as auto_mock, \
                     mock.patch.object(legacy_main, "run_z_scan_stage_only") as fn_mock:
-                result = host._run_zscan_blocking(True, stage, cfg, stop_event, status)
+                result = host._run_zscan_blocking(
+                    True, stage, cfg, stop_event, status, selected_laser_nm=561
+                )
             self.assertEqual(result, "A")
             fn_mock.assert_not_called()
             kwargs = auto_mock.call_args.kwargs
@@ -370,6 +556,7 @@ class MainWindowZScanModuleTests(unittest.TestCase):
             self.assertIs(kwargs["daq_config"], host.sim_app_config.daq)
             self.assertIs(kwargs["camera_config"], host.sim_app_config.camera)
             self.assertIs(kwargs["timing"], host.sim_app_config.timing)
+            self.assertEqual(kwargs["laser_wavelength_nm"], 561)
             self.assertFalse(kwargs["keep_captured_stack"])
         finally:
             host.close()
@@ -405,6 +592,11 @@ class MainWindowZScanModuleTests(unittest.TestCase):
         host = _ZScanHost()
         try:
             host.setup_sim_zscan_module()
+            # schema v14 defaults Select Focus Plane ON; this test exercises the stage-only
+            # worker path, so make that mode explicit without firing the persistence slot.
+            host.ui.chk_main_zscan_capture.blockSignals(True)
+            host.ui.chk_main_zscan_capture.setChecked(False)
+            host.ui.chk_main_zscan_capture.blockSignals(False)
             host.sim_acquisition_controller = SimpleNamespace(
                 stage_adapter=SimpleNamespace(is_connected=True),
                 connect_stage=mock.Mock(),

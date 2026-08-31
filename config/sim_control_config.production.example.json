@@ -38,7 +38,8 @@
   },
   "z_scan": {
     "enabled": true,
-    "start_um": 2674.74,
+    "start_um": null,
+    "select_focus_plane": true,
     "direction": "positive_z",
     "step_um": 0.3,
     "num_steps": 10,
@@ -91,5 +92,5 @@
   "selected_running_order": "",
   "selected_laser_nm": 488,
   "red_laser_nm": 638,
-  "config_version": 13
+  "config_version": 14
 }

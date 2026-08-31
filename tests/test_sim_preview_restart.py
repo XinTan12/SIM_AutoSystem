@@ -267,7 +267,38 @@ class SimPreviewRestartTests(unittest.TestCase):
         - 设置弹窗打开/关闭不影响 live preview 状态。
     """
 
-    """验证集成主界面 live preview 的停止、重启和采集前后状态切换。"""
+    def test_ensure_sim_runtime_reuse_syncs_machine_red_identity(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import BackendConfig, ReconstructionConfig, ZScanConfig
+
+        backend = BackendConfig(simulation_mode=True)
+        controller = SimpleNamespace(
+            red_laser_nm=638,
+            z_scan_config=None,
+            reconstruction_config=None,
+        )
+        window = SimpleNamespace(
+            sim_app_config=SimpleNamespace(
+                backend=backend,
+                red_laser_nm=647,
+                z_scan=ZScanConfig(),
+                reconstruction=ReconstructionConfig(),
+            ),
+            sim_acquisition_controller=controller,
+            sim_runtime_backend_signature=(
+                backend.fusion_bt_sdk_path,
+                backend.slm_sdk_path,
+                backend.simulation_mode,
+            ),
+            connect_sim_reconstruction_worker_to_controller=mock.Mock(),
+        )
+
+        legacy_main.MainWindow.ensure_sim_runtime(window)
+
+        self.assertEqual(controller.red_laser_nm, 647)
+        self.assertIs(controller.z_scan_config, window.sim_app_config.z_scan)
+        self.assertIs(controller.reconstruction_config, window.sim_app_config.reconstruction)
+        window.connect_sim_reconstruction_worker_to_controller.assert_called_once_with()
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance()
@@ -329,9 +360,13 @@ class SimPreviewRestartTests(unittest.TestCase):
         ui.setupUi(host_widget)
         window = type("SavePathHost", (), {})()
         window.ui = ui
+        window.sim_app_config = SimpleNamespace(
+            selected_laser_nm=488,
+            camera=SimpleNamespace(exposure_us=10_000, roi_width=512, roi_height=512),
+        )
         window.sim_save_next_number = 1
         window._loading_configure_settings = False
-        window._sim_raw_pending_save_path = {}
+        window._sim_raw_pending_save_specs = {}
         window.save_current_settings_to_default = mock.Mock()
         for name in (
             "setup_sim_save_path_module",
@@ -340,6 +375,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             "_normal_sim_save_folder",
             "_sanitize_sim_save_prefix",
             "_sim_save_filename_for_number",
+            "_sim_z_scan_series_output_paths",
             "_current_sim_raw_save_path",
             "_set_sim_save_path_controls",
             "_apply_loaded_sim_save_path_settings",
@@ -347,12 +383,89 @@ class SimPreviewRestartTests(unittest.TestCase):
             "_normalize_main_save_path_prefix",
             "_on_main_save_path_start_number_changed",
             "_browse_main_save_path_folder",
+            "_reserve_next_sim_save_spec",
+            "_assign_sim_raw_save_spec_to_task",
             "_reserve_sim_raw_save_path_for_task",
             "_clear_sim_raw_pending_save_path",
             "_route_raw_stack_save",
         ):
             setattr(window, name, getattr(legacy_main.MainWindow, name).__get__(window, type(window)))
         return host_widget, window
+
+    def test_save_path_filename_uses_prefix_acquisition_fields_and_single_separator(self):
+        host_widget, window = self._build_save_path_host()
+        try:
+            self.assertEqual(
+                window._sim_save_filename_for_number(
+                    1,
+                    prefix="mito-3.5-cos7-",
+                    wavelength_nm=488,
+                    exposure_us=10_000,
+                    roi_width=512,
+                    roi_height=512,
+                ),
+                "mito-3.5-cos7-488-10ms-512-0001.tif",
+            )
+            self.assertEqual(
+                window._sim_save_filename_for_number(
+                    12,
+                    prefix="cell",
+                    wavelength_nm=561,
+                    exposure_us=5_610,
+                    roi_width=512,
+                    roi_height=256,
+                ),
+                "cell-561-5.61ms-512x256-0012.tif",
+            )
+        finally:
+            host_widget.close()
+
+    def test_z_scan_series_filename_adds_direction_step_layers_and_focus_csv(self):
+        from sim_control.models import AppConfig, CameraConfig, ZScanConfig
+
+        host_widget, window = self._build_save_path_host()
+        try:
+            config = AppConfig(
+                selected_laser_nm=561,
+                camera=CameraConfig(exposure_us=20_000, roi_width=512, roi_height=256),
+                z_scan=ZScanConfig(
+                    enabled=True,
+                    select_focus_plane=False,
+                    direction="negative_z",
+                    step_um=0.3,
+                    num_steps=9,
+                    exposure_preset_ms=8,
+                ),
+            )
+            save_spec = {"folder": "data/sim_9frames", "prefix": "cell", "number": 1}
+
+            zstack_path, zstack_csv = window._sim_z_scan_series_output_paths(
+                save_spec,
+                kind="zstack",
+                app_config=config,
+            )
+            self.assertEqual(
+                zstack_path.name,
+                "cell-561-20ms-512x256-zstack-zstepN300nm-z10-0001.tif",
+            )
+            self.assertIsNone(zstack_csv)
+
+            config.z_scan.select_focus_plane = True
+            focus_path, focus_csv = window._sim_z_scan_series_output_paths(
+                save_spec,
+                kind="zfocus",
+                app_config=config,
+            )
+            self.assertEqual(
+                focus_path.name,
+                "cell-561-7.884ms-512x256-zfocus-zstepN300nm-z10-0001.tif",
+            )
+            self.assertEqual(
+                focus_csv.name,
+                "cell-561-7.884ms-512x256-zfocus-zstepN300nm-z10-0001-sml.csv",
+            )
+        finally:
+            host_widget.close()
 
     def test_save_path_numbering_reserves_path_and_routes_by_task_id(self):
         from tempfile import TemporaryDirectory
@@ -373,16 +486,42 @@ class SimPreviewRestartTests(unittest.TestCase):
                 )
                 window._reserve_sim_raw_save_path_for_task("task-1")
 
-                expected = str(Path(temp_dir) / "cell0007.tif")
-                self.assertEqual(window._sim_raw_pending_save_path["task-1"], expected)
+                self.assertEqual(
+                    window._sim_raw_pending_save_specs["task-1"],
+                    {"folder": str(Path(temp_dir)), "prefix": "cell", "number": 7},
+                )
                 self.assertEqual(window.sim_save_next_number, 8)
-                self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: cell0008.tif")
-                window.save_current_settings_to_default.assert_called_once()
+                self.assertEqual(
+                    window.ui.lbl_main_savePath_preview.text(),
+                    "Next: cell-488-10ms-512-0008.tif",
+                )
+                window.ui.edit_main_savePath_prefix.setText("second")
+                window._reserve_sim_raw_save_path_for_task("task-2")
+                self.assertEqual(
+                    window._sim_raw_pending_save_specs["task-2"],
+                    {"folder": str(Path(temp_dir)), "prefix": "second", "number": 8},
+                )
+                self.assertEqual(window.sim_save_next_number, 9)
+                self.assertEqual(window.save_current_settings_to_default.call_count, 2)
 
-                batch = SimpleNamespace(task_id="task-1")
+                batch = SimpleNamespace(
+                    task_id="task-1",
+                    laser_wavelength_nm=561,
+                    exposure_us=5_610,
+                    stack=np.zeros((9, 256, 512), dtype=np.uint16),
+                )
                 window._route_raw_stack_save(batch)
-                self.assertEqual(emitted, [("task-1", expected)])
-                self.assertEqual(window._sim_raw_pending_save_path, {})
+                expected = str(Path(temp_dir) / "cell-561-5.61ms-512x256-0007.tif")
+                second_batch = SimpleNamespace(
+                    task_id="task-2",
+                    laser_wavelength_nm=488,
+                    exposure_us=10_000,
+                    stack=np.zeros((9, 512, 512), dtype=np.uint16),
+                )
+                window._route_raw_stack_save(second_batch)
+                second_expected = str(Path(temp_dir) / "second-488-10ms-512-0008.tif")
+                self.assertEqual(emitted, [("task-1", expected), ("task-2", second_expected)])
+                self.assertEqual(window._sim_raw_pending_save_specs, {})
         finally:
             host_widget.close()
 
@@ -402,11 +541,11 @@ class SimPreviewRestartTests(unittest.TestCase):
             self.assertEqual(window.ui.edit_main_savePath_prefix.text(), "SIM.raw")
             self.assertEqual(window.ui.spb_main_savePath_startNumber.value(), 4)
             self.assertEqual(window.sim_save_next_number, 9)
-            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw0009.tif")
+            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw-488-10ms-512-0009.tif")
 
             window.ui.spb_main_savePath_startNumber.setValue(12)
             self.assertEqual(window.sim_save_next_number, 12)
-            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw0012.tif")
+            self.assertEqual(window.ui.lbl_main_savePath_preview.text(), "Next: SIM.raw-488-10ms-512-0012.tif")
         finally:
             host_widget.close()
 
@@ -419,12 +558,43 @@ class SimPreviewRestartTests(unittest.TestCase):
             sim_preview_active=True,
             sim_preview_restart_timer=timer,
             sync_sim_camera_config_from_ui=lambda save_to_disk=True: save_flags.append(save_to_disk),
+            _refresh_sim_save_path_preview=mock.Mock(),
         )
 
         legacy_main.MainWindow.on_sim_camera_setting_changed(window)
 
         self.assertEqual(save_flags, [False])
+        window._refresh_sim_save_path_preview.assert_called_once_with()
         self.assertEqual(timer.start_calls, [150])
+
+    def test_camera_setting_change_refreshes_next_filename_from_synced_config(self):
+        legacy_main = load_legacy_main_module()
+        host_widget, window = self._build_save_path_host()
+        try:
+            window.setup_sim_save_path_module()
+            window.ui.edit_main_savePath_prefix.setText("cell")
+            window.sim_camera_connected = False
+            window.sim_preview_active = False
+            window.sim_slm_connected = False
+            window._select_daq_test_target_for_wavelength = lambda: None
+
+            def sync_camera_config(*, save_to_disk=True):
+                self.assertFalse(save_to_disk)
+                window.sim_app_config.selected_laser_nm = 561
+                window.sim_app_config.camera.exposure_us = 5_610
+                window.sim_app_config.camera.roi_width = 512
+                window.sim_app_config.camera.roi_height = 256
+
+            window.sync_sim_camera_config_from_ui = sync_camera_config
+
+            legacy_main.MainWindow.on_sim_camera_setting_changed(window)
+
+            self.assertEqual(
+                window.ui.lbl_main_savePath_preview.text(),
+                "Next: cell-561-5.61ms-512x256-0001.tif",
+            )
+        finally:
+            host_widget.close()
 
     def test_auto_loaded_legacy_configuration_keeps_sim_camera_from_main_config(self):
         legacy_main = load_legacy_main_module()
@@ -443,6 +613,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             sync_sim_camera_config_from_ui=mock.Mock(),
             sync_sim_camera_controls_from_config=mock.Mock(),
             refresh_sim_settings_summary=mock.Mock(),
+            _refresh_sim_save_path_preview=mock.Mock(),
         )
 
         legacy_main.MainWindow.apply_loaded_sim_settings_payload(
@@ -463,6 +634,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(window.sim_app_config.camera.roi_y, 248)
         window.sync_sim_camera_controls_from_config.assert_called_once_with()
         window.refresh_sim_settings_summary.assert_called_once_with()
+        window._refresh_sim_save_path_preview.assert_called_once_with()
 
     def test_manual_legacy_configuration_load_keeps_flat_sim_camera_fallback(self):
         legacy_main = load_legacy_main_module()
@@ -470,6 +642,7 @@ class SimPreviewRestartTests(unittest.TestCase):
             sync_sim_camera_config_from_ui=mock.Mock(),
             sync_sim_camera_controls_from_config=mock.Mock(),
             refresh_sim_settings_summary=mock.Mock(),
+            _refresh_sim_save_path_preview=mock.Mock(),
         )
 
         legacy_main.MainWindow.apply_loaded_sim_settings_payload(
@@ -486,6 +659,7 @@ class SimPreviewRestartTests(unittest.TestCase):
         window.sync_sim_camera_config_from_ui.assert_called_once_with(save_to_disk=False)
         window.sync_sim_camera_controls_from_config.assert_called_once_with()
         window.refresh_sim_settings_summary.assert_called_once_with()
+        window._refresh_sim_save_path_preview.assert_called_once_with()
 
     def test_sync_sim_camera_config_from_ui_commits_pending_spinbox_text(self):
         legacy_main = load_legacy_main_module()
@@ -1054,6 +1228,152 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertTrue(app_config.reconstruction.enabled)
         self.assertTrue(app_config.z_scan.enabled)
 
+    def test_mcu_z_stack_mode_is_blocked_before_any_hardware_or_preview_side_effect(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AppConfig
+
+        app_config = AppConfig()
+        app_config.z_scan.enabled = True
+        app_config.z_scan.select_focus_plane = False
+        controller = SimpleNamespace(start_single_acquisition=mock.Mock())
+        window = SimpleNamespace(
+            sim_acquisition_in_progress=False,
+            sim_app_config=app_config,
+            sim_acquisition_controller=controller,
+            stop_immediate_live_mode=mock.Mock(),
+            sync_sim_camera_config_from_ui=mock.Mock(),
+            ensure_sim_runtime=mock.Mock(),
+            stop_sim_preview=mock.Mock(),
+            update_sim_runtime_status_widgets=mock.Mock(),
+        )
+
+        with mock.patch.object(legacy_main.qw.QMessageBox, "information") as information:
+            legacy_main.MainWindow.trigger_sim_formal_acquisition(
+                window,
+                trigger_source="mcu_function_trigger",
+                raw_only=False,
+            )
+
+        controller.start_single_acquisition.assert_not_called()
+        window.stop_immediate_live_mode.assert_not_called()
+        window.sync_sim_camera_config_from_ui.assert_not_called()
+        window.ensure_sim_runtime.assert_not_called()
+        window.stop_sim_preview.assert_not_called()
+        window.update_sim_runtime_status_widgets.assert_called_once()
+        status, payload = window.update_sim_runtime_status_widgets.call_args.args
+        self.assertEqual(status, "z_stack_mcu_blocked")
+        self.assertIn("blocked before any hardware action", payload["message"])
+        information.assert_called_once()
+
+    def test_manual_raw_stack_mode_dispatches_dedicated_zstack_without_normal_batch_routing(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AppConfig
+
+        app_config = AppConfig()
+        app_config.z_scan.enabled = True
+        app_config.z_scan.select_focus_plane = False
+        app_config.z_scan.num_steps = 3
+        save_spec = {"folder": "F:/data", "prefix": "cell", "number": 7}
+        output_path = Path("F:/data/cell-zstack-0007.tif")
+        controller = SimpleNamespace(
+            start_single_acquisition=mock.Mock(),
+            start_z_stack_acquisition=mock.Mock(return_value="zstack-task-1"),
+        )
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_slm_connected=True,
+            sim_preview_active=False,
+            sim_preview_requested=False,
+            sim_preview_restart_requested=False,
+            sim_preview_stop_in_progress=False,
+            sim_acquisition_in_progress=False,
+            sim_resume_preview_after_acquisition=False,
+            sim_current_task_id="",
+            sim_current_acquisition_raw_only=False,
+            sim_acquisition_controller=controller,
+            sim_app_config=app_config,
+            sync_sim_camera_config_from_ui=mock.Mock(),
+            ensure_sim_runtime=mock.Mock(),
+            stop_immediate_live_mode=mock.Mock(),
+            _immediate_live_active_or_pending=mock.Mock(return_value=False),
+            disconnect_sim_reconstruction_worker_from_controller=mock.Mock(),
+            disconnect_sim_raw_stack_save_worker_from_controller=mock.Mock(),
+            ensure_sim_raw_stack_save_worker=mock.Mock(),
+            connect_sim_raw_stack_save_worker_to_controller=mock.Mock(),
+            _reserve_next_sim_save_spec=mock.Mock(return_value=save_spec),
+            _sim_z_scan_series_output_paths=mock.Mock(return_value=(output_path, None)),
+            _clear_sim_raw_pending_save_path=mock.Mock(),
+            _restore_sim_post_acquisition_routing_after_raw_only=mock.Mock(),
+            update_sim_camera_action_buttons=mock.Mock(),
+            set_sim_camera_controls_enabled=mock.Mock(),
+            sim_preview_restart_timer=TimerSpy(),
+        )
+
+        legacy_main.MainWindow.trigger_sim_raw_9frame_acquisition(window, trigger_source="sim9_button")
+
+        controller.start_single_acquisition.assert_not_called()
+        controller.start_z_stack_acquisition.assert_called_once()
+        stack_kwargs = controller.start_z_stack_acquisition.call_args.kwargs
+        self.assertEqual(stack_kwargs["output_path"], output_path)
+        self.assertIs(stack_kwargs["z_scan_config"].select_focus_plane, False)
+        window.ensure_sim_raw_stack_save_worker.assert_not_called()
+        window.connect_sim_raw_stack_save_worker_to_controller.assert_not_called()
+        window.disconnect_sim_reconstruction_worker_from_controller.assert_called_once()
+        window.disconnect_sim_raw_stack_save_worker_from_controller.assert_called_once()
+        self.assertEqual(window.sim_current_task_id, "zstack-task-1")
+        self.assertEqual(window._sim_z_stack_acquisition_pending["layers"], 4)
+
+    def test_manual_autofocus_reuses_one_reserved_number_for_diagnostics_and_final_raw_sim9(self):
+        legacy_main = load_legacy_main_module()
+        from sim_control.models import AppConfig
+
+        app_config = AppConfig()
+        app_config.z_scan.enabled = True
+        app_config.z_scan.select_focus_plane = True
+        save_spec = {"folder": "F:/data", "prefix": "cell", "number": 8}
+        focus_path = Path("F:/data/cell-zfocus-0008.tif")
+        csv_path = Path("F:/data/cell-zfocus-0008-sml.csv")
+        controller = SimpleNamespace(start_single_acquisition=mock.Mock(return_value="focus-task-1"))
+        window = SimpleNamespace(
+            sim_camera_connected=True,
+            sim_slm_connected=True,
+            sim_preview_active=False,
+            sim_preview_requested=False,
+            sim_preview_restart_requested=False,
+            sim_preview_stop_in_progress=False,
+            sim_acquisition_in_progress=False,
+            sim_resume_preview_after_acquisition=False,
+            sim_current_task_id="",
+            sim_current_acquisition_raw_only=False,
+            sim_acquisition_controller=controller,
+            sim_app_config=app_config,
+            sync_sim_camera_config_from_ui=mock.Mock(),
+            ensure_sim_runtime=mock.Mock(),
+            stop_immediate_live_mode=mock.Mock(),
+            _immediate_live_active_or_pending=mock.Mock(return_value=False),
+            ensure_sim_raw_stack_save_worker=mock.Mock(),
+            disconnect_sim_reconstruction_worker_from_controller=mock.Mock(),
+            connect_sim_raw_stack_save_worker_to_controller=mock.Mock(),
+            _reserve_next_sim_save_spec=mock.Mock(return_value=save_spec),
+            _sim_z_scan_series_output_paths=mock.Mock(return_value=(focus_path, csv_path)),
+            _assign_sim_raw_save_spec_to_task=mock.Mock(),
+            _reserve_sim_raw_save_path_for_task=mock.Mock(),
+            _clear_sim_raw_pending_save_path=mock.Mock(),
+            update_sim_camera_action_buttons=mock.Mock(),
+            set_sim_camera_controls_enabled=mock.Mock(),
+            sim_preview_restart_timer=TimerSpy(),
+        )
+
+        legacy_main.MainWindow.trigger_sim_raw_9frame_acquisition(window, trigger_source="sim9_button")
+
+        start_kwargs = controller.start_single_acquisition.call_args.kwargs
+        self.assertTrue(start_kwargs["z_scan_enabled"])
+        self.assertEqual(start_kwargs["focus_output_path"], focus_path)
+        self.assertEqual(start_kwargs["focus_csv_path"], csv_path)
+        window._reserve_next_sim_save_spec.assert_called_once()
+        window._assign_sim_raw_save_spec_to_task.assert_called_once_with("focus-task-1", save_spec)
+        window._reserve_sim_raw_save_path_for_task.assert_not_called()
+
     def test_trigger_sim_formal_acquisition_blocks_when_preview_does_not_stop(self):
         legacy_main = load_legacy_main_module()
         from sim_control.models import AppConfig
@@ -1169,6 +1489,87 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "sim_last_preview_frame"))
         self.assertEqual(window.sim_current_task_id, "task-2")
         self.assertEqual(starts, ["start"])
+
+    def test_zstack_complete_result_restores_ui_routing_and_preview_without_reconstruction(self):
+        legacy_main = load_legacy_main_module()
+
+        result = SimpleNamespace(
+            task_id="zstack-task-1",
+            status="complete",
+            completed_layers=4,
+            total_layers=4,
+            output_paths=("F:/data/cell-zstack-0001.tif",),
+            message="",
+        )
+        window = SimpleNamespace(
+            sim_last_z_stack_result=None,
+            sim_current_task_id="zstack-task-1",
+            sim_acquisition_in_progress=True,
+            sim_camera_connected=True,
+            sim_resume_preview_after_acquisition=True,
+            _sim_z_stack_acquisition_pending={"start_perf": time.perf_counter() - 0.01},
+            update_sim_runtime_status_widgets=mock.Mock(),
+            poll_sim_stage_position=mock.Mock(),
+            update_sim_camera_action_buttons=mock.Mock(),
+            set_sim_camera_controls_enabled=mock.Mock(),
+            _set_zscan_formal_controls_enabled=mock.Mock(),
+            _restore_sim_post_acquisition_routing_after_raw_only=mock.Mock(),
+            start_sim_preview=mock.Mock(),
+        )
+
+        with mock.patch.object(legacy_main.qw.QMessageBox, "information") as information:
+            legacy_main.MainWindow.slot_handle_sim_z_stack_result(window, result)
+
+        self.assertIs(window.sim_last_z_stack_result, result)
+        self.assertFalse(window.sim_acquisition_in_progress)
+        window.poll_sim_stage_position.assert_called_once_with(force=True)
+        window._set_zscan_formal_controls_enabled.assert_called_once_with(True)
+        window._restore_sim_post_acquisition_routing_after_raw_only.assert_called_once()
+        window.start_sim_preview.assert_called_once()
+        self.assertFalse(window.sim_resume_preview_after_acquisition)
+        self.assertEqual(window._sim_z_stack_acquisition_pending, {})
+        information.assert_called_once()
+        self.assertIn("4/4", information.call_args.args[2])
+        self.assertIn("cell-zstack-0001.tif", information.call_args.args[2])
+
+    def test_zstack_failure_warning_reports_retained_partial_output(self):
+        legacy_main = load_legacy_main_module()
+
+        result = SimpleNamespace(
+            task_id="zstack-task-failed",
+            status="failed",
+            completed_layers=3,
+            total_layers=10,
+            output_paths=("F:/data/cell-0001.partial-z3of10.tif",),
+            message="camera failed",
+        )
+        window = SimpleNamespace(
+            sim_last_z_stack_result=result,
+            sim_acquisition_in_progress=True,
+            sim_camera_connected=True,
+            sim_resume_preview_after_acquisition=False,
+            sim_current_task_id="zstack-task-failed",
+            _sim_z_stack_acquisition_pending={"task_id": "zstack-task-failed"},
+            _clear_sim_raw_pending_save_path=mock.Mock(),
+            _restore_sim_post_acquisition_routing_after_raw_only=mock.Mock(),
+            update_sim_camera_action_buttons=mock.Mock(),
+            set_sim_camera_controls_enabled=mock.Mock(),
+            _set_zscan_formal_controls_enabled=mock.Mock(),
+            update_sim_runtime_status_widgets=mock.Mock(),
+            start_sim_preview=mock.Mock(),
+        )
+
+        with mock.patch.object(legacy_main.qw.QMessageBox, "warning") as warning:
+            legacy_main.MainWindow.slot_handle_sim_acquisition_failed(
+                window,
+                "zstack-task-failed",
+                "camera failed\ntraceback detail",
+            )
+
+        warning.assert_called_once()
+        display_message = warning.call_args.args[2]
+        self.assertIn("camera failed", display_message)
+        self.assertIn("partial-z3of10.tif", display_message)
 
     def test_slot_handle_sim_acquisition_ready_raw_only_does_not_start_reconstruction(self):
         legacy_main = load_legacy_main_module()
@@ -1672,6 +2073,21 @@ class SimPreviewRestartTests(unittest.TestCase):
         self.assertEqual(window.sim_runtime_timing_snapshot["recommended_inter_frame_gap_us"], 6500)
         self.assertEqual(window.sim_runtime_timing_snapshot["applied_bit_depth"], 12)
         self.assertEqual(refresh_calls, ["refreshed"])
+
+    def test_slot_handle_sim_acquisition_status_logs_camera_timing_fallback_warning(self):
+        legacy_main = load_legacy_main_module()
+        window = SimpleNamespace(sim_current_task_id="")
+
+        with mock.patch("builtins.print") as print_mock:
+            legacy_main.MainWindow.slot_handle_sim_acquisition_status(
+                window,
+                "camera_timing_fallback_warning",
+                {"message": "TIMING_READOUTTIME is unavailable."},
+            )
+
+        printed = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("camera_timing_fallback_warning", printed)
+        self.assertIn("TIMING_READOUTTIME", printed)
 
     def test_sync_sim_camera_controls_from_config_resets_full_frame_origin_and_disables_roi_inputs(self):
         legacy_main = load_legacy_main_module()

@@ -137,6 +137,20 @@ def clone_sim_app_config(config):
     return app_config_from_dict(app_config_to_dict(config))
 
 
+def classify_sim_z_scan_acquisition(z_scan_config, *, raw_only):
+    """Return the formal-acquisition branch for the Z-Scan three-state UI.
+
+    ``z_stack`` is intentionally available only to the manual raw SIM9 entry.
+    The reconstruction/MCU entry has no multi-plane result contract, so that
+    combination is rejected before any preview, stage, laser, or device action.
+    """
+    if not bool(getattr(z_scan_config, "enabled", False)):
+        return "single"
+    if bool(getattr(z_scan_config, "select_focus_plane", True)):
+        return "autofocus"
+    return "z_stack" if bool(raw_only) else "blocked_z_stack"
+
+
 def merge_legacy_sim_control_payload(base_config, legacy_payload):
     """把旧配置文件中的 SIM 片段合并到当前默认配置，同时保留当前配置路径。"""
     merged = clone_sim_app_config(base_config)
@@ -364,6 +378,8 @@ class MainWindow(qw.QWidget):
         # GUI 自维护的 start/restart 序号（对外 preview_started 无 generation）。
         self.sim_preview_start_seq = 0
         self.sim_last_reconstruction_result = None
+        self.sim_last_z_stack_result = None
+        self._sim_z_stack_acquisition_pending = {}
         self.sim_recon_thread = None
         self.sim_recon_worker = None
         self.sim_raw_stack_save_thread = None
@@ -372,7 +388,7 @@ class MainWindow(qw.QWidget):
         self.sim_current_acquisition_raw_only = False
         self.sim_raw_stack_save_finished_task_ids = set()
         self.sim_save_next_number = 1
-        self._sim_raw_pending_save_path = {}
+        self._sim_raw_pending_save_specs = {}
         self.sim_last_preview_frame = None
         self.sim_last_preview_sequence = -1
         self.sim_auto_contrast_state = AutoContrastState()
@@ -604,10 +620,23 @@ class MainWindow(qw.QWidget):
     @pyqtSlot(object)
     def _route_raw_stack_save(self, batch):
         task_id = str(getattr(batch, "task_id", "") or "")
-        pending_paths = getattr(self, "_sim_raw_pending_save_path", {})
+        pending_specs = getattr(self, "_sim_raw_pending_save_specs", {})
         path = ""
-        if hasattr(pending_paths, "pop") and task_id:
-            path = str(pending_paths.pop(task_id, "") or "")
+        save_spec = pending_specs.pop(task_id, None) if hasattr(pending_specs, "pop") and task_id else None
+        if isinstance(save_spec, dict):
+            stack_shape = getattr(getattr(batch, "stack", None), "shape", ())
+            roi_width = int(stack_shape[2]) if len(stack_shape) >= 3 else None
+            roi_height = int(stack_shape[1]) if len(stack_shape) >= 3 else None
+            filename = self._sim_save_filename_for_number(
+                save_spec.get("number", 1),
+                prefix=save_spec.get("prefix"),
+                wavelength_nm=getattr(batch, "laser_wavelength_nm", None),
+                exposure_us=getattr(batch, "exposure_us", None),
+                roi_width=roi_width,
+                roi_height=roi_height,
+            )
+            folder = self._normal_sim_save_folder(save_spec.get("folder"))
+            path = str(Path(folder) / filename)
         self.signal_request_raw_save.emit(batch, path)
 
     def shutdown_sim_raw_stack_save_worker(self):
@@ -1285,10 +1314,11 @@ class MainWindow(qw.QWidget):
 
     def persist_sim_app_config_from_ui(self):
         self.sync_sim_camera_config_from_ui(save_to_disk=False)
-        # B3：Save Config 时把主界面 DAQ/Recon 模块控件最新状态写回 sim_app_config，
+        # B3：Save Config 时把主界面 DAQ/Recon/Z-Scan 模块控件最新状态写回 sim_app_config，
         # 与相机控件一致（即便改值槽已即时写回，这里再同步一次作保存前防御）。
         self._persist_main_daq_config_from_ui()
         self._persist_main_recon_config_from_ui()
+        self._persist_main_zscan_config_from_ui()
         save_app_config(self.sim_app_config, self.sim_app_config.config_path)
 
     def update_sim_camera_action_buttons(self):
@@ -1855,6 +1885,9 @@ class MainWindow(qw.QWidget):
         cfg = getattr(self, "sim_app_config", None)
         old_wavelength = int(getattr(cfg, "selected_laser_nm", 488)) if cfg is not None else 488
         self.sync_sim_camera_config_from_ui(save_to_disk=False)
+        refresh_save_preview = getattr(self, "_refresh_sim_save_path_preview", None)
+        if callable(refresh_save_preview):
+            refresh_save_preview()
         new_wavelength = int(getattr(cfg, "selected_laser_nm", old_wavelength)) if cfg is not None else old_wavelength
         wavelength_changed = new_wavelength != old_wavelength
 
@@ -1953,6 +1986,9 @@ class MainWindow(qw.QWidget):
             backend.simulation_mode,
         )
         if self.sim_acquisition_controller is not None and signature == self.sim_runtime_backend_signature:
+            self.sim_acquisition_controller.red_laser_nm = int(
+                getattr(self.sim_app_config, "red_laser_nm", 638)
+            )
             self.sim_acquisition_controller.z_scan_config = self.sim_app_config.z_scan
             self.sim_acquisition_controller.reconstruction_config = self.sim_app_config.reconstruction
             self.connect_sim_reconstruction_worker_to_controller()
@@ -1980,12 +2016,24 @@ class MainWindow(qw.QWidget):
         self.sim_slm_connected = False
         self.sim_available_slms = []
         self.sim_app_config.selected_running_order = ""
-        self.sim_acquisition_controller = SimAcquisitionController(backend=backend, parent=self)
+        self.sim_acquisition_controller = SimAcquisitionController(
+            backend=backend,
+            parent=self,
+            red_laser_nm=int(getattr(self.sim_app_config, "red_laser_nm", 638)),
+        )
         self.sim_acquisition_controller.z_scan_config = self.sim_app_config.z_scan
         self.sim_acquisition_controller.reconstruction_config = self.sim_app_config.reconstruction
         self.sim_acquisition_controller.signal_status_changed.connect(self.slot_handle_sim_acquisition_status)
         self.sim_acquisition_controller.signal_z_scan_progress.connect(self.slot_handle_sim_z_scan_progress)
         self.sim_acquisition_controller.signal_z_scan_complete.connect(self.slot_handle_sim_z_scan_complete)
+        if hasattr(self.sim_acquisition_controller, "signal_z_stack_progress"):
+            self.sim_acquisition_controller.signal_z_stack_progress.connect(
+                self.slot_handle_sim_z_stack_progress
+            )
+        if hasattr(self.sim_acquisition_controller, "signal_z_stack_result_ready"):
+            self.sim_acquisition_controller.signal_z_stack_result_ready.connect(
+                self.slot_handle_sim_z_stack_result
+            )
         self.sim_acquisition_controller.signal_acquisition_summary_ready.connect(self.slot_handle_sim_acquisition_ready)
         self.connect_sim_reconstruction_worker_to_controller()
         self.sim_acquisition_controller.signal_acquisition_failed.connect(self.slot_handle_sim_acquisition_failed)
@@ -2136,11 +2184,99 @@ class MainWindow(qw.QWidget):
         token = token.strip("._")
         return token or SIM_RAW_STACK_DEFAULT_PREFIX
 
-    def _sim_save_filename_for_number(self, number, prefix=None):
+    def _sim_save_filename_for_number(
+        self,
+        number,
+        prefix=None,
+        wavelength_nm=None,
+        exposure_us=None,
+        roi_width=None,
+        roi_height=None,
+        extra_tokens=None,
+    ):
         prefix_edit = getattr(self.ui, "edit_main_savePath_prefix", None)
         current_prefix = prefix if prefix is not None else (prefix_edit.text() if prefix_edit is not None else "")
-        safe_prefix = self._sanitize_sim_save_prefix(current_prefix)
-        return f"{safe_prefix}{self._coerce_sim_save_next_number(number):0{SIM_RAW_STACK_NUMBER_WIDTH}d}.tif"
+        safe_prefix = self._sanitize_sim_save_prefix(current_prefix).rstrip("-")
+        if not safe_prefix:
+            safe_prefix = SIM_RAW_STACK_DEFAULT_PREFIX.rstrip("-") or "SIM9"
+
+        config = getattr(self, "sim_app_config", None)
+        camera = getattr(config, "camera", None)
+        if wavelength_nm is None:
+            wavelength_nm = getattr(config, "selected_laser_nm", None)
+        if exposure_us is None:
+            exposure_us = getattr(camera, "exposure_us", None)
+        if roi_width is None:
+            roi_width = getattr(camera, "roi_width", None)
+        if roi_height is None:
+            roi_height = getattr(camera, "roi_height", None)
+
+        try:
+            wavelength_value = int(wavelength_nm)
+        except (TypeError, ValueError):
+            wavelength_value = 0
+        wavelength_token = str(wavelength_value) if wavelength_value > 0 else "NA"
+
+        try:
+            exposure_value_us = int(exposure_us)
+        except (TypeError, ValueError):
+            exposure_value_us = 0
+        exposure_token = f"{exposure_value_us / 1000:g}ms" if exposure_value_us > 0 else "NAms"
+
+        try:
+            width_value = int(roi_width)
+            height_value = int(roi_height)
+        except (TypeError, ValueError):
+            width_value = height_value = 0
+        if width_value > 0 and height_value > 0:
+            roi_token = str(width_value) if width_value == height_value else f"{width_value}x{height_value}"
+        else:
+            roi_token = "NA"
+
+        normalized_extra_tokens = [
+            _safe_filename_token(str(token)).strip("._-")
+            for token in (extra_tokens or ())
+            if str(token).strip()
+        ]
+        sequence_token = self._coerce_sim_save_next_number(number)
+        filename_tokens = [safe_prefix, wavelength_token, exposure_token, roi_token]
+        filename_tokens.extend(token for token in normalized_extra_tokens if token)
+        filename_tokens.append(f"{sequence_token:0{SIM_RAW_STACK_NUMBER_WIDTH}d}")
+        return "-".join(filename_tokens) + ".tif"
+
+    def _sim_z_scan_series_output_paths(self, save_spec, *, kind, app_config=None):
+        """Build deterministic Z-stack/focus artifact paths from one reserved number."""
+        if kind not in {"zstack", "zfocus"}:
+            raise ValueError(f"Unsupported Z-Scan series kind: {kind!r}")
+        config = app_config if app_config is not None else self.sim_app_config
+        z_scan = config.z_scan
+        direction_token = "P" if str(z_scan.direction) == "positive_z" else "N"
+        step_nm = int(round(float(z_scan.step_um) * 1000.0))
+        layers = int(z_scan.num_steps) + 1
+        exposure_us = (
+            int(z_scan.actual_exposure_us)
+            if kind == "zfocus"
+            else int(config.camera.exposure_us)
+        )
+        filename = self._sim_save_filename_for_number(
+            save_spec.get("number", 1),
+            prefix=save_spec.get("prefix"),
+            wavelength_nm=int(config.selected_laser_nm),
+            exposure_us=exposure_us,
+            roi_width=int(config.camera.roi_width),
+            roi_height=int(config.camera.roi_height),
+            extra_tokens=(
+                kind,
+                f"zstep{direction_token}{step_nm}nm",
+                f"z{layers}",
+            ),
+        )
+        folder = Path(self._normal_sim_save_folder(save_spec.get("folder")))
+        tiff_path = folder / filename
+        if kind == "zstack":
+            return tiff_path, None
+        csv_path = tiff_path.with_name(f"{tiff_path.stem}-sml.csv")
+        return tiff_path, csv_path
 
     def _current_sim_raw_save_path(self):
         folder_edit = getattr(self.ui, "edit_main_savePath_folder", None)
@@ -2216,32 +2352,49 @@ class MainWindow(qw.QWidget):
             edit.setText(self._normal_sim_save_folder(path))
             self._refresh_sim_save_path_preview()
 
-    def _reserve_sim_raw_save_path_for_task(self, task_id):
-        task_id = str(task_id or "")
-        if not task_id:
-            return
-        path = self._current_sim_raw_save_path()
-        pending_paths = getattr(self, "_sim_raw_pending_save_path", None)
-        if pending_paths is None:
-            pending_paths = {}
-            self._sim_raw_pending_save_path = pending_paths
-        pending_paths[task_id] = str(path)
-        self.sim_save_next_number = self._coerce_sim_save_next_number(
-            getattr(self, "sim_save_next_number", 1)
-        ) + 1
+    def _reserve_next_sim_save_spec(self):
+        """Atomically consume one GUI save number for raw or Z-Scan artifacts."""
+        folder_edit = getattr(self.ui, "edit_main_savePath_folder", None)
+        prefix_edit = getattr(self.ui, "edit_main_savePath_prefix", None)
+        number = self._coerce_sim_save_next_number(getattr(self, "sim_save_next_number", 1))
+        save_spec = {
+            "folder": self._normal_sim_save_folder(folder_edit.text() if folder_edit is not None else ""),
+            "prefix": self._sanitize_sim_save_prefix(prefix_edit.text() if prefix_edit is not None else ""),
+            "number": number,
+        }
+        self.sim_save_next_number = number + 1
         self._refresh_sim_save_path_preview()
         try:
             self.save_current_settings_to_default()
         except Exception as exc:
             print(f"SIM raw save numbering persistence failed: {exc}")
+        return save_spec
+
+    def _assign_sim_raw_save_spec_to_task(self, task_id, save_spec):
+        task_id = str(task_id or "")
+        if not task_id:
+            return
+        pending_specs = getattr(self, "_sim_raw_pending_save_specs", None)
+        if pending_specs is None:
+            pending_specs = {}
+            self._sim_raw_pending_save_specs = pending_specs
+        pending_specs[task_id] = dict(save_spec)
+
+    def _reserve_sim_raw_save_path_for_task(self, task_id):
+        task_id = str(task_id or "")
+        if not task_id:
+            return None
+        save_spec = self._reserve_next_sim_save_spec()
+        self._assign_sim_raw_save_spec_to_task(task_id, save_spec)
+        return save_spec
 
     def _clear_sim_raw_pending_save_path(self, task_id):
         try:
-            pending_paths = getattr(self, "_sim_raw_pending_save_path", None)
+            pending_specs = getattr(self, "_sim_raw_pending_save_specs", None)
         except RuntimeError:
             return
-        if hasattr(pending_paths, "pop"):
-            pending_paths.pop(str(task_id or ""), None)
+        if hasattr(pending_specs, "pop"):
+            pending_specs.pop(str(task_id or ""), None)
 
     def setup_sim_z_position_widgets(self):
         """lbl_z_position_label / lbl_z_position_value 已由 CellSorting_ui 在
@@ -2273,11 +2426,11 @@ class MainWindow(qw.QWidget):
 
     # ---- Z-Scan 模块（主 GUI 一级界面，位于 SLM 与 SIM Runtime 之间） ----
     def setup_sim_zscan_module(self):
-        """为静态定义的主 GUI Z-Scan 模块填充下拉项、补列伸缩并接线。
+        """为静态定义的主 GUI Z-Scan 模块填充下拉项并接线。
 
         控件（``*_main_zscan_*`` 前缀）已由 CellSorting_ui 在 SLM 组与 SIM Runtime 组之间
-        静态定义：方向下拉、步进(nm)、步数、曝光预设下拉、是否开启 Z-Scan 开关、选择焦面开关、
-        测试按钮、状态标签。本方法仅运行时填充带 itemData 的下拉项、补 .ui 无法表达的列伸缩、
+        静态定义：方向下拉、步进(nm)、总层数、曝光预设下拉、是否开启 Z-Scan 开关、选择焦面开关、
+        测试按钮、状态标签。本方法仅运行时填充带 itemData 的下拉项、
         从配置初始化并接信号。测试按钮：选择焦面 OFF → 仅移动位移台；ON → 完整 Z-Scan 自动对焦。
         是否开启开关写入 ``z_scan.enabled``，决定主 GUI「SIM9帧采集」是否先做对焦再采 9 帧。
         """
@@ -2292,14 +2445,6 @@ class MainWindow(qw.QWidget):
         self._zscan_move_worker = None
         self._zscan_move_stop_event = None
         self._zscan_move_in_progress = False
-
-        # 列伸缩：Z-Scan 重排 2 列（2×2），col0/col1 不拉伸、col2 吸收余量，窄控件左对齐。
-        # （.ui 的 columnStretch 属性不被 pyuic5 生成，故运行时补。）
-        grid = getattr(self.ui, "gridLayout_zscan", None)
-        if grid is not None:
-            grid.setColumnStretch(0, 0)
-            grid.setColumnStretch(1, 0)
-            grid.setColumnStretch(2, 1)
 
         # 填充下拉项（带 itemData，无法在 .ui 静态表达）；blockSignals+clear 防重复填充。
         self.ui.cmb_main_zscan_direction.blockSignals(True)
@@ -2319,6 +2464,7 @@ class MainWindow(qw.QWidget):
         self.ui.spb_main_zscan_num_steps.valueChanged.connect(self.on_main_zscan_setting_changed)
         self.ui.cmb_main_zscan_exposure.currentIndexChanged.connect(self.on_main_zscan_setting_changed)
         self.ui.chk_main_zscan_enabled.toggled.connect(self.on_main_zscan_setting_changed)
+        self.ui.chk_main_zscan_capture.toggled.connect(self.on_main_zscan_setting_changed)
         self.ui.btn_main_zscan_run.clicked.connect(lambda _checked=False: self.on_main_zscan_run_clicked())
         self.signal_zscan_status.connect(self._on_zscan_status)
         # 接线全部完成后才置位，防首次中途失败留半接线态。
@@ -2327,8 +2473,8 @@ class MainWindow(qw.QWidget):
     def _init_zscan_module_from_config(self):
         """从 ``self.sim_app_config.z_scan`` 填充 Z-Scan 模块控件（blockSignals 防回环）。
 
-        start_um / focus_metric 主 GUI 不暴露，保留 config 原值（start_um=None 即以运行时
-        当前 Z 为起点）；选择焦面开关为 UI-only、不入 config、不在此重置。
+        start_um / focus_metric 主 GUI 不暴露；start_um=None 表示以运行时当前 Z 为起点。
+        UI 显示总层数，因此从内部移动次数 ``num_steps`` 加一后回填。
         """
         if not hasattr(self.ui, "chk_main_zscan_enabled"):
             return
@@ -2339,36 +2485,43 @@ class MainWindow(qw.QWidget):
             self.ui.spb_main_zscan_num_steps,
             self.ui.cmb_main_zscan_exposure,
             self.ui.chk_main_zscan_enabled,
+            self.ui.chk_main_zscan_capture,
         )
-        for widget in widgets:
-            widget.blockSignals(True)
+        previous_signal_states = tuple(widget.blockSignals(True) for widget in widgets)
         try:
             dir_index = self.ui.cmb_main_zscan_direction.findData(str(cfg.direction))
             self.ui.cmb_main_zscan_direction.setCurrentIndex(dir_index if dir_index >= 0 else 0)
             self.ui.spb_main_zscan_step_nm.setValue(float(cfg.step_um) * 1000.0)
-            self.ui.spb_main_zscan_num_steps.setValue(int(cfg.num_steps))
+            self.ui.spb_main_zscan_num_steps.setValue(int(cfg.num_steps) + 1)
             exp_index = self.ui.cmb_main_zscan_exposure.findData(int(cfg.exposure_preset_ms))
             self.ui.cmb_main_zscan_exposure.setCurrentIndex(exp_index if exp_index >= 0 else 0)
             self.ui.chk_main_zscan_enabled.setChecked(bool(cfg.enabled))
+            self.ui.chk_main_zscan_capture.setChecked(bool(cfg.select_focus_plane))
         finally:
-            for widget in widgets:
-                widget.blockSignals(False)
+            for widget, was_blocked in zip(widgets, previous_signal_states):
+                widget.blockSignals(was_blocked)
 
-    def on_main_zscan_setting_changed(self, *_):
-        """Z-Scan 模块控件改值 → 写回 z_scan 配置 + 落盘 + 同步 controller + 刷新摘要。"""
-        if getattr(self, "_loading_configure_settings", False):
-            return
+    def _persist_main_zscan_config_from_ui(self):
+        """把 Z-Scan 控件统一写回配置；UI 总层数换算为内部移动次数。"""
         if not hasattr(self.ui, "chk_main_zscan_enabled"):
             return
         cfg = self.sim_app_config.z_scan
         direction = self.ui.cmb_main_zscan_direction.currentData()
         cfg.direction = str(direction) if direction in ("positive_z", "negative_z") else "positive_z"
         cfg.step_um = float(self.ui.spb_main_zscan_step_nm.value()) / 1000.0
-        cfg.num_steps = int(self.ui.spb_main_zscan_num_steps.value())
+        cfg.num_steps = max(1, int(self.ui.spb_main_zscan_num_steps.value()) - 1)
+        cfg.start_um = None
         exposure = self.ui.cmb_main_zscan_exposure.currentData()
         if exposure is not None:
             cfg.exposure_preset_ms = int(exposure)
         cfg.enabled = bool(self.ui.chk_main_zscan_enabled.isChecked())
+        cfg.select_focus_plane = bool(self.ui.chk_main_zscan_capture.isChecked())
+
+    def on_main_zscan_setting_changed(self, *_):
+        """Z-Scan 模块控件改值 → 写回 z_scan 配置 + 落盘 + 同步 controller + 刷新摘要。"""
+        if getattr(self, "_loading_configure_settings", False):
+            return
+        self._persist_main_zscan_config_from_ui()
         try:
             save_app_config(self.sim_app_config, self.sim_app_config.config_path)
         except Exception as exc:
@@ -2394,9 +2547,16 @@ class MainWindow(qw.QWidget):
             if widget is not None:
                 widget.setEnabled(bool(enabled))
 
+    def _set_zscan_formal_controls_enabled(self, enabled):
+        """Interlock every Z-Scan control while a formal acquisition is active."""
+        self._set_zscan_inputs_enabled(enabled)
+        run_button = getattr(self.ui, "btn_main_zscan_run", None)
+        if run_button is not None:
+            run_button.setEnabled(bool(enabled))
+
     def _run_zscan_blocking(
         self, capture, stage_adapter, z_scan_config, stop_event, on_status,
-        daq_config=None, camera_config=None, timing=None,
+        daq_config=None, camera_config=None, timing=None, selected_laser_nm=None,
     ):
         """后台线程内执行 Z-Scan：选择焦面 ON → 完整自动对焦；OFF → 仅移动位移台。
 
@@ -2415,6 +2575,11 @@ class MainWindow(qw.QWidget):
                 camera_config=camera_config if camera_config is not None else self.sim_app_config.camera,
                 timing=timing if timing is not None else self.sim_app_config.timing,
                 z_scan_config=z_scan_config,
+                laser_wavelength_nm=(
+                    int(selected_laser_nm)
+                    if selected_laser_nm is not None
+                    else int(self.sim_app_config.selected_laser_nm)
+                ),
                 stop_event=stop_event,
                 on_status=on_status,
                 keep_captured_stack=False,
@@ -2486,9 +2651,11 @@ class MainWindow(qw.QWidget):
             return
         # 7) 在 GUI 线程预快照配置（避免运行中被改的竞态）+ 取消事件 + 进度回调（强制经信号回主线程）。
         cfg = copy.copy(self.sim_app_config.z_scan)
+        cfg.start_um = None
         daq_snap = copy.copy(self.sim_app_config.daq) if capture else None
         camera_snap = copy.copy(self.sim_app_config.camera) if capture else None
         timing_snap = copy.copy(self.sim_app_config.timing) if capture else None
+        selected_laser_nm = int(self.sim_app_config.selected_laser_nm)
         stop_event = Event()
 
         def _emit_status(event, payload):
@@ -2499,6 +2666,7 @@ class MainWindow(qw.QWidget):
             return self._run_zscan_blocking(
                 capture, stage_adapter, cfg, stop_event, _emit_status,
                 daq_config=daq_snap, camera_config=camera_snap, timing=timing_snap,
+                selected_laser_nm=selected_laser_nm,
             )
 
         # 8) 进入运行态：按钮变取消、禁用输入、状态提示。
@@ -3132,6 +3300,20 @@ class MainWindow(qw.QWidget):
             set_device("reconstruction", "green", f"Saved{suffix}")
         elif status == "raw_stack_save_failed":
             set_device("reconstruction", "red", "Save failed")
+        elif status == "z_stack_progress":
+            plane = int(payload.get("plane_index", 0)) + 1
+            total = int(payload.get("total_layers", 0))
+            set_device("reconstruction", "yellow", f"Z-stack {plane}/{total}")
+        elif status == "z_stack_complete":
+            completed = int(payload.get("completed_layers", 0))
+            total = int(payload.get("total_layers", 0))
+            set_device("reconstruction", "green", f"Z-stack saved {completed}/{total}")
+        elif status == "z_stack_cancelled":
+            completed = int(payload.get("completed_layers", 0))
+            total = int(payload.get("total_layers", 0))
+            set_device("reconstruction", "yellow", f"Z-stack partial {completed}/{total}")
+        elif status == "z_stack_mcu_blocked":
+            set_device("reconstruction", "yellow", "Z-stack blocked")
         elif status in {"acquisition_failed", "hardware_error"} or str(status).endswith("failed"):
             for device in ("camera", "slm", "daq"):
                 set_device(device, "red", "Error")
@@ -3360,6 +3542,25 @@ class MainWindow(qw.QWidget):
                 "Z-Scan is running. Please wait for it to finish before starting SIM9 acquisition.",
             )
             return
+        z_scan_mode = classify_sim_z_scan_acquisition(
+            self.sim_app_config.z_scan,
+            raw_only=bool(raw_only),
+        )
+        if z_scan_mode == "blocked_z_stack":
+            message = (
+                "Enable Z-Scan is on while Select Focus Plane is off. "
+                "This Z-stack mode is available only from the manual SIM9 frames button; "
+                "the MCU/reconstruction task was blocked before any hardware action."
+            )
+            update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+            if callable(update_runtime):
+                update_runtime(
+                    "z_stack_mcu_blocked",
+                    {"trigger_source": str(trigger_source), "message": message},
+                )
+            print(f"SIM acquisition blocked ({trigger_source}): {message}")
+            qw.QMessageBox.information(self, "Z-Scan", message)
+            return
         # 正式采集前必须先关找样品激光：SIM9 波形自己驱动激光线，且 set_line 整 port 写
         # 绝不能与波形并存。此处只关光不清空 immediate RO 列表，采集后仍可继续找样品。
         stop_immediate = getattr(self, "stop_immediate_live_mode", None)
@@ -3412,9 +3613,12 @@ class MainWindow(qw.QWidget):
         self.sim_acquisition_in_progress = True
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(False)
+        set_zscan_controls = getattr(self, "_set_zscan_formal_controls_enabled", None)
+        if callable(set_zscan_controls):
+            set_zscan_controls(False)
         self.sim_current_task_id = ""
         try:
-            if raw_only:
+            if raw_only and z_scan_mode != "z_stack":
                 ensure_raw_save = getattr(self, "ensure_sim_raw_stack_save_worker", None)
                 disconnect_reconstruction = getattr(self, "disconnect_sim_reconstruction_worker_from_controller", None)
                 connect_raw_save = getattr(self, "connect_sim_raw_stack_save_worker_to_controller", None)
@@ -3424,6 +3628,13 @@ class MainWindow(qw.QWidget):
                     disconnect_reconstruction()
                 if callable(connect_raw_save):
                     connect_raw_save()
+            elif raw_only:
+                disconnect_reconstruction = getattr(self, "disconnect_sim_reconstruction_worker_from_controller", None)
+                disconnect_raw_save = getattr(self, "disconnect_sim_raw_stack_save_worker_from_controller", None)
+                if callable(disconnect_reconstruction):
+                    disconnect_reconstruction()
+                if callable(disconnect_raw_save):
+                    disconnect_raw_save()
             else:
                 disconnect_raw_save = getattr(self, "disconnect_sim_raw_stack_save_worker_from_controller", None)
                 connect_reconstruction = getattr(self, "connect_sim_reconstruction_worker_to_controller", None)
@@ -3446,24 +3657,65 @@ class MainWindow(qw.QWidget):
                 "apply_daq_config": True,
                 "apply_camera_config": True,
                 "z_scan_config": app_config_snapshot.z_scan,
+                "z_scan_enabled": z_scan_mode == "autofocus",
             }
+            series_save_spec = None
+            series_paths = (None, None)
+            reserve_series_spec = getattr(self, "_reserve_next_sim_save_spec", None)
+            build_series_paths = getattr(self, "_sim_z_scan_series_output_paths", None)
+            if z_scan_mode in {"z_stack", "autofocus"} and callable(reserve_series_spec) and callable(build_series_paths):
+                series_save_spec = reserve_series_spec()
+                series_paths = build_series_paths(
+                    series_save_spec,
+                    kind="zstack" if z_scan_mode == "z_stack" else "zfocus",
+                    app_config=app_config_snapshot,
+                )
             if raw_only:
                 raw_reconstruction_config = copy.copy(app_config_snapshot.reconstruction)
                 raw_reconstruction_config.enabled = False
-                # 「是否开启 Z-Scan」开关 ON 时，SIM9 采集前先做完整 Z-Scan 自动对焦；OFF 时直接
-                # 采 9 帧。沿用 ZScanConfig.enabled 语义（worker 会自动选 z-scan RO、对焦、恢复正式 RO）。
-                start_kwargs["z_scan_enabled"] = bool(app_config_snapshot.z_scan.enabled)
                 start_kwargs["reconstruction_config"] = raw_reconstruction_config
-                self._sim_raw_acquisition_pending = {
-                    "start_perf": time.perf_counter(),
-                    "laser_wavelength_nm": int(app_config_snapshot.selected_laser_nm),
-                    "exposure_us": int(app_config_snapshot.camera.exposure_us),
+            acquisition_timing = {
+                "start_perf": time.perf_counter(),
+                "laser_wavelength_nm": int(app_config_snapshot.selected_laser_nm),
+                "exposure_us": int(app_config_snapshot.camera.exposure_us),
+            }
+            if raw_only and z_scan_mode != "z_stack":
+                self._sim_raw_acquisition_pending = dict(acquisition_timing)
+
+            if z_scan_mode == "z_stack":
+                if series_paths[0] is None:
+                    raise RuntimeError("Unable to reserve a Z-stack output path before acquisition.")
+                self.sim_current_task_id = self.sim_acquisition_controller.start_z_stack_acquisition(
+                    task,
+                    output_path=series_paths[0],
+                    z_scan_config=app_config_snapshot.z_scan,
+                    prepare_running_order=True,
+                    initialize_hardware=True,
+                    apply_daq_config=True,
+                    apply_camera_config=True,
+                )
+                self._sim_z_stack_acquisition_pending = {
+                    **acquisition_timing,
+                    "task_id": self.sim_current_task_id,
+                    "requested_output_path": str(series_paths[0]),
+                    "layers": int(app_config_snapshot.z_scan.num_steps) + 1,
                 }
-            self.sim_current_task_id = self.sim_acquisition_controller.start_single_acquisition(task, **start_kwargs)
-            if raw_only:
-                reserve_raw_path = getattr(self, "_reserve_sim_raw_save_path_for_task", None)
-                if callable(reserve_raw_path):
-                    reserve_raw_path(self.sim_current_task_id)
+            else:
+                if z_scan_mode == "autofocus" and series_paths[0] is not None:
+                    start_kwargs["focus_output_path"] = series_paths[0]
+                    start_kwargs["focus_csv_path"] = series_paths[1]
+                self.sim_current_task_id = self.sim_acquisition_controller.start_single_acquisition(
+                    task,
+                    **start_kwargs,
+                )
+            if raw_only and z_scan_mode != "z_stack":
+                assign_raw_spec = getattr(self, "_assign_sim_raw_save_spec_to_task", None)
+                if series_save_spec is not None and callable(assign_raw_spec):
+                    assign_raw_spec(self.sim_current_task_id, series_save_spec)
+                else:
+                    reserve_raw_path = getattr(self, "_reserve_sim_raw_save_path_for_task", None)
+                    if callable(reserve_raw_path):
+                        reserve_raw_path(self.sim_current_task_id)
             print(f"SIM acquisition started from {trigger_source}: {self.sim_current_task_id}")
         except Exception as e:
             self.sim_acquisition_in_progress = False
@@ -3475,6 +3727,8 @@ class MainWindow(qw.QWidget):
                 restore_routing()
             self.update_sim_camera_action_buttons()
             self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+            if callable(set_zscan_controls):
+                set_zscan_controls(True)
             print(f"SIM acquisition start failed ({trigger_source}): {str(e)}")
             if self.sim_resume_preview_after_acquisition and self.sim_camera_connected:
                 self.sim_resume_preview_after_acquisition = False
@@ -3616,6 +3870,16 @@ class MainWindow(qw.QWidget):
             print(f"SIM acquisition status: {status} {payload}")
         elif status == "running_order_restore_warning":
             print(f"SIM acquisition status: {status} {payload}")
+        elif status == "camera_timing_fallback_warning":
+            # 非阻塞告警：camera_config_applied payload 已让 Summary 显示具体回退原因；
+            # 此处只写运行日志，避免正式采集 worker 被模态弹窗打断。
+            print(f"SIM acquisition status: {status} {payload}")
+        elif status == "focus_diagnostics_warning":
+            message = str(payload.get("message", "Autofocus diagnostics could not be saved."))
+            print(f"SIM acquisition status: {status} {payload}")
+            qw.QMessageBox.warning(self, "Z-Scan Diagnostics", message.splitlines()[0])
+        elif status == "focus_diagnostics_saved":
+            print(f"SIM acquisition status: {status} {payload}")
 
     def slot_handle_sim_z_scan_progress(self, step_index, total_steps, z_um, focus_score):
         print(
@@ -3627,10 +3891,77 @@ class MainWindow(qw.QWidget):
         print(f"SIM z-scan complete: best_z={float(best_z_um):.3f} um, points={len(focus_curve or [])}")
         self.poll_sim_stage_position(force=True)
 
+    def slot_handle_sim_z_stack_progress(self, payload):
+        payload = dict(payload or {})
+        update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+        if callable(update_runtime):
+            update_runtime("z_stack_progress", payload)
+        print(f"SIM Z-stack progress: {payload}")
+
+    def slot_handle_sim_z_stack_result(self, result):
+        """Handle the lightweight multi-plane result without entering reconstruction."""
+        self.sim_last_z_stack_result = result
+        task_id = str(getattr(result, "task_id", self.sim_current_task_id) or "")
+        status = str(getattr(result, "status", "failed"))
+        completed_layers = int(getattr(result, "completed_layers", 0))
+        total_layers = int(getattr(result, "total_layers", 0))
+        output_paths = tuple(str(path) for path in (getattr(result, "output_paths", ()) or ()))
+        self.sim_current_task_id = task_id
+        update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
+        if callable(update_runtime):
+            update_runtime(
+                f"z_stack_{status}",
+                {
+                    "task_id": task_id,
+                    "completed_layers": completed_layers,
+                    "total_layers": total_layers,
+                    "output_paths": list(output_paths),
+                    "message": str(getattr(result, "message", "")),
+                },
+            )
+        self.poll_sim_stage_position(force=True)
+
+        if status == "complete":
+            self.sim_acquisition_in_progress = False
+            self.update_sim_camera_action_buttons()
+            self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+            set_zscan_controls = getattr(self, "_set_zscan_formal_controls_enabled", None)
+            if callable(set_zscan_controls):
+                set_zscan_controls(True)
+            pending = dict(getattr(self, "_sim_z_stack_acquisition_pending", {}) or {})
+            self._sim_z_stack_acquisition_pending = {}
+            restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
+            if callable(restore_routing):
+                restore_routing()
+            elapsed_text = ""
+            if pending.get("start_perf") is not None:
+                elapsed_s = max(0.0, time.perf_counter() - float(pending["start_perf"]))
+                elapsed_text = f"\nTotal time: {elapsed_s:.2f} s"
+            saved_text = output_paths[0] if output_paths else "(no output path reported)"
+            qw.QMessageBox.information(
+                self,
+                "SIM Z-Stack",
+                f"Z-stack acquisition completed: {completed_layers}/{total_layers} layers."
+                f"{elapsed_text}\nSaved to: {saved_text}",
+            )
+            if self.sim_resume_preview_after_acquisition and self.sim_camera_connected:
+                self.sim_resume_preview_after_acquisition = False
+                self.start_sim_preview()
+        elif status == "cancelled" and output_paths:
+            qw.QMessageBox.information(
+                self,
+                "SIM Z-Stack Cancelled",
+                f"Cancelled after {completed_layers}/{total_layers} layers.\n"
+                f"Completed layers were saved to: {output_paths[0]}",
+            )
+
     def slot_handle_sim_acquisition_ready(self, payload):
         self.sim_acquisition_in_progress = False
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+        set_zscan_controls = getattr(self, "_set_zscan_formal_controls_enabled", None)
+        if callable(set_zscan_controls):
+            set_zscan_controls(True)
         payload = dict(payload or {})
         task_id = payload.get("task_id", self.sim_current_task_id)
         self.sim_current_task_id = task_id
@@ -3864,12 +4195,16 @@ class MainWindow(qw.QWidget):
 
     def slot_handle_sim_acquisition_failed(self, task_id, message):
         self.sim_acquisition_in_progress = False
+        self._sim_z_stack_acquisition_pending = {}
         self._clear_sim_raw_pending_save_path(task_id)
         restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
         if callable(restore_routing):
             restore_routing()
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+        set_zscan_controls = getattr(self, "_set_zscan_formal_controls_enabled", None)
+        if callable(set_zscan_controls):
+            set_zscan_controls(True)
         self.sim_current_task_id = task_id
         update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
         if callable(update_runtime):
@@ -3887,16 +4222,33 @@ class MainWindow(qw.QWidget):
                     continue
                 appended_warning_lines.add(line)
                 display_message = f"{display_message}\n{line}"
+        stack_result = getattr(self, "sim_last_z_stack_result", None)
+        if (
+            stack_result is not None
+            and str(getattr(stack_result, "task_id", "")) == str(task_id)
+            and str(getattr(stack_result, "status", "")) != "complete"
+        ):
+            retained_paths = tuple(
+                str(path) for path in (getattr(stack_result, "output_paths", ()) or ())
+            )
+            if retained_paths:
+                retained_text = ", ".join(retained_paths)
+                if retained_text not in display_message:
+                    display_message += f"\nPartial Z-stack saved to: {retained_text}"
         qw.QMessageBox.warning(self, "SIM Acquisition Error", display_message)
 
     def slot_handle_sim_acquisition_cancelled(self, task_id, message):
         self.sim_acquisition_in_progress = False
+        self._sim_z_stack_acquisition_pending = {}
         self._clear_sim_raw_pending_save_path(task_id)
         restore_routing = getattr(self, "_restore_sim_post_acquisition_routing_after_raw_only", None)
         if callable(restore_routing):
             restore_routing()
         self.update_sim_camera_action_buttons()
         self.set_sim_camera_controls_enabled(self.sim_camera_connected)
+        set_zscan_controls = getattr(self, "_set_zscan_formal_controls_enabled", None)
+        if callable(set_zscan_controls):
+            set_zscan_controls(True)
         self.sim_current_task_id = task_id
         update_runtime = getattr(self, "update_sim_runtime_status_widgets", None)
         if callable(update_runtime):
@@ -4064,6 +4416,9 @@ class MainWindow(qw.QWidget):
         elif apply_legacy_sim_camera_settings:
             self.sync_sim_camera_config_from_ui(save_to_disk=False)
         self.sync_sim_camera_controls_from_config()
+        refresh_save_preview = getattr(self, "_refresh_sim_save_path_preview", None)
+        if callable(refresh_save_preview):
+            refresh_save_preview()
         self.refresh_sim_settings_summary()
         # E3a：加载新红光/波长后，若 SLM 已连接则按新采集波长重选正式 RO 并刷新 immediate 下拉，
         # 使 UI / config / SLM RO 三者一致（stop 已在上方完成且互锁通过）。

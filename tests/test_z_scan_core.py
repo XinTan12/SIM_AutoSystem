@@ -19,6 +19,7 @@ class _SyntheticFocusCamera:
         self.applied_configs = []
         self.arm_counts = []
         self.disarm_count = 0
+        self.read_wavelengths = []
 
     def apply_config(self, config):
         self.applied_configs.append(config)
@@ -31,6 +32,7 @@ class _SyntheticFocusCamera:
         self.disarm_count += 1
 
     def read_frame_sequence(self, frame_count, pattern_files, laser_wavelength_nm, frame_callback=None, stop_event=None):
+        self.read_wavelengths.append(int(laser_wavelength_nm))
         if frame_count != 1:
             raise AssertionError("z-scan should capture one camera frame per z position")
         yy, xx = np.indices((48, 48))
@@ -142,6 +144,66 @@ class ZScanCoreTests(unittest.TestCase):
         self.assertEqual(best_focus_events[0]["z_um"], 2.0)
         self.assertIn("move_ms", best_focus_events[0])
         self.assertEqual(statuses[-1][0], "z_scan_complete")
+
+    def test_run_z_scan_forwards_requested_wavelength_to_waveform_and_camera(self):
+        from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
+        from sim_control.stage_adapter import SimulatedZStageAdapter
+        from sim_control.z_scan_core import run_z_scan
+
+        stage = SimulatedZStageAdapter(start_um=0.0, min_um=-5.0, max_um=5.0)
+        stage.connect()
+        camera = _SyntheticFocusCamera(stage, best_z=0.0)
+        from unittest import mock
+
+        builder = mock.Mock()
+        builder.build_z_scan.return_value = SimpleNamespace(warnings=[])
+
+        run_z_scan(
+            stage_adapter=stage,
+            camera_adapter=camera,
+            slm_adapter=_FakeSlm(),
+            daq_adapter=_FakeDaq(),
+            daq_config=DaqLineConfig(),
+            camera_config=CameraConfig(),
+            timing=TimingConfig(),
+            z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=1),
+            laser_wavelength_nm=561,
+            waveform_builder=builder,
+        )
+
+        self.assertEqual(camera.read_wavelengths, [561, 561])
+        self.assertEqual(builder.build_z_scan.call_count, 1)
+        self.assertEqual(builder.build_z_scan.call_args.kwargs["laser_wavelength_nm"], 561)
+
+    def test_run_z_scan_waveform_failure_is_preflighted_before_camera_or_stage_motion(self):
+        from unittest import mock
+
+        from sim_control.models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
+        from sim_control.z_scan_core import run_z_scan
+
+        stage = mock.Mock()
+        stage.get_position_um.return_value = 5.0
+        camera = mock.Mock()
+        builder = mock.Mock()
+        builder.build_z_scan.side_effect = RuntimeError("invalid z-scan waveform")
+
+        with self.assertRaisesRegex(RuntimeError, "invalid z-scan waveform"):
+            run_z_scan(
+                stage_adapter=stage,
+                camera_adapter=camera,
+                slm_adapter=mock.Mock(),
+                daq_adapter=mock.Mock(),
+                daq_config=DaqLineConfig(),
+                camera_config=CameraConfig(),
+                timing=TimingConfig(),
+                z_scan_config=ZScanConfig(start_um=None, step_um=0.5, num_steps=1),
+                laser_wavelength_nm=488,
+                waveform_builder=builder,
+            )
+
+        camera.apply_config.assert_not_called()
+        camera.arm.assert_not_called()
+        stage.move_z_um.assert_not_called()
 
     def test_run_z_scan_cancel_keeps_current_z_and_cleans_up(self):
         import threading
@@ -381,9 +443,14 @@ class _ConnectableCamera:
 
     def __init__(self, connected: bool = True) -> None:
         self._connected = bool(connected)
+        self.applied_configs = []
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def apply_config(self, config):
+        self.applied_configs.append(config)
+        return {"timing_readout_time_s": 0.0}
 
 
 class _RoSlm(_ConnectableCamera):
@@ -567,7 +634,13 @@ class RunZScanAutofocusTests(unittest.TestCase):
         stage = _RecordingStage(start_um=0.0)
         stage.connect()
         camera = _ConnectableCamera(connected=True)
-        slm = _RoSlm(connected=True, running_orders=[(7, "488_3.5_2d_zscan3p_1ms")])
+        slm = _RoSlm(
+            connected=True,
+            running_orders=[
+                (3, "561_3.5_2d_10ms"),
+                (7, "561_3.5_2d_zscan3p_8ms"),
+            ],
+        )
 
         captured = {}
         sentinel = ZScanResult(best_z_um=1.0, focus_curve=[], exposure_actual_us=1000)
@@ -576,29 +649,117 @@ class RunZScanAutofocusTests(unittest.TestCase):
             captured.update(kwargs)
             return sentinel
 
-        def fake_find(running_orders, exposure_preset_ms):
-            return 7, "488_3.5_2d_zscan3p_1ms", []
-
         orig_run = zsc.run_z_scan
-        orig_find = adapters_mod.find_z_scan_running_order
         zsc.run_z_scan = fake_run_z_scan
-        adapters_mod.find_z_scan_running_order = fake_find
         try:
             stop_event = object()
             result = run_z_scan_autofocus(
                 **self._common_kwargs(stage, camera, slm),
+                laser_wavelength_nm=561,
                 stop_event=stop_event,
             )
         finally:
             zsc.run_z_scan = orig_run
-            adapters_mod.find_z_scan_running_order = orig_find
 
         self.assertIs(result, sentinel)
-        self.assertEqual(slm.selected, [7])
+        self.assertEqual(slm.selected, [7, 3])
         self.assertIs(captured["stage_adapter"], stage)
         self.assertIs(captured["camera_adapter"], camera)
         self.assertIs(captured["slm_adapter"], slm)
         self.assertIs(captured["stop_event"], stop_event)
+        self.assertEqual(captured["laser_wavelength_nm"], 561)
+
+    def test_scan_cancellation_or_failure_restores_formal_running_order(self):
+        import sim_control.z_scan_core as zsc
+        from sim_control.models import ZScanConfig
+        from sim_control.z_scan_core import ZScanCancelled, run_z_scan_autofocus
+
+        for error in (ZScanCancelled("cancelled"), RuntimeError("scan failed")):
+            with self.subTest(error=type(error).__name__):
+                stage = _RecordingStage(start_um=0.0)
+                stage.connect()
+                slm = _RoSlm(
+                    connected=True,
+                    running_orders=[
+                        (3, "488_3.5_2d_10ms"),
+                        (7, "488_3.5_2d_zscan3p_8ms"),
+                    ],
+                )
+                original = zsc.run_z_scan
+                zsc.run_z_scan = lambda **_kwargs: (_ for _ in ()).throw(error)
+                try:
+                    kwargs = self._common_kwargs(stage, _ConnectableCamera(True), slm)
+                    kwargs["z_scan_config"] = ZScanConfig(
+                        start_um=0.0, step_um=1.0, num_steps=1, exposure_preset_ms=8
+                    )
+                    with self.assertRaises(type(error)):
+                        run_z_scan_autofocus(**kwargs)
+                finally:
+                    zsc.run_z_scan = original
+                self.assertEqual(slm.selected, [7, 3])
+
+    def test_restore_failure_is_reported_and_combined_with_scan_failure(self):
+        import sim_control.z_scan_core as zsc
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        class RestoreFailSlm(_RoSlm):
+            def select_running_order(self, ro_index: int):
+                self.selected.append(int(ro_index))
+                if int(ro_index) == 3:
+                    raise RuntimeError("formal restore failed")
+                return {"ro_index": int(ro_index)}
+
+        for scan_error in (None, RuntimeError("scan failed")):
+            with self.subTest(scan_error=scan_error is not None):
+                stage = _RecordingStage(start_um=0.0)
+                stage.connect()
+                slm = RestoreFailSlm(
+                    connected=True,
+                    running_orders=[
+                        (3, "488_3.5_2d_10ms"),
+                        (7, "488_3.5_2d_zscan3p_8ms"),
+                    ],
+                )
+                original = zsc.run_z_scan
+                if scan_error is None:
+                    zsc.run_z_scan = lambda **_kwargs: object()
+                else:
+                    zsc.run_z_scan = lambda **_kwargs: (_ for _ in ()).throw(scan_error)
+                try:
+                    with self.assertRaisesRegex(HardwareError, "formal restore failed") as caught:
+                        run_z_scan_autofocus(
+                            **self._common_kwargs(stage, _ConnectableCamera(True), slm)
+                        )
+                finally:
+                    zsc.run_z_scan = original
+                if scan_error is not None:
+                    self.assertIn("scan failed", str(caught.exception))
+                self.assertEqual(slm.selected, [7, 3])
+
+    def test_missing_formal_running_order_fails_before_zscan_selection_or_motion(self):
+        import sim_control.z_scan_core as zsc
+        from sim_control.errors import HardwareError
+        from sim_control.z_scan_core import run_z_scan_autofocus
+
+        stage = _RecordingStage(start_um=0.0)
+        stage.connect()
+        slm = _RoSlm(
+            connected=True,
+            running_orders=[(7, "488_3.5_2d_zscan3p_8ms")],
+        )
+        original = zsc.run_z_scan
+        zsc.run_z_scan = lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("scan must not start without formal RO")
+        )
+        try:
+            with self.assertRaises(HardwareError):
+                run_z_scan_autofocus(**self._common_kwargs(stage, _ConnectableCamera(True), slm))
+        finally:
+            zsc.run_z_scan = original
+
+        self.assertEqual(stage.moves, [])
+        self.assertEqual(slm.selected, [])
 
     def test_no_matching_running_order_raises_hardware_error(self):
         import sim_control.adapters as adapters_mod
@@ -609,9 +770,12 @@ class RunZScanAutofocusTests(unittest.TestCase):
         stage = _RecordingStage(start_um=0.0)
         stage.connect()
         camera = _ConnectableCamera(connected=True)
-        slm = _RoSlm(connected=True)
+        slm = _RoSlm(
+            connected=True,
+            running_orders=[(3, "488_3.5_2d_10ms")],
+        )
 
-        def fake_find(running_orders, exposure_preset_ms):
+        def fake_find(running_orders, wavelength_nm, exposure_preset_ms):
             return None, "", ["No matching z-scan running order found."]
 
         def fail_run_z_scan(**kwargs):

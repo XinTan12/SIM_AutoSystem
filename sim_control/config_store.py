@@ -18,7 +18,7 @@
           覆盖本文件全部分支。
 
 关键概念：
-    - ``CURRENT_CONFIG_VERSION = 3``：当前 schema 版本号。新增字段或重命名时
+    - ``CURRENT_CONFIG_VERSION``：当前 schema 版本号。新增字段或重命名时
       要让此值 +1，并在 ``_MIGRATIONS`` 末尾追加迁移函数。
     - ``LEGACY_CONFIG_PATH``：仓库根目录的旧 ``sim_control_config.json``，
       仅在没有新路径文件时回落使用，加载后立刻迁移到默认目录。
@@ -69,7 +69,7 @@ LEGACY_CONFIG_PATH = APP_ROOT / "sim_control_config.json"
 
 # 当前 schema 版本号；新增字段时此值递增并配合 ``_MIGRATIONS`` 增加迁移。
 # 必须与 ``models.AppConfig.config_version`` 默认值保持一致。
-CURRENT_CONFIG_VERSION = 13
+CURRENT_CONFIG_VERSION = 14
 DEFAULT_RECONSTRUCTION_OUTPUT_DIR = "data/reconstruction"
 RECONSTRUCTION_SAVED_PARAMS_FALLBACKS = {"fail", "estimate"}
 
@@ -87,6 +87,23 @@ def _merge_list(values: list[str], desired_length: int = 9) -> list[str]:
     if len(merged) < desired_length:
         merged.extend([""] * (desired_length - len(merged)))
     return merged
+
+
+def _parse_bool_field(value: object, field_name: str) -> bool:
+    """严格解析配置布尔值，并兼容旧 JSON 的 0/1 与字符串表示。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1"):
+            return True
+        if normalized in ("false", "0"):
+            return False
+    raise ValueError(
+        f"{field_name} must be a boolean (true/false or 1/0), got {value!r}"
+    )
 
 
 def _migrate_red_laser_aliases(payload: dict) -> dict:
@@ -380,6 +397,22 @@ def _migrate_v12_to_v13(payload: dict) -> dict:
     return payload
 
 
+def _migrate_v13_to_v14(payload: dict) -> dict:
+    """v13 -> v14 migration: persist focus selection and discard stale absolute Z starts.
+
+    Existing Z-Scan behavior selected the best focus plane.  Defaulting the new flag to
+    ``True`` preserves that behavior instead of silently switching upgraded configs to the
+    reserved Z-stack mode.  ``start_um`` is intentionally reset because each run must start
+    from the stage's current position rather than a machine-specific saved coordinate.
+    """
+    z_scan = dict(payload.get("z_scan") or {})
+    z_scan.setdefault("select_focus_plane", True)
+    z_scan["start_um"] = None
+    payload["z_scan"] = z_scan
+    payload["config_version"] = 14
+    return payload
+
+
 # 迁移链表：(适用起始版本, 迁移函数)；按顺序串联，逐版本前进。
 _MIGRATIONS: list[tuple[int, callable]] = [
     (0, _migrate_v0_to_v1),
@@ -395,6 +428,7 @@ _MIGRATIONS: list[tuple[int, callable]] = [
     (10, _migrate_v10_to_v11),
     (11, _migrate_v11_to_v12),
     (12, _migrate_v12_to_v13),
+    (13, _migrate_v13_to_v14),
 ]
 
 
@@ -469,11 +503,15 @@ def app_config_from_dict(payload: dict) -> AppConfig:
     )
     z_scan_payload = payload.get("z_scan") or {}
     z_scan = ZScanConfig(
-        enabled=bool(z_scan_payload.get("enabled", True)),
+        enabled=_parse_bool_field(z_scan_payload.get("enabled", True), "z_scan.enabled"),
         start_um=(
             None
             if z_scan_payload.get("start_um", None) in (None, "")
             else float(z_scan_payload.get("start_um"))
+        ),
+        select_focus_plane=_parse_bool_field(
+            z_scan_payload.get("select_focus_plane", True),
+            "z_scan.select_focus_plane",
         ),
         direction=str(z_scan_payload.get("direction", "positive_z")),
         step_um=float(z_scan_payload.get("step_um", 0.3)),

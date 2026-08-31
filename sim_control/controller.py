@@ -21,9 +21,8 @@
       ``stop()`` 把它置位；worker 与 ``acquisition_core`` 内部都会检查它，最大程度
       缩短取消响应延迟。
     - ``signal_start_worker``：跨线程 Qt 信号，把 payload 投递到 worker。
-    - ``effective_inter_frame_gap_us``：每次启动前用相机最新回报的
-      ``recommended_inter_frame_gap_us`` 调一次有效帧间隔，让 50 ms 默认与"更短
-      读出"两种场景一致。
+    - ``effective_inter_frame_gap_us``：只在相机回报与当前 CameraConfig 签名一致时
+      使用推荐 gap；缺失、非法或陈旧 preview timing 都回退 50 ms。
 
 维护要点：
     - 任何新增硬件分支（如多相机）都必须保证：worker payload 中所有 adapter
@@ -42,11 +41,20 @@ import logging
 import re
 import threading
 import traceback
-from typing import Any
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Callable
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
-from .acquisition_core import AcquisitionCancelled, run_single_acquisition
+from .acquisition_core import (
+    AcquisitionCancelled,
+    ZStackAcquisitionCancelled,
+    ZStackAcquisitionFailed,
+    ZStackAcquisitionResult,
+    run_single_acquisition,
+    run_z_stack_acquisition,
+)
 from .adapter_factory import create_adapter_bundle
 from .adapters import (
     HardwareError,
@@ -55,12 +63,14 @@ from .adapters import (
     find_z_scan_running_order,
     is_immediate_activation_type,
 )
+from .camera_timing import camera_config_signature
 from .config_store import validate_app_config
 from .models import (
     AppConfig,
     BackendConfig,
     CameraConfig,
     DaqLineConfig,
+    DEFAULT_RED_LASER_NM,
     LASER_ROLE_MAP,
     PatternPreparationResult,
     ReconstructionConfig,
@@ -70,6 +80,13 @@ from .models import (
     new_task_id,
 )
 from .waveform import NIDaqWaveformBuilder, parse_line_name, validate_daq_line_config
+from .z_scan_core import FocusFrameRecord, preflight_z_scan_positions, scan_positions
+from .z_stack_io import (
+    SeriesWriteJob,
+    SeriesWriteResult,
+    SeriesWriteTimeout,
+    ZStackAsyncWriter,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -123,6 +140,66 @@ def _acquisition_summary_payload(batch: Any) -> dict[str, Any]:
     }
 
 
+def _finalize_series_writer(
+    writer: Any,
+    outcome: str,
+    *,
+    best_plane_index: int | None = None,
+    message: str = "",
+) -> SeriesWriteResult:
+    """Finalize once and poll the same terminal command until a large merge ends.
+
+    A multi-gigabyte TIFF merge can legitimately exceed the writer's ordinary
+    synchronous timeout.  The terminal command is already queued at that point,
+    so it must never be resubmitted or converted into a false acquisition
+    failure merely because one wait window elapsed.  ``wait_for_terminal``
+    checks writer-thread liveness and therefore still raises on a real failure.
+    """
+    kwargs: dict[str, Any] = {"message": str(message)}
+    if best_plane_index is not None:
+        kwargs["best_plane_index"] = int(best_plane_index)
+    try:
+        return writer.finalize(outcome, **kwargs)
+    except SeriesWriteTimeout as timeout_error:
+        last_timeout = timeout_error
+        while True:
+            try:
+                result = writer.wait_for_terminal(timeout=10.0)
+            except SeriesWriteTimeout as wait_timeout:
+                last_timeout = wait_timeout
+                continue
+            except Exception as recovery_error:
+                raise recovery_error from last_timeout
+            if not isinstance(result, SeriesWriteResult):
+                raise RuntimeError(
+                    "Series writer terminal recovery returned no result."
+                ) from last_timeout
+            return result
+
+
+def _merge_z_stack_write_result(
+    result: ZStackAcquisitionResult,
+    writer_result: SeriesWriteResult,
+) -> ZStackAcquisitionResult:
+    """Make writer-committed progress authoritative without retaining image arrays."""
+    committed_layers = max(
+        0,
+        min(
+            int(writer_result.completed_layers),
+            int(result.total_layers),
+            len(result.measured_z_um),
+        ),
+    )
+    return replace(
+        result,
+        measured_z_um=tuple(result.measured_z_um[:committed_layers]),
+        completed_layers=committed_layers,
+        status=str(writer_result.outcome),
+        output_paths=tuple(str(path) for path in writer_result.output_paths),
+        message=str(writer_result.message or result.message),
+    )
+
+
 # Worker 运行在 QThread 中，所有可能阻塞的硬件初始化和采集动作都从 GUI 线程移出。
 class SimAcquisitionWorker(QObject):
     """后台采集 worker，在 QThread 中执行硬件准备、RO 选择和正式采集。
@@ -148,6 +225,8 @@ class SimAcquisitionWorker(QObject):
     signal_prepare_ready = pyqtSignal(str, dict)
     signal_z_scan_progress = pyqtSignal(int, int, float, float)
     signal_z_scan_complete = pyqtSignal(float, object)
+    signal_z_stack_progress = pyqtSignal(dict)
+    signal_z_stack_result_ready = pyqtSignal(object)
 
     @pyqtSlot(object)
     def slot_start(self, payload: dict[str, Any]) -> None:
@@ -174,6 +253,20 @@ class SimAcquisitionWorker(QObject):
         z_scan_enabled = bool(payload.get("z_scan_enabled")) and z_scan_config is not None
         z_scan_pattern_result: PatternPreparationResult | None = None
         stop_event = payload.get("stop_event")
+        acquisition_mode = str(payload.get("acquisition_mode", "single"))
+        is_z_stack = acquisition_mode == "z_stack"
+        series_writer = payload.get("series_writer")
+        z_stack_writer_started = False
+        z_stack_requested_positions: tuple[float, ...] = ()
+        z_stack_terminal_emitted = False
+        focus_writer_started = False
+        focus_writer_terminal = False
+        focus_diagnostics_enabled = False
+        focus_diagnostics_failed = False
+        focus_records: list[FocusFrameRecord] = []
+        formal_restore_pending = False
+        formal_ro_index: int | None = None
+        formal_ro_name = ""
 
         def emit_status(status: str, data: dict[str, Any]) -> None:
             self.signal_status_changed.emit(status, data)
@@ -189,35 +282,226 @@ class SimAcquisitionWorker(QObject):
                     float(data.get("best_z_um", 0.0)),
                     data.get("focus_curve", []),
                 )
+            elif status == "z_stack_layer_accepted":
+                self.signal_z_stack_progress.emit(dict(data))
+
+        def restore_formal_running_order(status: str = "running_order_restored") -> None:
+            """Fulfil the worker-owned restore obligation exactly once."""
+            nonlocal formal_restore_pending
+            if not formal_restore_pending:
+                return
+            # Clear before the hardware call so a failed restore is reported once,
+            # rather than retried and obscured by an outer exception handler.
+            formal_restore_pending = False
+            if formal_ro_index is None:
+                raise HardwareError(
+                    "Cannot restore formal SIM running order after z-scan: "
+                    "missing running_order_index."
+                )
+            try:
+                slm.select_running_order(int(formal_ro_index))
+            except Exception as exc:
+                message = (
+                    "Failed to restore formal SIM running order "
+                    f"{formal_ro_name!r} (index {int(formal_ro_index)}): {exc}"
+                )
+                emit_status(
+                    "running_order_restore_warning",
+                    {"task_id": task_id, "message": message},
+                )
+                raise HardwareError(message) from exc
+            emit_status(
+                status,
+                {
+                    "task_id": task_id,
+                    "running_order_index": int(formal_ro_index),
+                    "running_order_name": formal_ro_name,
+                },
+            )
+
+        def emit_focus_warning(message: str) -> None:
+            emit_status(
+                "focus_diagnostics_warning",
+                {"task_id": task_id, "message": str(message)},
+            )
+
+        def on_focus_frame(record: FocusFrameRecord) -> None:
+            nonlocal focus_diagnostics_enabled, focus_diagnostics_failed
+            if not focus_diagnostics_enabled or series_writer is None:
+                return
+            try:
+                check_health = getattr(series_writer, "check_health", None)
+                if callable(check_health):
+                    check_health()
+                series_writer.submit_focus_layer(
+                    plane_index=int(record.plane_index),
+                    frame=record.frame,
+                    requested_z_um=float(record.requested_z_um),
+                    measured_z_um=float(record.measured_z_um),
+                    sml_score=float(record.score),
+                    timestamp=str(record.timestamp),
+                    stop_event=stop_event,
+                )
+                focus_records.append(record)
+            except Exception as diagnostic_error:
+                focus_diagnostics_enabled = False
+                focus_diagnostics_failed = True
+                emit_focus_warning(f"Focus diagnostics disabled after submit/health failure: {diagnostic_error}")
+
+        def finalize_focus_diagnostics(outcome: str, message: str = "") -> SeriesWriteResult | None:
+            nonlocal focus_writer_terminal, focus_diagnostics_enabled, focus_diagnostics_failed
+            if not focus_writer_started or focus_writer_terminal or series_writer is None:
+                return None
+            focus_writer_terminal = True
+            effective_outcome = "failed" if focus_diagnostics_failed and outcome == "complete" else outcome
+            best_plane_index: int | None = None
+            if effective_outcome == "complete" and focus_records:
+                best_record = max(focus_records, key=lambda record: record.score)
+                best_plane_index = int(best_record.plane_index)
+            try:
+                writer_result = _finalize_series_writer(
+                    series_writer,
+                    effective_outcome,
+                    best_plane_index=best_plane_index,
+                    message=message,
+                )
+            except Exception as diagnostic_error:
+                focus_diagnostics_enabled = False
+                focus_diagnostics_failed = True
+                emit_focus_warning(f"Focus diagnostics finalization failed: {diagnostic_error}")
+                return None
+            focus_diagnostics_enabled = False
+            if (
+                effective_outcome == "complete"
+                and writer_result.outcome == "complete"
+                and int(writer_result.completed_layers) == int(writer_result.total_layers)
+                and len(writer_result.output_paths) == 2
+            ):
+                emit_status(
+                    "focus_diagnostics_saved",
+                    {
+                        "task_id": task_id,
+                        "output_paths": [str(path) for path in writer_result.output_paths],
+                        "completed_layers": int(writer_result.completed_layers),
+                    },
+                )
+            else:
+                focus_diagnostics_failed = True
+                retained_outputs = ", ".join(str(path) for path in writer_result.output_paths) or "none"
+                retained_spool = str(writer_result.spool_path) if writer_result.spool_path is not None else "none"
+                retained_staging = ", ".join(str(path) for path in writer_result.staging_paths) or "none"
+                detail = str(writer_result.message or "no writer detail")
+                emit_focus_warning(
+                    "Focus diagnostics writer returned a non-complete terminal result: "
+                    f"requested_outcome={effective_outcome}, "
+                    f"outcome={writer_result.outcome}, "
+                    f"completed={writer_result.completed_layers}/{writer_result.total_layers}; "
+                    f"retained outputs={retained_outputs}; "
+                    f"retained spool={retained_spool}; "
+                    f"retained staging={retained_staging}; detail={detail}."
+                )
+            return writer_result
+
+        def make_empty_z_stack_result(status: str, message: str) -> ZStackAcquisitionResult:
+            return ZStackAcquisitionResult(
+                task_id=task_id,
+                requested_z_um=z_stack_requested_positions,
+                measured_z_um=(),
+                completed_layers=0,
+                total_layers=len(z_stack_requested_positions),
+                layer_shape=None,
+                status=status,
+                message=str(message),
+            )
+
+        def finalize_z_stack_result(
+            result: ZStackAcquisitionResult,
+            outcome: str,
+            message: str = "",
+        ) -> tuple[ZStackAcquisitionResult, Exception | None]:
+            nonlocal z_stack_terminal_emitted
+            terminal_error: Exception | None = None
+            merged = replace(result, status=outcome, message=str(message or result.message))
+            if z_stack_writer_started and series_writer is not None:
+                try:
+                    writer_result = _finalize_series_writer(
+                        series_writer,
+                        outcome,
+                        message=str(message or result.message),
+                    )
+                    merged = _merge_z_stack_write_result(merged, writer_result)
+                    if (
+                        outcome == "complete"
+                        and (
+                            merged.status != "complete"
+                            or merged.completed_layers != merged.total_layers
+                        )
+                    ):
+                        failure_message = merged.message or (
+                            "Series writer did not commit every requested Z-stack layer."
+                        )
+                        merged = replace(merged, status="failed", message=failure_message)
+                except Exception as writer_error:
+                    terminal_error = writer_error
+                    failure_message = str(message or result.message)
+                    if failure_message:
+                        failure_message += "\n"
+                    failure_message += f"Series writer finalization failed: {writer_error}"
+                    merged = replace(merged, status="failed", message=failure_message)
+            self.signal_z_stack_result_ready.emit(merged)
+            z_stack_terminal_emitted = True
+            return merged, terminal_error
 
         try:
             _raise_if_cancelled(stop_event)
             # 2) 可选阶段 1：硬件初始化。仅当 controller 显式请求时执行；多次启动可跳过。
-            if payload.get("initialize_hardware"):
+            if payload.get("initialize_hardware") or z_scan_enabled:
                 emit_status("hardware_initializing", {})
                 camera.initialize()
                 _raise_if_cancelled(stop_event)
                 slm.initialize()
                 emit_status("hardware_initialized", {})
             # 3) 可选阶段 2：DAQ 配置校验（不直接打开 NI 任务，只确认线位合法）。
-            if payload.get("apply_daq_config"):
+            if payload.get("apply_daq_config") or z_scan_enabled:
                 validate_daq_line_config(daq_config)
                 emit_status("daq_config_applied", {"device_name": daq_config.device_name})
             # 4) 可选阶段 3：把相机配置下发到 DCAM，并把相机回报反写到 task 与时序。
-            if payload.get("apply_camera_config"):
+            if payload.get("apply_camera_config") or z_scan_enabled:
                 if task.camera.trigger_mode != "external_level":
                     raise HardwareError("Only external_level trigger mode is supported.")
                 result = camera.apply_config(task.camera) or {}
                 _apply_camera_result_to_config(task.camera, result)
-                # 4a) 相机推荐间隔小于 50 ms 时使用推荐值；否则保留 50 ms 默认。
+                # 4a) 采用本次 ROI/曝光对应的相机推荐值；仅缺失/非法时回退 50 ms。
                 task.timing.inter_frame_gap_us = effective_inter_frame_gap_us(
                     result.get("recommended_inter_frame_gap_us")
                 )
                 # 4b) 把整段相机配置 + 相机回报合并广播给 GUI，便于显示实际生效参数。
                 payload_data = {"camera_config": dict(task.camera.__dict__), **dict(result)}
                 emit_status("camera_config_applied", payload_data)
+                if bool(result.get("timing_fallback_used")):
+                    emit_status(
+                        "camera_timing_fallback_warning",
+                        {
+                            "task_id": task_id,
+                            "message": str(
+                                result.get("timing_fallback_reason")
+                                or "Camera timing properties are unavailable; using 50 ms fallback."
+                            ),
+                            **payload_data,
+                        },
+                    )
+            if z_scan_enabled:
+                # Formal SIM9 feasibility is part of the all-before-motion preflight.
+                waveform_builder.build(
+                    daq_config=daq_config,
+                    timing=task.timing,
+                    laser_wavelength_nm=int(task.laser_wavelength_nm),
+                    exposure_us=int(task.camera.exposure_us),
+                    frame_count=9,
+                    include_role_matrix=False,
+                )
             # 5) 可选阶段 4：自动选择匹配波长 + 曝光的 Running Order。
-            if payload.get("prepare_running_order"):
+            if payload.get("prepare_running_order") or z_scan_enabled:
                 running_orders = slm.list_running_orders()
                 ro_index, ro_name, warnings = find_best_running_order(
                     running_orders,
@@ -239,28 +523,189 @@ class SimAcquisitionWorker(QObject):
                     "running_order_selected",
                     _running_order_payload(result, pattern_result, ro_index, ro_name, warnings),
                 )
+            if is_z_stack:
+                if z_scan_config is None or not z_scan_enabled:
+                    raise ValueError("Z-stack acquisition requires an enabled z_scan_config.")
+                if bool(z_scan_config.select_focus_plane):
+                    raise ValueError("Z-stack acquisition requires select_focus_plane=False.")
+                if series_writer is None:
+                    raise RuntimeError("Z-stack acquisition requires a series writer.")
+                if stage is None:
+                    raise HardwareError("Z-stack acquisition requires a Z stage adapter.")
+                if not getattr(stage, "is_connected", False):
+                    info = stage.connect()
+                    emit_status("z_stage_connected", dict(info or {}))
+                _raise_if_cancelled(stop_event)
+                stack_config = replace(z_scan_config, start_um=None)
+                z_stack_requested_positions = tuple(
+                    scan_positions(
+                        stack_config,
+                        stage_position_um=float(stage.get_position_um()),
+                    )
+                )
+                preflight_z_scan_positions(stage, stack_config)
+                output_path = payload.get("z_stack_output_path")
+                if output_path is None or not str(output_path).strip():
+                    raise ValueError("Z-stack output_path must not be empty.")
+                writer_spec = SeriesWriteJob(
+                    job_id=task_id,
+                    kind="zstack",
+                    output_path=Path(output_path),
+                    total_layers=len(z_stack_requested_positions),
+                    frame_shape=(int(task.camera.roi_height), int(task.camera.roi_width)),
+                    wavelength_nm=int(task.laser_wavelength_nm),
+                    exposure_us=int(task.camera.exposure_us),
+                    running_order=str(
+                        task.running_order_name
+                        or pattern_result.metadata.get("running_order_name", "")
+                    ),
+                )
+                series_writer.begin_job(writer_spec)
+                z_stack_writer_started = True
+                emit_status(
+                    "z_stack_writer_ready",
+                    {
+                        "task_id": task_id,
+                        "output_path": str(writer_spec.output_path),
+                        "total_layers": writer_spec.total_layers,
+                        "frame_shape": list(writer_spec.frame_shape),
+                    },
+                )
+                _raise_if_cancelled(stop_event)
+                try:
+                    stack_result = run_z_stack_acquisition(
+                        task=task,
+                        daq_config=daq_config,
+                        pattern_result=pattern_result,
+                        camera=camera,
+                        slm=slm,
+                        daq=daq,
+                        stage_adapter=stage,
+                        z_scan_config=z_scan_config,
+                        layer_sink=series_writer,
+                        waveform_builder=waveform_builder,
+                        task_id=task_id,
+                        on_status=emit_status,
+                        stop_event=stop_event,
+                    )
+                except ZStackAcquisitionCancelled as stack_cancelled:
+                    merged, writer_error = finalize_z_stack_result(
+                        stack_cancelled.partial_result,
+                        "cancelled",
+                        str(stack_cancelled),
+                    )
+                    if writer_error is not None or merged.status == "failed":
+                        self.signal_acquisition_failed.emit(task_id, merged.message)
+                    else:
+                        emit_status(
+                            "acquisition_cancelled",
+                            {"task_id": task_id, "message": merged.message},
+                        )
+                        self.signal_acquisition_cancelled.emit(task_id, merged.message)
+                    return
+                except ZStackAcquisitionFailed as stack_failed:
+                    stack_traceback = traceback.format_exc()
+                    merged, _writer_error = finalize_z_stack_result(
+                        stack_failed.partial_result,
+                        "failed",
+                        str(stack_failed),
+                    )
+                    self.signal_acquisition_failed.emit(
+                        task_id,
+                        f"{merged.message}\n{stack_traceback}",
+                    )
+                    return
+
+                merged, writer_error = finalize_z_stack_result(stack_result, "complete")
+                if (
+                    writer_error is not None
+                    or merged.status != "complete"
+                    or merged.completed_layers != merged.total_layers
+                ):
+                    failure_message = merged.message or (
+                        "Series writer did not commit every requested Z-stack layer."
+                    )
+                    if merged.status == "complete":
+                        merged = replace(merged, status="failed", message=failure_message)
+                    self.signal_acquisition_failed.emit(task_id, failure_message)
+                return
+
             if z_scan_enabled:
                 if stage is None:
                     raise HardwareError("Z-scan is enabled but no Z stage adapter is available.")
                 if not getattr(stage, "is_connected", False):
                     info = stage.connect()
                     emit_status("z_stage_connected", dict(info or {}))
+                preflight_z_scan_positions(stage, z_scan_config)
                 running_orders = slm.list_running_orders()
                 z_ro_index, z_ro_name, z_warnings = find_z_scan_running_order(
                     running_orders,
+                    wavelength_nm=int(task.laser_wavelength_nm),
                     exposure_preset_ms=int(z_scan_config.exposure_preset_ms),
                 )
                 if z_ro_index is None:
                     raise HardwareError("; ".join(z_warnings) or "No matching z-scan running order found.")
+                formal_index_value = pattern_result.metadata.get("running_order_index")
+                if formal_index_value is None:
+                    raise HardwareError(
+                        "Z-scan is enabled but the formal SIM running order has no "
+                        "running_order_index."
+                    )
+                formal_ro_index = int(formal_index_value)
+                formal_ro_name = str(pattern_result.metadata.get("running_order_name", ""))
+                # The select call may fail after partially changing hardware state,
+                # so establish the restore obligation before invoking the adapter.
+                formal_restore_pending = True
                 z_result = slm.select_running_order(z_ro_index)
                 z_scan_pattern_result = _coerce_running_order_pattern_result(z_result, z_ro_index, z_ro_name)
                 emit_status(
                     "z_scan_running_order_selected",
                     _running_order_payload(z_result, z_scan_pattern_result, z_ro_index, z_ro_name, z_warnings),
                 )
+                focus_output_path = payload.get("focus_output_path")
+                if focus_output_path is not None:
+                    if series_writer is None:
+                        emit_focus_warning("Focus diagnostics requested without a series writer.")
+                    else:
+                        focus_spec = SeriesWriteJob(
+                            job_id=f"{task_id}:focus",
+                            kind="focus",
+                            output_path=Path(focus_output_path),
+                            csv_path=(
+                                Path(payload["focus_csv_path"])
+                                if payload.get("focus_csv_path") is not None
+                                else None
+                            ),
+                            total_layers=int(z_scan_config.num_steps) + 1,
+                            frame_shape=(int(task.camera.roi_height), int(task.camera.roi_width)),
+                            wavelength_nm=int(task.laser_wavelength_nm),
+                            exposure_us=int(z_scan_config.actual_exposure_us),
+                            running_order=str(
+                                z_scan_pattern_result.metadata.get("running_order_name", "")
+                                if z_scan_pattern_result is not None
+                                else ""
+                            ),
+                        )
+                        try:
+                            series_writer.begin_job(focus_spec)
+                        except Exception as diagnostic_error:
+                            focus_diagnostics_failed = True
+                            emit_focus_warning(f"Focus diagnostics begin failed: {diagnostic_error}")
+                        else:
+                            focus_writer_started = True
+                            focus_diagnostics_enabled = True
+                            emit_status(
+                                "focus_diagnostics_ready",
+                                {
+                                    "task_id": task_id,
+                                    "output_path": str(focus_spec.output_path),
+                                    "total_layers": focus_spec.total_layers,
+                                },
+                            )
             _raise_if_cancelled(stop_event)
             # 6) prepare-only 路径：到这里就算完成；返回前广播"patterns_prepared"事件。
             if payload.get("prepare_only"):
+                restore_formal_running_order()
                 prepared_payload = {
                     "task_id": task_id,
                     "running_order_name": task.running_order_name,
@@ -286,18 +731,63 @@ class SimAcquisitionWorker(QObject):
                 stage_adapter=stage,
                 z_scan_config=z_scan_config if z_scan_enabled else None,
                 z_scan_pattern_result=z_scan_pattern_result,
+                formal_running_order_restore=restore_formal_running_order,
+                on_focus_frame=on_focus_frame if focus_writer_started else None,
             )
+            restore_formal_running_order()
+            finalize_focus_diagnostics("complete")
             self.signal_acquisition_ready.emit(batch)
             self.signal_acquisition_summary_ready.emit(_acquisition_summary_payload(batch))
         except AcquisitionCancelled as exc:
             # 8a) 取消路径：广播 ``acquisition_cancelled``，不发 failed 信号，
             #     便于 GUI 区分"用户主动停"和"硬件出错"。
+            finalize_focus_diagnostics("cancelled", str(exc))
+            if is_z_stack and not z_stack_terminal_emitted:
+                base = make_empty_z_stack_result("cancelled", str(exc))
+                merged, writer_error = finalize_z_stack_result(base, "cancelled", str(exc))
+                if writer_error is not None or merged.status == "failed":
+                    self.signal_acquisition_failed.emit(task_id, merged.message)
+                    return
+            try:
+                restore_formal_running_order("running_order_restored_after_cancel")
+            except Exception as restore_exc:
+                message = f"{exc}\n{restore_exc}"
+                self.signal_acquisition_failed.emit(task_id, message)
+                return
             message = str(exc) or "Acquisition cancelled."
             emit_status("acquisition_cancelled", {"task_id": task_id, "message": message})
             self.signal_acquisition_cancelled.emit(task_id, message)
         except Exception as exc:
             # 8b) 失败路径：附上完整 traceback，让 GUI 弹错误对话框时可让用户复制。
-            self.signal_acquisition_failed.emit(task_id, f"{exc}\n{traceback.format_exc()}")
+            original_traceback = traceback.format_exc()
+            finalize_focus_diagnostics("failed", str(exc))
+            if is_z_stack and not z_stack_terminal_emitted:
+                base = make_empty_z_stack_result("failed", str(exc))
+                merged, _writer_error = finalize_z_stack_result(base, "failed", str(exc))
+                self.signal_acquisition_failed.emit(
+                    task_id,
+                    f"{merged.message}\n{original_traceback}",
+                )
+                return
+            try:
+                restore_formal_running_order("running_order_restored_after_failure")
+            except Exception as restore_exc:
+                self.signal_acquisition_failed.emit(
+                    task_id,
+                    f"{exc}\n{restore_exc}\n{original_traceback}",
+                )
+                return
+            self.signal_acquisition_failed.emit(task_id, f"{exc}\n{original_traceback}")
+        finally:
+            if is_z_stack:
+                try:
+                    camera.disarm()
+                except Exception:
+                    logger.warning("Failed to disarm camera during Z-stack worker cleanup.", exc_info=True)
+                try:
+                    daq.set_all_low(daq_config.device_name)
+                except Exception:
+                    logger.warning("Failed to set DAQ low during Z-stack worker cleanup.", exc_info=True)
 
 
 def _raise_if_cancelled(stop_event: Any | None) -> None:
@@ -323,6 +813,23 @@ def _apply_camera_result_to_config(config: CameraConfig, result: dict[str, Any])
         config.roi_y = int(applied_roi.get("y", config.roi_y))
         config.roi_width = int(applied_roi.get("width", config.roi_width))
         config.roi_height = int(applied_roi.get("height", config.roi_height))
+
+
+def _matching_camera_timing_recommendation(
+    runtime_timing: dict[str, Any] | None,
+    camera_config: CameraConfig,
+) -> Any | None:
+    """只返回与当前相机配置完整签名一致的运行时 recommendation。"""
+    if not isinstance(runtime_timing, dict) or not isinstance(
+        runtime_timing.get("camera_config"), dict
+    ):
+        return None
+    try:
+        if camera_config_signature(runtime_timing) != camera_config_signature(camera_config):
+            return None
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return runtime_timing.get("recommended_inter_frame_gap_us")
 
 
 def _coerce_running_order_pattern_result(
@@ -396,14 +903,27 @@ class SimAcquisitionController(QObject):
     signal_acquisition_cancelled = pyqtSignal(str, str)
     signal_z_scan_progress = pyqtSignal(int, int, float, float)
     signal_z_scan_complete = pyqtSignal(float, object)
+    signal_z_stack_progress = pyqtSignal(dict)
+    signal_z_stack_result_ready = pyqtSignal(object)
     # 跨线程信号：把 payload 投递给 worker 的 ``slot_start``。
     signal_start_worker = pyqtSignal(object)
 
-    def __init__(self, backend: BackendConfig | None = None, parent: QObject | None = None):
+    def __init__(
+        self,
+        backend: BackendConfig | None = None,
+        parent: QObject | None = None,
+        *,
+        red_laser_nm: int = DEFAULT_RED_LASER_NM,
+        z_stack_writer: Any | None = None,
+        z_stack_writer_factory: Callable[[], Any] | None = None,
+    ):
         # 1) 调父类构造；让 controller 挂在 parent 上便于自动清理。
         super().__init__(parent)
         # 2) backend 缺省 → 用默认配置（非仿真模式 + 空 SDK 路径）。
         self.backend = backend or BackendConfig()
+        # 机器红光身份必须来自 AppConfig，不能由 task 波长反推；启动任务时
+        # 原样写入 validation AppConfig，让统一配置校验负责拒绝 638/647 机器身份冲突。
+        self.red_laser_nm = int(red_laser_nm)
         # 3) 单实例波形 builder，避免每次采集都重建。
         self.waveform_builder = NIDaqWaveformBuilder()
         # 4) 创建 3 个 adapter（真实 or 仿真，由 backend.simulation_mode 决定）。
@@ -426,6 +946,8 @@ class SimAcquisitionController(QObject):
         self._shutdown_requested = False
         self._active_stop_events: dict[str, threading.Event] = {}
         self._current_stop_event: threading.Event | None = None
+        self._series_writer = z_stack_writer
+        self._series_writer_factory = z_stack_writer_factory or ZStackAsyncWriter
         # 7a) immediate-live（找样品）运行态——仅 controller 私有，不落盘（见决策）。
         #     `_immediate_ro_scan` 缓存连接时一次性扫描的全部 RO+激活类型；
         #     `_immediate_ro_indices` 是其中 ACT_IMMEDIATE 的索引集合，供正式选择排除；
@@ -442,21 +964,35 @@ class SimAcquisitionController(QObject):
         self._thread = QThread(self)
         self._worker = SimAcquisitionWorker()
         self._worker.moveToThread(self._thread)
-        self._worker.signal_status_changed.connect(self.signal_status_changed)
+        # 先在 controller 主线程更新签名绑定的 timing 缓存，再向 GUI 转发同一状态。
+        self._worker.signal_status_changed.connect(self._handle_worker_status)
         self._worker.signal_acquisition_ready.connect(self.signal_acquisition_ready)
         self._worker.signal_acquisition_summary_ready.connect(self.signal_acquisition_summary_ready)
         self._worker.signal_acquisition_failed.connect(self.signal_acquisition_failed)
         self._worker.signal_acquisition_cancelled.connect(self.signal_acquisition_cancelled)
         self._worker.signal_z_scan_progress.connect(self.signal_z_scan_progress)
         self._worker.signal_z_scan_complete.connect(self.signal_z_scan_complete)
+        self._worker.signal_z_stack_progress.connect(self.signal_z_stack_progress)
+        self._worker.signal_z_stack_result_ready.connect(self.signal_z_stack_result_ready)
         # 8a) 三个清理钩子：prepare_ready/ready/failed/cancelled 都要从字典里移除 stop_event。
         self._worker.signal_prepare_ready.connect(self._clear_stop_event_for_task)
         self._worker.signal_acquisition_summary_ready.connect(self._clear_stop_event_for_summary)
         self._worker.signal_acquisition_failed.connect(self._clear_stop_event_for_task)
         self._worker.signal_acquisition_cancelled.connect(self._clear_stop_event_for_task)
+        self._worker.signal_z_stack_result_ready.connect(self._clear_stop_event_for_z_stack_result)
         # 8b) ``signal_start_worker`` 触发 worker.slot_start；跨线程投递。
         self.signal_start_worker.connect(self._worker.slot_start)
         self._thread.start()
+
+    @pyqtSlot(str, dict)
+    def _handle_worker_status(self, status: str, payload: dict[str, Any]) -> None:
+        """在转发 worker 状态前同步本次实际相机 timing 缓存。"""
+        payload_copy = dict(payload or {})
+        if status == "camera_config_applied":
+            camera_config = payload_copy.get("camera_config")
+            if isinstance(camera_config, dict):
+                self._latest_camera_timing = payload_copy
+        self.signal_status_changed.emit(str(status), payload_copy)
 
     @staticmethod
     def _create_adapters(backend: BackendConfig):
@@ -467,6 +1003,12 @@ class SimAcquisitionController(QObject):
         """
         bundle = create_adapter_bundle(backend)
         return bundle.camera, bundle.slm, bundle.daq, bundle.stage
+
+    def _get_series_writer(self) -> Any:
+        """Create the shared asynchronous series writer only when diagnostics need it."""
+        if self._series_writer is None:
+            self._series_writer = self._series_writer_factory()
+        return self._series_writer
 
     def shutdown(self) -> None:
         """停止后台 worker、按 Qt 生命周期顺序断开相机、SLM 与 DAQ。"""
@@ -487,7 +1029,29 @@ class SimAcquisitionController(QObject):
             # shutdown 超时、确认卡住时句柄状态后，再评估是否改为 best-effort 断开。
             self.signal_status_changed.emit("shutdown_timeout", {})
             return
-        # 4) 主动断相机和 SLM；DAQ 没有显式 disconnect 接口。
+        # 4) Worker 已退出后才可有界关闭共享 writer，避免与仍在 submit 的 worker 竞争。
+        if self._series_writer is not None:
+            try:
+                self._series_writer.shutdown(timeout=2.0)
+            except SeriesWriteTimeout as timeout_error:
+                try:
+                    self._series_writer.wait_for_terminal(timeout=2.0)
+                except Exception:
+                    logger.warning(
+                        "Series writer shutdown timed out and terminal recovery failed: %s",
+                        timeout_error,
+                        exc_info=True,
+                    )
+            except RuntimeError:
+                # A finalize command may already be pending after its caller timed out.
+                try:
+                    self._series_writer.wait_for_terminal(timeout=2.0)
+                    self._series_writer.shutdown(timeout=2.0)
+                except Exception:
+                    logger.warning("Failed to close series writer during shutdown.", exc_info=True)
+            except Exception:
+                logger.warning("Failed to close series writer during shutdown.", exc_info=True)
+        # 5) 主动断相机和 SLM；DAQ 没有显式 disconnect 接口。
         try:
             self.camera_adapter.disconnect()
         except Exception:
@@ -519,13 +1083,18 @@ class SimAcquisitionController(QObject):
 
     def connect_camera(self, device_index: int | None = None, device_label: str = "") -> dict[str, Any]:
         """连接相机并在成功后广播 ``camera_connected`` 状态。"""
+        self._latest_camera_timing = {}
         info = self.camera_adapter.connect(device_index=device_index, device_label=device_label)
         self.signal_status_changed.emit("camera_connected", info)
         return info
 
     def disconnect_camera(self) -> None:
         """断开相机并广播 ``camera_disconnected`` 状态，GUI 据此切换按钮可用性。"""
-        self.camera_adapter.disconnect()
+        try:
+            self.camera_adapter.disconnect()
+        finally:
+            # 即使 SDK 断连报错，也不能再复用与旧连接绑定的 timing。
+            self._latest_camera_timing = {}
         self.signal_status_changed.emit("camera_disconnected", {})
 
     def camera_connection_info(self) -> dict[str, Any]:
@@ -574,9 +1143,20 @@ class SimAcquisitionController(QObject):
         self.camera_config = config
         result = self.camera_adapter.apply_config(config) or {}
         _apply_camera_result_to_config(config, result)
-        self._latest_camera_timing = dict(result)
         payload = {"camera_config": dict(config.__dict__), **dict(result)}
+        self._latest_camera_timing = dict(payload)
         self.signal_status_changed.emit("camera_config_applied", payload)
+        if bool(result.get("timing_fallback_used")):
+            self.signal_status_changed.emit(
+                "camera_timing_fallback_warning",
+                {
+                    "message": str(
+                        result.get("timing_fallback_reason")
+                        or "Camera timing properties are unavailable; using 50 ms fallback."
+                    ),
+                    **dict(payload),
+                },
+            )
         return dict(result)
 
     def refresh_available_slm_devices(self) -> list[dict[str, str]]:
@@ -886,12 +1466,36 @@ class SimAcquisitionController(QObject):
         prepare_running_order: bool = False,
         initialize_hardware: bool = False,
         apply_daq_config: bool = False,
-        apply_camera_config: bool = False,
+        apply_camera_config: bool = True,
         z_scan_config: ZScanConfig | None = None,
         z_scan_enabled: bool | None = None,
         reconstruction_config: ReconstructionConfig | None = None,
+        focus_output_path: str | Path | None = None,
+        focus_csv_path: str | Path | None = None,
     ) -> str:
         """启动单次 SIM9 正式采集；返回新分配的 ``task_id``。"""
+        selected_z_scan_config = z_scan_config or self.z_scan_config
+        selected_z_scan_enabled = (
+            bool(selected_z_scan_config.enabled)
+            if z_scan_enabled is None
+            else bool(z_scan_enabled)
+        )
+        if selected_z_scan_enabled and (
+            z_scan_config is not None
+            or z_scan_enabled is not None
+            or focus_output_path is not None
+        ):
+            # Autofocus is safety-sensitive: every hardware/config/RO preflight is
+            # mandatory regardless of legacy caller flags.
+            prepare_running_order = True
+            initialize_hardware = True
+            apply_daq_config = True
+            apply_camera_config = True
+        if not apply_camera_config:
+            raise ValueError(
+                "Formal SIM9 acquisition requires apply_camera_config=True "
+                "so current camera timing is read before waveform construction."
+            )
         return self._start_worker_task(
             task,
             prepare_running_order=prepare_running_order,
@@ -902,6 +1506,49 @@ class SimAcquisitionController(QObject):
             z_scan_config=z_scan_config,
             z_scan_enabled=z_scan_enabled,
             reconstruction_config=reconstruction_config,
+            focus_output_path=focus_output_path,
+            focus_csv_path=focus_csv_path,
+        )
+
+    def start_z_stack_acquisition(
+        self,
+        task: SimTaskConfig,
+        *,
+        output_path: str | Path,
+        z_scan_config: ZScanConfig,
+        prepare_running_order: bool = True,
+        initialize_hardware: bool = True,
+        apply_daq_config: bool = True,
+        apply_camera_config: bool = True,
+    ) -> str:
+        """Start raw-only formal SIM9 acquisition at every configured Z position."""
+        if not bool(z_scan_config.enabled):
+            raise ValueError("Z-stack acquisition requires z_scan_config.enabled=True.")
+        if bool(z_scan_config.select_focus_plane):
+            raise ValueError("Z-stack acquisition requires select_focus_plane=False.")
+        if not str(output_path).strip():
+            raise ValueError("Z-stack output_path must not be empty.")
+        if not all(
+            (
+                prepare_running_order,
+                initialize_hardware,
+                apply_daq_config,
+                apply_camera_config,
+            )
+        ):
+            raise ValueError("Z-stack acquisition requires every hardware preflight flag to be True.")
+        return self._start_worker_task(
+            task,
+            prepare_running_order=bool(prepare_running_order),
+            initialize_hardware=bool(initialize_hardware),
+            apply_daq_config=bool(apply_daq_config),
+            apply_camera_config=bool(apply_camera_config),
+            prepare_only=False,
+            z_scan_config=z_scan_config,
+            z_scan_enabled=True,
+            reconstruction_config=ReconstructionConfig(enabled=False),
+            acquisition_mode="z_stack",
+            z_stack_output_path=output_path,
         )
 
     def start_prepare_experiment(
@@ -935,14 +1582,17 @@ class SimAcquisitionController(QObject):
         z_scan_config: ZScanConfig | None = None,
         z_scan_enabled: bool | None = None,
         reconstruction_config: ReconstructionConfig | None = None,
+        acquisition_mode: str = "single",
+        z_stack_output_path: str | Path | None = None,
+        focus_output_path: str | Path | None = None,
+        focus_csv_path: str | Path | None = None,
     ) -> str:
         """``start_*`` 系列的统一实现：组装 payload、做配置校验、生成 task_id、投递信号。"""
-        # 1) 防御：非 RO 路径要求 controller.pattern_result.handles 已就绪。
-        if not prepare_running_order and not self.pattern_result.handles:
-            raise HardwareError("Patterns must be prepared before acquisition.")
-        # 2) 用最近一次相机回报刷新有效帧间隔；保证 GUI 与 worker 用同一规则。
+        # 1) 只有完整配置签名匹配时才复用缓存；preview 的固定 1 ms timing、旧 ROI
+        #    或断线前结果都不能影响本次正式 task。worker 若重新 apply，会在 build 前
+        #    用本次硬件回报再次覆盖。
         task.timing.inter_frame_gap_us = effective_inter_frame_gap_us(
-            self._latest_camera_timing.get("recommended_inter_frame_gap_us")
+            _matching_camera_timing_recommendation(self._latest_camera_timing, task.camera)
         )
         selected_z_scan_config = z_scan_config or self.z_scan_config
         selected_z_scan_enabled = (
@@ -950,6 +1600,43 @@ class SimAcquisitionController(QObject):
         )
         if prepare_only:
             selected_z_scan_enabled = False
+        elif selected_z_scan_enabled:
+            # Formal Z-scan modes always begin at the stage position sampled at
+            # task execution time.  Keep ``start_um`` only as a legacy schema
+            # field; never dispatch a persisted machine coordinate to hardware.
+            selected_z_scan_config = replace(selected_z_scan_config, start_um=None)
+        if acquisition_mode not in {"single", "z_stack"}:
+            raise ValueError(f"Unsupported acquisition mode: {acquisition_mode!r}")
+        if (
+            acquisition_mode == "single"
+            and not prepare_only
+            and selected_z_scan_enabled
+            and not bool(selected_z_scan_config.select_focus_plane)
+        ):
+            raise ValueError(
+                "Z-scan with select_focus_plane=False must use start_z_stack_acquisition()."
+            )
+        if acquisition_mode == "z_stack":
+            if not selected_z_scan_enabled or not bool(selected_z_scan_config.enabled):
+                raise ValueError("Z-stack acquisition requires an enabled z_scan_config.")
+            if bool(selected_z_scan_config.select_focus_plane):
+                raise ValueError("Z-stack acquisition requires select_focus_plane=False.")
+            if z_stack_output_path is None or not str(z_stack_output_path).strip():
+                raise ValueError("Z-stack output_path must not be empty.")
+        if focus_csv_path is not None and focus_output_path is None:
+            raise ValueError("focus_csv_path requires focus_output_path.")
+        if focus_output_path is not None:
+            if not str(focus_output_path).strip():
+                raise ValueError("focus_output_path must not be empty.")
+            if (
+                acquisition_mode != "single"
+                or not selected_z_scan_enabled
+                or not bool(selected_z_scan_config.select_focus_plane)
+            ):
+                raise ValueError("Focus diagnostics require enabled autofocus Z-scan mode.")
+        # 2) 防御：模式语义明确后，非 RO 路径才要求既有 pattern handles。
+        if not prepare_running_order and not self.pattern_result.handles:
+            raise HardwareError("Patterns must be prepared before acquisition.")
         selected_reconstruction_config = reconstruction_config or self.reconstruction_config
         # 3) 选定的 pattern_result：RO 路径稍后由 worker 重新生成；非 RO 路径用 controller 持有的。
         pattern_result = self.pattern_result if not prepare_running_order else PatternPreparationResult()
@@ -973,10 +1660,14 @@ class SimAcquisitionController(QObject):
             pattern_files=pattern_files,
             selected_running_order=selected_running_order,
             selected_laser_nm=task.laser_wavelength_nm,
+            red_laser_nm=int(self.red_laser_nm),
         )
         validation_errors = validate_app_config(validation_config)
         if validation_errors:
             raise ValueError("Invalid SIM acquisition config: " + "; ".join(validation_errors))
+        series_writer = None
+        if acquisition_mode == "z_stack" or focus_output_path is not None:
+            series_writer = self._get_series_writer()
         # 5) 生成 task_id 与 stop_event，把 stop_event 写入两个簿记字段。
         task_id = new_task_id()
         stop_event = threading.Event()
@@ -1008,6 +1699,15 @@ class SimAcquisitionController(QObject):
             "apply_daq_config": bool(apply_daq_config),
             "apply_camera_config": bool(apply_camera_config),
             "prepare_only": bool(prepare_only),
+            "acquisition_mode": acquisition_mode,
+            "z_stack_output_path": (
+                Path(z_stack_output_path) if z_stack_output_path is not None else None
+            ),
+            "focus_output_path": (
+                Path(focus_output_path) if focus_output_path is not None else None
+            ),
+            "focus_csv_path": Path(focus_csv_path) if focus_csv_path is not None else None,
+            "series_writer": series_writer,
             # immediate（找样品）RO 索引快照：worker 正式选 FINISH RO 时据此排除。
             "immediate_ro_indices": set(self._immediate_ro_indices),
         }
@@ -1034,6 +1734,10 @@ class SimAcquisitionController(QObject):
         """signal_acquisition_summary_ready 的清理回调；避免 controller 接收 raw stack。"""
         task_id = str((payload or {}).get("task_id", ""))
         self._clear_stop_event_for_task(task_id, "")
+
+    def _clear_stop_event_for_z_stack_result(self, result: Any) -> None:
+        """Clear a parent task after its lightweight Z-stack terminal result arrives."""
+        self._clear_stop_event_for_task(str(getattr(result, "task_id", "")), "")
 
     def _clear_stop_event_for_task(self, task_id: str, _message: str = "") -> None:
         """从 ``_active_stop_events`` 字典里移除已完成的 task；并在字典空时清 _current。"""

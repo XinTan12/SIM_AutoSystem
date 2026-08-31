@@ -5,6 +5,36 @@
 - 每条记录至少包含：日期、决策、原因、影响。
 - 普通操作、临时讨论和纯执行细节不写入本文件。
 
+## 2026-08-25
+
+### 决策：SIM9 inter-frame gap 改由 DCAM 原始 timing 计算并固定加 500 µs，50 ms 仅作异常回退
+- 原因：
+  Hamamatsu DCAM 对 external-level trigger 的正式条件是：`Ti=Tx+Tb`；当 `Tx<Tc` 时同时要求 `Tb>Tc-Tx` 与 `Tb>=MinTB`，否则只要求 `Tb>=MinTB`。旧实现把 `TIMING_READOUTTIME + TIMING_MINTRIGGERBLANKING + 1 ms` 相加，未使用 `TIMING_CYCLICTRIGGERPERIOD`，会重复保守计时；旧的“推荐值达到或超过 50 ms 时强制压回 50 ms”又可能反向截短真实硬件下界。用户要求对每组 ROI/曝光读取三项原始 timing，计算理论最低 gap 后增加固定工程余量，并确认余量取 `500 µs`。
+- 影响：
+  正式相机配置在 ROI、曝光、位深、readout speed 与 external-level 触发属性生效后读取 `TIMING_READOUTTIME`、`TIMING_CYCLICTRIGGERPERIOD`、`TIMING_MINTRIGGERBLANKING`。`READOUTTIME` 必须有效并记录/显示，但不进入 gap 加法；整数微秒理论值按 `ceil(MinTB)`，以及 `Tx<Tc` 时用 `floor((Tc-Tx)×1e6)+1` 表达严格大于，再取最大值并加固定 `500 µs`。三项任一缺失或非法时不做部分推断，回退 `50_000 µs`并发非模态 warning；其它合法 recommendation 不设 50 ms 上限。本规则明确取代 2026-05-11“≥50 ms 仍使用 50 ms”的旧决策。runtime timing 只允许在设备、实际 ROI、曝光、位深、触发模式完整签名匹配时复用，断开/重连清空；preview timing 不得用于正式摘要/估时。配置 schema 不升级，原始和派生 timing 不持久化；现有波形布局和末帧 trailing gap 保持不变。`500 µs` 是否足以覆盖相机、R11 FINISH/READY 与整套 SIM 相位对齐，必须经多 ROI×1/3/5/10 ms 的 DCAM timestamp、连续压力采集与示波器/逻辑分析仪真机验收后才能作为生产安全值签收。
+
+## 2026-08-24
+
+### 决策：Z-Scan 功能迭代保留主 GUI 的 legacy 四列紧凑排布
+- 原因：
+  2026-08-22 三态功能实施曾把 Z-Scan 从原始四列横排改成 group-owned 2×2 排布；用户明确要求恢复原排布，并确认只回退空间布局、继续保留 `Layers` 与全部新功能语义。Z-Scan 的采集合同与控件空间安排彼此独立，功能扩展不应隐式改变操作者已经熟悉的控制面。
+- 影响：
+  主 GUI Z-Scan 固定保留 150 px 高度、`layoutWidget(0,20,312,121)`、四列 `Direction / Step (nm) / Layers / Exposure (ms)`、50/50/50/60 px 控件宽度及底部同行的 `Select Focus Plane + Test Z-Scan`。`Layers` 仍为总层数且范围 2–1001，三态 tooltip、schema v14、Z-stack、SML 自动选焦和 MCU 阻止逻辑均不回退。后续除非用户明确要求视觉改版，不得因新增 Z-Scan 功能改成 2×2、group-owned 或其他排布；仍须修改 `.ui` 后用 `pyuic5` 重生成 Python UI，并由几何回归测试锁定。
+
+## 2026-08-22
+
+### 决策：Z-Scan 采用“普通 SIM9 / raw Z-stack / 三相位 SML 自动选焦”三态合同，并以独立异步 series writer 保存多层数据
+- 原因：
+  原有 `Enable Z-Scan` 只有“采集前自动选焦”语义，无法在不破坏单平面 `(9,H,W)` 重建合同的前提下得到每个 Z 层的完整 SIM9，也没有明确区分手动 raw 与 MCU 重建链。多层 4D 数据若继续借用 `AcquisitionBatch` 或在采集线程同步写 TIFF，会放大 GUI 大数组持有、重建误入多层数据和磁盘阻塞风险。选焦侧原先又仅覆盖 488 nm，不能满足四波长机器及 638/647 双机约束。
+- 影响：
+  ① **三态分派为长期合同**：Enable OFF=当前位置一组普通 SIM9；Enable ON 且 Select Focus Plane OFF=仅手动 raw「SIM9帧采集」执行从当前 Z 起的 N 层完整 SIM9 Z-stack，MCU/重建入口必须在任何预览、激光、平台和设备动作前阻止；两项 ON=手动与 MCU 都先逐层采三相位积分图、按 SML 离散最大值（同分取扫描靠前层）选焦，再在最佳层采一组普通 SIM9。`Test Z-Scan` 独立于 Enable：Select OFF 只移动，Select ON 只选焦，不追加正式 SIM9。
+  ② **层数与位置语义**：GUI 对外显示 `Layers`（总层数，最小 2），内部兼容 `num_steps=layers-1`；所有正式路径与 Test 都忽略持久化绝对起点，从任务执行时的平台当前 Z 计算 `current_z + sign×step×index`。Z-stack 正常结束停最后一层，自动选焦停最佳层，取消停当前安全位置。
+  ③ **配置 schema v14**：新增持久化 `z_scan.select_focus_plane`；v13→v14 默认 `true` 以保持旧版 Enable 后自动选焦行为，并把旧 `start_um` 清为 `null`。主 GUI 控件仍遵 `.ui` 静态定义→pyuic5 重生成→`main.py` 运行时接线规则。
+  ④ **多波长三相位 RO/DAQ**：RO 命名固定 `{wavelength}_3.5_2d_zscan3p_{5|8|14|20}ms`，图案索引为 405:`0–2`、488:`9–11`、561:`18–20`、红光:`27–29`；保留 488，新增 405/561/647，638 机器沿用 638↔647 exact-first/fallback。四档只复用 `A±/F±/G±/D±`，实际曝光 `4884/7884/13884/19884 µs`，不新增 sequence alias、不引入 48088、不发 FINISH；Z-scan 波形只触发一次 SLM，并按当前波长驱动对应激光线。
+  ⑤ **数据与写盘边界**：保持 `AcquisitionBatch` 单平面合同不变，新增不持有 4D 数组的 `ZStackAcquisitionResult`。Z-stack 每层必须先得到并校验完整 `(9,H,W) uint16`，再交给有界异步 `ZStackAsyncWriter`；writer 以每层临时块按层序合并单 TIFF，预计超过阈值使用 BigTIFF，取消/失败只合并已完成层并使用 `.partial-zXofN.tif`。选焦诊断另存逐层 TIFF 与 SML CSV；诊断保存失败只告警并报告保留路径，不回滚已成功的最终 SIM9。正式采集首次移动前必须完成平台范围、相机、SLM、DAQ、所需 RO、波形与输出目录/空间预检；所有终态清理相机、DAQ，并恢复正式曝光与 RO。
+  ⑥ **重建边界**：第一版不重建 Z-stack 各层；只有自动选焦后的最终普通 SIM9 继续进入现有保存/重建/决策链。
+  ⑦ **真机门槛**：合入稳定主线前仍需 MetroCon 编译/烧录并枚举新增 RO，四波长/四曝光档示波器验证，三相位顺序与 SML/最佳 Z 验证，以及真实 Save Path 上的大 ROI、BigTIFF、Stop/partial、staging cleanup/timeout 验收。
+
 ## 2026-06-27
 
 ### 决策：第四路红光波长按机器可配置（638/647），取代 2026-06-22「统一迁移为 638」；新增 config schema v13 与 `red_laser_nm` 机器档案

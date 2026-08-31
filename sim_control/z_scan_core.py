@@ -11,7 +11,7 @@ import numpy as np
 
 from .errors import HardwareError
 from .focus_metrics import sum_modified_laplacian
-from .models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig
+from .models import CameraConfig, DaqLineConfig, TimingConfig, ZScanConfig, new_task_id
 from .waveform import NIDaqWaveformBuilder
 
 
@@ -26,6 +26,22 @@ class ZFocusPoint:
 
 
 @dataclass(frozen=True)
+class FocusFrameRecord:
+    """One autofocus diagnostic frame with commanded and measured Z metadata."""
+
+    task_id: str
+    plane_index: int
+    total_layers: int
+    requested_z_um: float
+    measured_z_um: float
+    wavelength_nm: int
+    exposure_actual_us: int
+    timestamp: float
+    score: float
+    frame: np.ndarray
+
+
+@dataclass(frozen=True)
 class ZScanResult:
     best_z_um: float
     focus_curve: list[ZFocusPoint]
@@ -34,12 +50,28 @@ class ZScanResult:
 
 
 StatusCallback = Callable[[str, dict[str, Any]], None]
+FocusFrameCallback = Callable[[FocusFrameRecord], None]
 
 logger = logging.getLogger(__name__)
 
 
 def _noop_status(event: str, payload: dict[str, Any]) -> None:
     return None
+
+
+def _report_restore_warning(
+    callback: StatusCallback,
+    event: str,
+    payload: dict[str, Any],
+) -> None:
+    try:
+        callback(event, payload)
+    except Exception:
+        logger.warning(
+            "Failed to report Z-scan restore warning %s without masking the scan error.",
+            event,
+            exc_info=True,
+        )
 
 
 def _raise_if_cancelled(stop_event: Any | None) -> None:
@@ -67,9 +99,12 @@ def run_z_scan(
     camera_config: CameraConfig,
     timing: TimingConfig,
     z_scan_config: ZScanConfig,
+    laser_wavelength_nm: int = 488,
+    task_id: str | None = None,
     waveform_builder: NIDaqWaveformBuilder | None = None,
     stop_event: Any | None = None,
     on_status: StatusCallback | None = None,
+    on_focus_frame: FocusFrameCallback | None = None,
     keep_captured_stack: bool = False,
 ) -> ZScanResult:
     """Run a single-frame-per-position z-scan and move to the best focus plane."""
@@ -84,29 +119,46 @@ def run_z_scan(
         raise ValueError("z_scan_config.num_steps must be >= 1.")
 
     actual_exposure_us = int(z_scan_config.actual_exposure_us)
+    laser_wavelength_nm = int(laser_wavelength_nm)
+    task_id = str(task_id or new_task_id())
     z_camera_config = replace(camera_config, exposure_us=actual_exposure_us)
     focus_curve: list[ZFocusPoint] = []
     captured_frames: list[np.ndarray] | None = [] if keep_captured_stack else None
-    waveform_plan = None
-    waveform_warnings: list[str] = []
+    # Build the complete Z-scan waveform before applying camera state or moving
+    # the stage.  A bad DAQ mapping/timing combination must fail closed while
+    # the specimen is still at the starting position.
+    waveform_plan = builder.build_z_scan(
+        daq_config=daq_config,
+        timing=timing,
+        exposure_us=actual_exposure_us,
+        laser_wavelength_nm=laser_wavelength_nm,
+        include_role_matrix=False,
+    )
+    waveform_warnings = list(getattr(waveform_plan, "warnings", []))
 
     try:
         camera_adapter.apply_config(z_camera_config)
-        for index, z_um in enumerate(positions, start=1):
+        for plane_index, requested_z_um in enumerate(positions):
+            index = plane_index + 1
             _raise_if_cancelled(stop_event)
             cycle_started_s = time.perf_counter()
             from_z_um = float(stage_adapter.get_position_um())
             move_started_s = time.perf_counter()
-            stage_adapter.move_z_um(z_um)
+            stage_adapter.move_z_um(requested_z_um)
+            measured_z_um = float(stage_adapter.get_position_um())
             move_ms = (time.perf_counter() - move_started_s) * 1000.0
             callback(
                 "z_scan_stage_positioned",
                 {
+                    "task_id": task_id,
+                    "plane_index": plane_index,
                     "step_index": index,
                     "total_steps": len(positions),
                     "from_z_um": from_z_um,
-                    "z_um": float(z_um),
-                    "distance_um": abs(float(z_um) - from_z_um),
+                    "z_um": measured_z_um,
+                    "requested_z_um": float(requested_z_um),
+                    "measured_z_um": measured_z_um,
+                    "distance_um": abs(measured_z_um - from_z_um),
                     "move_ms": float(move_ms),
                 },
             )
@@ -117,21 +169,13 @@ def run_z_scan(
                 camera_adapter.arm(1)
                 armed = True
                 slm_adapter.activate_prepared_patterns()
-                if waveform_plan is None:
-                    waveform_plan = builder.build_z_scan(
-                        daq_config=daq_config,
-                        timing=timing,
-                        exposure_us=actual_exposure_us,
-                        include_role_matrix=False,
-                    )
-                    waveform_warnings = list(getattr(waveform_plan, "warnings", []))
                 if waveform_warnings:
                     callback("z_scan_waveform_warning", {"warnings": list(waveform_warnings)})
                 daq_adapter.play_waveform(daq_config.device_name, waveform_plan, stop_event=stop_event)
-                stack, _timestamps = camera_adapter.read_frame_sequence(
+                stack, timestamps = camera_adapter.read_frame_sequence(
                     1,
                     pattern_files=["zscan3p"],
-                    laser_wavelength_nm=488,
+                    laser_wavelength_nm=laser_wavelength_nm,
                     stop_event=stop_event,
                 )
             finally:
@@ -141,20 +185,59 @@ def run_z_scan(
 
             _raise_if_cancelled(stop_event)
             array = np.asarray(stack)
-            if array.ndim != 3 or array.shape[0] < 1:
-                raise RuntimeError(f"Z-scan camera returned invalid stack shape: {array.shape!r}")
-            frame = np.asarray(array[0], dtype=np.uint16)
+            if array.ndim != 3 or array.shape[0] != 1 or array.shape[1] < 1 or array.shape[2] < 1:
+                raise HardwareError(f"Z-scan camera returned invalid stack shape: {array.shape!r}")
+            if array.dtype != np.uint16:
+                raise HardwareError(
+                    f"Z-scan camera returned frame dtype {array.dtype}; expected uint16."
+                )
+            try:
+                timestamp_count = len(timestamps)
+            except TypeError as exc:
+                raise HardwareError("Z-scan camera returned invalid timestamps; expected exactly 1.") from exc
+            if timestamp_count != 1:
+                raise HardwareError(
+                    f"Z-scan camera returned {timestamp_count} timestamps; expected exactly 1."
+                )
+            try:
+                timestamp = float(timestamps[0])
+            except (TypeError, ValueError, IndexError) as exc:
+                raise HardwareError("Z-scan camera returned a non-numeric timestamp.") from exc
+            if not np.isfinite(timestamp):
+                raise HardwareError("Z-scan camera returned a non-finite timestamp.")
+            frame = np.array(array[0], copy=True)
+            frame.setflags(write=False)
             score = sum_modified_laplacian(frame)
-            point = ZFocusPoint(z_um=float(z_um), focus_score=float(score))
+            record = FocusFrameRecord(
+                task_id=task_id,
+                plane_index=plane_index,
+                total_layers=len(positions),
+                requested_z_um=float(requested_z_um),
+                measured_z_um=measured_z_um,
+                wavelength_nm=laser_wavelength_nm,
+                exposure_actual_us=actual_exposure_us,
+                timestamp=timestamp,
+                score=float(score),
+                frame=frame,
+            )
+            if on_focus_frame is not None:
+                on_focus_frame(record)
+            point = ZFocusPoint(z_um=measured_z_um, focus_score=float(score))
             focus_curve.append(point)
             if captured_frames is not None:
-                captured_frames.append(np.array(frame, dtype=np.uint16, copy=True))
+                captured_frames.append(frame)
             callback(
                 "z_scan_progress",
                 {
+                    "task_id": task_id,
+                    "plane_index": plane_index,
                     "step_index": index,
                     "total_steps": len(positions),
-                    "z_um": float(z_um),
+                    "z_um": measured_z_um,
+                    "requested_z_um": float(requested_z_um),
+                    "measured_z_um": measured_z_um,
+                    "timestamp": timestamp,
+                    "layer_shape": list(frame.shape),
                     "focus_score": float(score),
                     "move_ms": float(move_ms),
                     "cycle_ms": float((time.perf_counter() - cycle_started_s) * 1000.0),
@@ -169,6 +252,7 @@ def run_z_scan(
         callback(
             "z_scan_best_focus_positioned",
             {
+                "task_id": task_id,
                 "from_z_um": best_from_z_um,
                 "z_um": float(best_point.z_um),
                 "distance_um": abs(float(best_point.z_um) - best_from_z_um),
@@ -189,6 +273,7 @@ def run_z_scan(
         callback(
             "z_scan_complete",
             {
+                "task_id": task_id,
                 "best_z_um": result.best_z_um,
                 "focus_curve": [(point.z_um, point.focus_score) for point in result.focus_curve],
                 "exposure_actual_us": result.exposure_actual_us,
@@ -291,22 +376,25 @@ def run_z_scan_autofocus(
     camera_config: CameraConfig,
     timing: TimingConfig,
     z_scan_config: ZScanConfig,
+    laser_wavelength_nm: int = 488,
+    task_id: str | None = None,
     waveform_builder: NIDaqWaveformBuilder | None = None,
     stop_event: Any | None = None,
     on_status: StatusCallback | None = None,
+    on_focus_frame: FocusFrameCallback | None = None,
     keep_captured_stack: bool = False,
 ) -> ZScanResult:
     """Range-check, connect-check, select the z-scan RO, then run ``run_z_scan``.
 
     Wraps :func:`run_z_scan` with the preconditions the GUI normally enforces:
     a full out-of-range preflight (raises before any motion), camera/SLM
-    connection checks and automatic selection of the fixed 488 nm three-phase
-    z-scan Running Order matching the configured exposure preset.
+    connection checks and automatic selection of the current wavelength's
+    three-phase z-scan Running Order matching the configured exposure preset.
     """
-    # ``find_z_scan_running_order`` 局部 import：``adapters`` 体量大且含 ctypes /
+    # Running Order helpers 局部 import：``adapters`` 体量大且含 ctypes /
     # SDK import 副作用，而本模块刻意保持 Qt-free 轻量；局部 import 同时避免
     # ``z_scan_core`` 经 ``adapters`` 形成潜在 import 环。
-    from sim_control.adapters import find_z_scan_running_order
+    from sim_control.adapters import find_best_running_order, find_z_scan_running_order
 
     preflight_z_scan_positions(stage_adapter, z_scan_config)
     if not camera_adapter.is_connected():
@@ -314,27 +402,112 @@ def run_z_scan_autofocus(
     if not slm_adapter.is_connected():
         raise HardwareError("Z-Scan 拍图需要 SLM 已连接。")
     running_orders = slm_adapter.list_running_orders()
-    idx, _name, warnings = find_z_scan_running_order(running_orders, z_scan_config.exposure_preset_ms)
-    if idx is None:
-        raise HardwareError("; ".join(warnings) or "No matching z-scan running order found.")
-    slm_adapter.select_running_order(idx)
-    return run_z_scan(
-        stage_adapter=stage_adapter,
-        camera_adapter=camera_adapter,
-        slm_adapter=slm_adapter,
-        daq_adapter=daq_adapter,
-        daq_config=daq_config,
-        camera_config=camera_config,
-        timing=timing,
-        z_scan_config=z_scan_config,
-        waveform_builder=waveform_builder,
-        stop_event=stop_event,
-        on_status=on_status,
-        keep_captured_stack=keep_captured_stack,
+    formal_idx, formal_name, formal_warnings = find_best_running_order(
+        running_orders,
+        wavelength_nm=int(laser_wavelength_nm),
+        exposure_us=int(camera_config.exposure_us),
     )
+    if formal_idx is None:
+        raise HardwareError(
+            "; ".join(formal_warnings) or "No matching formal SIM running order found."
+        )
+    z_scan_idx, z_scan_name, z_scan_warnings = find_z_scan_running_order(
+        running_orders,
+        wavelength_nm=int(laser_wavelength_nm),
+        exposure_preset_ms=int(z_scan_config.exposure_preset_ms),
+    )
+    if z_scan_idx is None:
+        raise HardwareError(
+            "; ".join(z_scan_warnings) or "No matching z-scan running order found."
+        )
+
+    callback = on_status or _noop_status
+    for warning in formal_warnings:
+        callback("formal_running_order_warning", {"message": warning})
+    for warning in z_scan_warnings:
+        callback("z_scan_running_order_warning", {"message": warning})
+
+    result: ZScanResult | None = None
+    operation_error: Exception | None = None
+    try:
+        slm_adapter.select_running_order(z_scan_idx)
+        callback(
+            "z_scan_running_order_selected",
+            {
+                "running_order_index": int(z_scan_idx),
+                "running_order_name": z_scan_name,
+            },
+        )
+        result = run_z_scan(
+            stage_adapter=stage_adapter,
+            camera_adapter=camera_adapter,
+            slm_adapter=slm_adapter,
+            daq_adapter=daq_adapter,
+            daq_config=daq_config,
+            camera_config=camera_config,
+            timing=timing,
+            z_scan_config=z_scan_config,
+            laser_wavelength_nm=int(laser_wavelength_nm),
+            task_id=task_id,
+            waveform_builder=waveform_builder,
+            stop_event=stop_event,
+            on_status=on_status,
+            on_focus_frame=on_focus_frame,
+            keep_captured_stack=keep_captured_stack,
+        )
+    except Exception as exc:
+        operation_error = exc
+        raise
+    finally:
+        restore_errors: list[tuple[str, Exception]] = []
+        try:
+            slm_adapter.select_running_order(formal_idx)
+            callback(
+                "running_order_restored",
+                {
+                    "running_order_index": int(formal_idx),
+                    "running_order_name": formal_name,
+                },
+            )
+        except Exception as restore_exc:
+            restore_message = (
+                "Failed to restore formal SIM running order "
+                f"{formal_name!r} (index {int(formal_idx)}): {restore_exc}"
+            )
+            _report_restore_warning(
+                callback,
+                "running_order_restore_warning",
+                {"message": restore_message},
+            )
+            restore_errors.append((restore_message, restore_exc))
+        try:
+            camera_adapter.apply_config(camera_config)
+        except Exception as restore_exc:
+            restore_message = (
+                "Failed to restore formal camera configuration after Z-scan: "
+                f"{restore_exc}"
+            )
+            _report_restore_warning(
+                callback,
+                "camera_config_restore_warning",
+                {"message": restore_message},
+            )
+            restore_errors.append((restore_message, restore_exc))
+        if restore_errors:
+            restore_message = "\n".join(message for message, _error in restore_errors)
+            if operation_error is not None:
+                raise HardwareError(
+                    f"{operation_error}\n{restore_message}"
+                ) from operation_error
+            raise HardwareError(restore_message) from restore_errors[0][1]
+    if result is None:  # pragma: no cover - defensive type narrowing
+        raise HardwareError("Z-scan completed without a result.")
+    return result
 
 
 __all__ = [
+    "FocusFrameCallback",
+    "FocusFrameRecord",
     "ZFocusPoint",
     "ZScanResult",
     "ZScanStageMoveResult",

@@ -5364,7 +5364,7 @@
           <height>121</height>
          </rect>
         </property>
-        <layout class="QGridLayout" name="gridLayout_13">
+        <layout class="QGridLayout" name="gridLayout_zscan">
          <property name="topMargin">
           <number>6</number>
          </property>
@@ -5480,10 +5480,10 @@
             </font>
            </property>
            <property name="minimum">
-            <number>1</number>
+            <number>2</number>
            </property>
            <property name="maximum">
-            <number>1000</number>
+            <number>1001</number>
            </property>
           </widget>
          </item>
@@ -5512,7 +5512,7 @@
             </font>
            </property>
            <property name="text">
-            <string>Steps</string>
+            <string>Layers</string>
            </property>
            <property name="alignment">
             <set>Qt::AlignCenter</set>
@@ -5550,7 +5550,7 @@
             </font>
            </property>
            <property name="toolTip">
-            <string>When enabled, SIM9 acquisition runs a full Z-Scan autofocus before capturing 9 frames; when disabled, it captures 9 frames directly.</string>
+            <string>Off: formal acquisition captures one SIM9 at the current Z. On + Select Focus Plane: run an SML focus scan, move to the best plane, then capture one formal SIM9. On + Select Focus Plane cleared: capture one SIM9 per layer as a Z-stack, with no autofocus and no extra final SIM9. Test Z-Scan ignores Enable: Select OFF moves the stage only; Select ON runs only the SML focus scan; neither test mode appends a formal SIM9.</string>
            </property>
            <property name="text">
             <string>Enable Z-Scan</string>
@@ -5589,7 +5589,7 @@
               </font>
              </property>
              <property name="toolTip">
-              <string>Checked: Test Z-Scan runs full focusing (move + capture + select focus plane); unchecked: move the Z stage only.</string>
+              <string>Off: formal acquisition captures one SIM9 at the current Z. On + Select Focus Plane: run an SML focus scan, move to the best plane, then capture one formal SIM9. On + Select Focus Plane cleared: capture one SIM9 per layer as a Z-stack, with no autofocus and no extra final SIM9. Test Z-Scan ignores Enable: Select OFF moves the stage only; Select ON runs only the SML focus scan; neither test mode appends a formal SIM9.</string>
              </property>
              <property name="text">
               <string>Select Focus Plane</string>
@@ -5615,6 +5615,9 @@
                <family>Times New Roman</family>
                <pointsize>10</pointsize>
               </font>
+             </property>
+             <property name="toolTip">
+              <string>Off: formal acquisition captures one SIM9 at the current Z. On + Select Focus Plane: run an SML focus scan, move to the best plane, then capture one formal SIM9. On + Select Focus Plane cleared: capture one SIM9 per layer as a Z-stack, with no autofocus and no extra final SIM9. Test Z-Scan ignores Enable: Select OFF moves the stage only; Select ON runs only the SML focus scan; neither test mode appends a formal SIM9.</string>
              </property>
              <property name="text">
               <string>Test Z-Scan</string>

@@ -151,8 +151,8 @@ class WaveformValidationTests(unittest.TestCase):
         self.assertEqual(packed_only_plan.metadata, full_plan.metadata)
         self.assertEqual(packed_only_plan.warnings, full_plan.warnings)
 
-    def test_z_scan_waveform_guards_slm_enable_and_omits_finish(self):
-        """Z-scan 单帧波形应先拉高 enable，再同步 trigger/camera/488，且不使用 finish。"""
+    def test_z_scan_waveform_guards_slm_enable_uses_requested_laser_and_omits_finish(self):
+        """Z-scan 单帧波形应先拉高 enable，再同步当前激光，且不使用 finish。"""
         from sim_control.models import DaqLineConfig, TimingConfig
         from sim_control.waveform import NIDaqWaveformBuilder
 
@@ -164,29 +164,83 @@ class WaveformValidationTests(unittest.TestCase):
             slm_enable_guard_us=50,
         )
 
-        plan = NIDaqWaveformBuilder().build_z_scan(
-            daq_config=daq_config,
-            timing=timing,
-            exposure_us=7_884,
-            include_role_matrix=True,
-        )
+        for wavelength, laser_role in (
+            (405, "laser_405_line"),
+            (488, "laser_488_line"),
+            (561, "laser_561_line"),
+            (638, "laser_red_line"),
+            (647, "laser_red_line"),
+        ):
+            with self.subTest(wavelength=wavelength):
+                plan = NIDaqWaveformBuilder().build_z_scan(
+                    daq_config=daq_config,
+                    timing=timing,
+                    exposure_us=7_884,
+                    laser_wavelength_nm=wavelength,
+                    include_role_matrix=True,
+                )
 
-        frame_start = plan.metadata["frame_start_samples"][0]
-        frame_end = plan.metadata["frame_end_samples"][0]
-        self.assertEqual(frame_start, 50)
-        self.assertEqual(frame_end - frame_start, 7_884)
-        self.assertEqual(int(plan.role_matrix["slm_enable_line"][0]), 1)
-        self.assertEqual(int(plan.role_matrix["slm_trigger_line"][0]), 0)
-        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][0]), 0)
-        self.assertEqual(int(plan.role_matrix["laser_488_line"][0]), 0)
-        self.assertEqual(int(plan.role_matrix["slm_trigger_line"][frame_start]), 1)
-        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_start]), 1)
-        self.assertEqual(int(plan.role_matrix["laser_488_line"][frame_start]), 1)
-        self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_end]), 0)
-        self.assertEqual(int(plan.role_matrix["laser_488_line"][frame_end]), 0)
-        self.assertEqual(int(plan.role_matrix["slm_enable_line"][frame_end]), 0)
-        self.assertEqual(int(plan.role_matrix["slm_finish_line"].sum()), 0)
-        self.assertEqual(int(sum(role[-1] for role in plan.role_matrix.values())), 0)
+                frame_start = plan.metadata["frame_start_samples"][0]
+                frame_end = plan.metadata["frame_end_samples"][0]
+                self.assertEqual(frame_start, 50)
+                self.assertEqual(frame_end - frame_start, 7_884)
+                self.assertEqual(int(plan.role_matrix["slm_enable_line"][0]), 1)
+                self.assertEqual(int(plan.role_matrix["slm_trigger_line"][0]), 0)
+                self.assertEqual(int(plan.role_matrix["camera_trigger_line"][0]), 0)
+                self.assertEqual(int(plan.role_matrix[laser_role][0]), 0)
+                self.assertEqual(int(plan.role_matrix["slm_trigger_line"].sum()), 50)
+                self.assertEqual(int(plan.role_matrix["slm_trigger_line"][frame_start]), 1)
+                self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_start]), 1)
+                self.assertEqual(int(plan.role_matrix[laser_role][frame_start]), 1)
+                self.assertEqual(int(plan.role_matrix["camera_trigger_line"][frame_end]), 0)
+                self.assertEqual(int(plan.role_matrix[laser_role][frame_end]), 0)
+                self.assertEqual(int(plan.role_matrix["slm_enable_line"][frame_end]), 0)
+                self.assertEqual(int(plan.role_matrix["slm_finish_line"].sum()), 0)
+                self.assertEqual(int(sum(role[-1] for role in plan.role_matrix.values())), 0)
+                self.assertEqual(plan.metadata["laser_wavelength_nm"], wavelength)
+                self.assertEqual(plan.metadata["active_laser_role"], laser_role)
+
+    def test_z_scan_waveform_rejects_unsupported_laser_wavelength(self):
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        with self.assertRaisesRegex(ValueError, "wavelength"):
+            NIDaqWaveformBuilder().build_z_scan(
+                daq_config=DaqLineConfig(),
+                timing=TimingConfig(),
+                exposure_us=7_884,
+                laser_wavelength_nm=532,
+            )
+
+    def test_z_scan_packed_only_matches_full_role_matrix_for_all_supported_wavelengths(self):
+        import numpy as np
+
+        from sim_control.models import DaqLineConfig, TimingConfig
+        from sim_control.waveform import NIDaqWaveformBuilder
+
+        builder = NIDaqWaveformBuilder()
+        daq = DaqLineConfig()
+        timing = TimingConfig(sample_rate_hz=1_000_000, slm_enable_guard_us=750)
+        for wavelength in (405, 488, 561, 638, 647):
+            with self.subTest(wavelength=wavelength):
+                full = builder.build_z_scan(
+                    daq_config=daq,
+                    timing=timing,
+                    exposure_us=13_884,
+                    laser_wavelength_nm=wavelength,
+                    include_role_matrix=True,
+                )
+                packed_only = builder.build_z_scan(
+                    daq_config=daq,
+                    timing=timing,
+                    exposure_us=13_884,
+                    laser_wavelength_nm=wavelength,
+                    include_role_matrix=False,
+                )
+                np.testing.assert_array_equal(packed_only.packed_port_values, full.packed_port_values)
+                self.assertEqual(packed_only.role_matrix, {})
+                self.assertEqual(packed_only.metadata, full.metadata)
+                self.assertEqual(packed_only.warnings, full.warnings)
 
     def test_waveform_warns_when_guard_at_or_below_r11_activation_max(self):
         """guard <= 500 µs（R11 tHWAT 上限）时 build / build_z_scan 都应告警。"""

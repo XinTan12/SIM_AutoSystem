@@ -22,7 +22,8 @@
     - ``SIMULATED_RUNNING_ORDERS``：覆盖默认机器（638）4 波长 × 3 曝光 ×
       {normal, _ang0} 的 24 个正式名字（注意 ``638/3.5/2d/1ms`` 这类），再追加
       z-scan、immediate 找样品 RO，并在列表最末尾追加 647 红光机器的 6 个正式 RO
-      （3 曝光 × {normal, _ang0}），使 647 机器也能端到端跑通并覆盖 638↔647 fallback。
+      （3 曝光 × {normal, _ang0}）和 405/561/647 共 12 个多波长 z-scan RO；新增块只追加，
+      使原有正式/z-scan/immediate 索引保持不变。
       它们的命名格式与真实 R11 repertoire 保持一致，因此
       ``adapters.find_best_running_order`` 在仿真路径下也能正常工作。
 
@@ -41,6 +42,7 @@ from typing import Any
 
 import numpy as np
 
+from .camera_timing import calculate_camera_trigger_gap
 from .errors import HardwareError
 from .models import CameraConfig, PatternPreparationResult
 from .waveform import WaveformPlan, parse_line_name
@@ -48,6 +50,7 @@ from .waveform import WaveformPlan, parse_line_name
 
 # 仿真用 Running Order 名称：覆盖第四路红光默认机器（638）的 4 波长 × 3 曝光 ×
 # {normal, _ang0}，再追加 z-scan、immediate 找样品，以及 647 红光机器的正式 RO 块。
+# 405/561/647 的 z-scan 块在所有旧块之后追加。
 # 顺序刻意先按波长聚类，再按曝光、再按 angle，便于在 GUI 下拉中分组浏览。
 #
 # 索引契约（务必遵守）：正式 SIM 段占 0..23、z-scan 段占 24..27、immediate 段从
@@ -79,6 +82,12 @@ SIMULATED_RUNNING_ORDERS = [
     f"647_3.5_2d_{exposure}{suffix}"
     for exposure in ("10ms", "1ms", "50ms")
     for suffix in ("", "_ang0")
+] + [
+    # 多波长 z-scan RO 只能追加到末尾，保证原有正式、z-scan 与
+    # immediate 的绝对索引不变。488 四档仍保留在 24..27，不在此重复。
+    f"{wavelength}_3.5_2d_zscan3p_{preset}ms"
+    for wavelength in (405, 561, 647)
+    for preset in (5, 8, 14, 20)
 ]
 # 仿真相机支持的 bit depth；与真实 Hamamatsu Fusion BT 的常用集合保持一致。
 SIMULATED_CAMERA_BIT_DEPTHS = [8, 12, 16]
@@ -171,13 +180,26 @@ class SimulatedCameraAdapter:
         self._camera_config = config
         if int(config.bit_depth) not in SIMULATED_CAMERA_BIT_DEPTHS:
             config.bit_depth = 16
-        # 3) 返回"相机实际接受"的报告，包括建议帧间隔；让上层走和真机一致的有效帧间隔路径。
+        # 3) 用 ROI 高度生成稳定、可重复的仿真 timing；字段和真机 DCAM 路径一致，
+        #    让公式、fallback、Summary 和 controller 能在无硬件时端到端验证。
+        readout_s = max(0.00025, (int(config.roi_height) / 2048.0) * 0.010)
+        cyclic_s = readout_s + 0.001
+        min_tb_s = 0.00025
+        timing_result = calculate_camera_trigger_gap(
+            exposure_us=config.exposure_us,
+            readout_s=readout_s,
+            cyclic_s=cyclic_s,
+            min_tb_s=min_tb_s,
+        )
         return {
             "camera_model": "Simulated ORCA-Fusion BT",
             "camera_id": "SIM-CAMERA-001",
             "supported_bit_depths": list(SIMULATED_CAMERA_BIT_DEPTHS),
             "applied_bit_depth": int(config.bit_depth),
-            "recommended_inter_frame_gap_us": max(1000, int(config.exposure_us // 2)),
+            "timing_readout_time_s": readout_s,
+            "timing_cyclic_trigger_period_s": cyclic_s,
+            "timing_min_trigger_blanking_s": min_tb_s,
+            **timing_result,
             "simulation": True,
         }
 

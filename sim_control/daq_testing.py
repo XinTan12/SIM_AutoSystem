@@ -41,7 +41,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from .adapters import HardwareError, R11_ACTIVATION_STATE_ACTIVE, find_best_running_order
 from .config_store import app_config_from_dict, app_config_to_dict
-from .models import AppConfig, CameraConfig, DaqLineConfig
+from .models import AppConfig, DaqLineConfig, effective_inter_frame_gap_us
 from .waveform import NIDaqWaveformBuilder, parse_line_name
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ ROLE_LABELS = {
 
 # "SIM 采集测试"的下拉项目 ID 常量。
 SIM_ACQUISITION_TEST_ID = "sim_acquisition"
-# SIM 采集测试默认参数：500ms 曝光 + 50ms 帧间隔，便于真机调试时观察是否触发。
+# SIM 采集测试固定 500 ms 曝光；相机无有效 timing 推荐值时回退 50 ms 帧间隔。
 SIM_ACQUISITION_TEST_EXPOSURE_US = 500_000
 SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US = 50_000
 # "SLM 激活时序测试"下拉项目 ID：DAQ 拉高 slm_enable 后轮询 R11 激活状态，
@@ -262,7 +262,6 @@ class DaqTestRunner:
     def _execute_sim_capture_sequence(
         self,
         daq_config: DaqLineConfig,
-        camera_config: CameraConfig,
         plan,
         frame_count: int = 9,
         stop_event: threading.Event | None = None,
@@ -272,7 +271,6 @@ class DaqTestRunner:
         Shared by the SIM acquisition test and future production paths.
         Caller is responsible for cleanup (disarm, DAQ all-low).
         """
-        self.camera_adapter.apply_config(camera_config)
         self.camera_adapter.arm(frame_count=frame_count)
         self.slm_adapter.activate_prepared_patterns()
         self.daq_adapter.play_waveform(daq_config.device_name, plan, stop_event=stop_event)
@@ -323,10 +321,9 @@ class DaqTestRunner:
         # 3) 使用调用方快照的波长（worker 场景），或从 runner 快照读取。
         laser_nm = selected_laser_nm if selected_laser_nm is not None else self._selected_laser_nm()
         camera_config = _clone_app_config(self.config).camera
-        # 4) 测试用固定曝光 500 ms / 帧间 50 ms，与 SLM RO 桶（≥50 ms）对齐。
+        # 4) 测试曝光固定为 500 ms；帧间隔稍后按相机 apply_config 返回值计算。
         camera_config.exposure_us = SIM_ACQUISITION_TEST_EXPOSURE_US
         timing_config = _clone_app_config(self.config).timing
-        timing_config.inter_frame_gap_us = SIM_ACQUISITION_TEST_INTER_FRAME_GAP_US
         # 5) 列举 + 选择 RO；排除 ACT_IMMEDIATE RO，复用正式采集过滤语义（B5）。
         running_orders = self.slm_adapter.list_running_orders()
         ro_index, ro_name, warnings = find_best_running_order(
@@ -347,22 +344,29 @@ class DaqTestRunner:
             "sim_acquisition",
             f"sim_acquisition_{laser_nm}nm_{exposure_ms}ms",
         )
-        # 7) 构建波形 plan：与正式采集走同一段代码路径，确保测试与正式一致。
-        waveform_builder = NIDaqWaveformBuilder()
-        plan = waveform_builder.build(
-            daq_config=daq_config,
-            timing=timing_config,
-            laser_wavelength_nm=laser_nm,
-            exposure_us=camera_config.exposure_us,
-            frame_count=9,
-            include_role_matrix=False,
-        )
         was_camera_connected = self._camera_connected_for_test_cleanup()
         try:
-            # 8) arm → 激活 SLM RO → 播放 DAQ → 读 9 帧 stack（共享 helper，与正式采集路径一致）。
+            # 7) 先把 ROI / 曝光下发给相机并读取其 timing 推荐值；旧 adapter 或 mock
+            #    未返回 dict 时按“缺失推荐值”处理，回退 50 ms。
+            camera_result = self.camera_adapter.apply_config(camera_config)
+            if not isinstance(camera_result, dict):
+                camera_result = {}
+            timing_config.inter_frame_gap_us = effective_inter_frame_gap_us(
+                camera_result.get("recommended_inter_frame_gap_us")
+            )
+
+            # 8) 用本次相机配置对应的有效 gap 构建波形，再 arm / play / read。
+            waveform_builder = NIDaqWaveformBuilder()
+            plan = waveform_builder.build(
+                daq_config=daq_config,
+                timing=timing_config,
+                laser_wavelength_nm=laser_nm,
+                exposure_us=camera_config.exposure_us,
+                frame_count=9,
+                include_role_matrix=False,
+            )
             stack, _timestamps = self._execute_sim_capture_sequence(
                 daq_config=daq_config,
-                camera_config=camera_config,
                 plan=plan,
                 frame_count=9,
                 stop_event=stop_event,

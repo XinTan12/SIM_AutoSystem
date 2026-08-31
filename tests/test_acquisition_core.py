@@ -37,6 +37,46 @@ if str(PROJECT_ROOT) not in sys.path:
 class AcquisitionCoreTests(unittest.TestCase):
     """验证单次采集核心在正常、异常和取消路径下都能保持硬件清理顺序。"""
 
+    def test_z_scan_uses_task_selected_laser_wavelength(self):
+        from sim_control.acquisition_core import run_single_acquisition
+        from sim_control.models import DaqLineConfig, PatternPreparationResult, SimTaskConfig, ZScanConfig
+        from sim_control.z_scan_core import ZScanResult
+
+        task = SimTaskConfig(laser_wavelength_nm=561)
+        camera = mock.Mock()
+        camera.read_frame_sequence.return_value = (
+            np.zeros((9, 2, 2), dtype=np.uint16),
+            [float(index) for index in range(9)],
+        )
+        formal = PatternPreparationResult(
+            pattern_files=["formal"] * 9,
+            handles=[-1],
+            metadata={"mode": "running_order", "running_order_index": 3},
+        )
+        zscan = PatternPreparationResult(handles=[-1], metadata={"mode": "running_order"})
+        stage = mock.Mock()
+        stage.is_connected = True
+        stage.get_position_um.return_value = 0.0
+        stage.get_z_ranges_um.return_value = (-10.0, 10.0)
+
+        with mock.patch(
+            "sim_control.acquisition_core.run_z_scan",
+            return_value=ZScanResult(best_z_um=0.0, focus_curve=[], exposure_actual_us=7_884),
+        ) as run_z_scan_mock:
+            run_single_acquisition(
+                task=task,
+                daq_config=DaqLineConfig(),
+                pattern_result=formal,
+                camera=camera,
+                slm=mock.Mock(),
+                daq=mock.Mock(),
+                stage_adapter=stage,
+                z_scan_config=ZScanConfig(enabled=True, start_um=0.0, step_um=0.5, num_steps=1),
+                z_scan_pattern_result=zscan,
+            )
+
+        self.assertEqual(run_z_scan_mock.call_args.kwargs["laser_wavelength_nm"], 561)
+
     def test_z_scan_failure_restores_formal_running_order_before_reraising(self):
         from sim_control.acquisition_core import run_single_acquisition
         from sim_control.models import (
@@ -58,6 +98,10 @@ class AcquisitionCoreTests(unittest.TestCase):
 
         statuses = []
         slm = FakeSlm()
+        stage = mock.Mock()
+        stage.is_connected = True
+        stage.get_position_um.return_value = 0.0
+        stage.get_z_ranges_um.return_value = (-10.0, 10.0)
         with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=RuntimeError("z scan failed")):
             with self.assertRaisesRegex(RuntimeError, "z scan failed"):
                 run_single_acquisition(
@@ -76,7 +120,7 @@ class AcquisitionCoreTests(unittest.TestCase):
                     daq=mock.Mock(),
                     task_id="zscan-restore-success",
                     on_status=lambda state, payload: statuses.append((state, payload)),
-                    stage_adapter=mock.Mock(),
+                    stage_adapter=stage,
                     z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
                     z_scan_pattern_result=PatternPreparationResult(
                         handles=[-1],
@@ -105,8 +149,13 @@ class AcquisitionCoreTests(unittest.TestCase):
                 return None
 
         statuses = []
-        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=RuntimeError("z scan failed")):
-            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO"):
+        stage = mock.Mock()
+        stage.is_connected = True
+        stage.get_position_um.return_value = 0.0
+        stage.get_z_ranges_um.return_value = (-10.0, 10.0)
+        scan_error = RuntimeError("z scan failed")
+        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=scan_error) as scan:
+            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO") as caught:
                 run_single_acquisition(
                     task=SimTaskConfig(),
                     daq_config=DaqLineConfig(),
@@ -123,7 +172,7 @@ class AcquisitionCoreTests(unittest.TestCase):
                     daq=mock.Mock(),
                     task_id="zscan-restore-fail",
                     on_status=lambda state, payload: statuses.append((state, payload)),
-                    stage_adapter=mock.Mock(),
+                    stage_adapter=stage,
                     z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
                     z_scan_pattern_result=PatternPreparationResult(
                         handles=[-1],
@@ -131,6 +180,8 @@ class AcquisitionCoreTests(unittest.TestCase):
                     ),
                 )
 
+        scan.assert_called_once()
+        self.assertIs(caught.exception.__cause__, scan_error)
         warning_payloads = [payload for state, payload in statuses if state == "running_order_restore_warning"]
         self.assertEqual(len(warning_payloads), 1)
         self.assertIn("SLM may still be on z-scan RO", warning_payloads[0]["message"])
@@ -154,8 +205,13 @@ class AcquisitionCoreTests(unittest.TestCase):
                 return None
 
         statuses = []
-        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=ZScanCancelled("cancelled")):
-            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO"):
+        stage = mock.Mock()
+        stage.is_connected = True
+        stage.get_position_um.return_value = 0.0
+        stage.get_z_ranges_um.return_value = (-10.0, 10.0)
+        scan_error = ZScanCancelled("cancelled")
+        with mock.patch("sim_control.acquisition_core.run_z_scan", side_effect=scan_error) as scan:
+            with self.assertRaisesRegex(HardwareError, "SLM may still be on z-scan RO") as caught:
                 run_single_acquisition(
                     task=SimTaskConfig(),
                     daq_config=DaqLineConfig(),
@@ -172,7 +228,7 @@ class AcquisitionCoreTests(unittest.TestCase):
                     daq=mock.Mock(),
                     task_id="zscan-cancel-restore-fail",
                     on_status=lambda state, payload: statuses.append((state, payload)),
-                    stage_adapter=mock.Mock(),
+                    stage_adapter=stage,
                     z_scan_config=ZScanConfig(start_um=0.0, step_um=0.5, num_steps=3),
                     z_scan_pattern_result=PatternPreparationResult(
                         handles=[-1],
@@ -180,6 +236,8 @@ class AcquisitionCoreTests(unittest.TestCase):
                     ),
                 )
 
+        scan.assert_called_once()
+        self.assertIs(caught.exception.__cause__, scan_error)
         self.assertIn("running_order_restore_warning", [state for state, _payload in statuses])
 
     def test_z_scan_disabled_runs_sim9_at_current_z_without_stage_motion(self):

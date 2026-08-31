@@ -15,16 +15,18 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         config = app_config_from_dict({"config_version": 3})
         payload = app_config_to_dict(config)
 
-        self.assertEqual(config.config_version, 13)
+        self.assertEqual(config.config_version, 14)
         self.assertTrue(config.z_scan.enabled)
         self.assertIsNone(config.z_scan.start_um)
+        self.assertTrue(hasattr(config.z_scan, "select_focus_plane"))
+        self.assertTrue(config.z_scan.select_focus_plane)
         self.assertEqual(config.z_scan.direction, "positive_z")
         self.assertEqual(config.z_scan.step_um, 0.3)
         self.assertEqual(config.z_scan.num_steps, 10)
         self.assertEqual(config.z_scan.exposure_preset_ms, 8)
         self.assertEqual(config.z_scan.focus_metric, "sml")
         self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
-        self.assertEqual(payload["config_version"], 13)
+        self.assertEqual(payload["config_version"], 14)
         self.assertIn("z_scan", payload)
         self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
         self.assertIn("reconstruction", payload)
@@ -51,9 +53,120 @@ class ZScanConfigMigrationTests(unittest.TestCase):
         )
         payload = app_config_to_dict(config)
 
-        self.assertEqual(config.config_version, 13)
+        self.assertEqual(config.config_version, 14)
         self.assertFalse(hasattr(config.z_scan, "return_to_start_on_cancel"))
         self.assertNotIn("return_to_start_on_cancel", payload["z_scan"])
+
+    def test_v13_z_scan_migration_defaults_focus_selection_and_drops_stale_start(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+
+        config = app_config_from_dict(
+            {
+                "config_version": 13,
+                "z_scan": {
+                    "enabled": False,
+                    "start_um": 2674.74,
+                    "direction": "negative_z",
+                    "step_um": 0.5,
+                    "num_steps": 4,
+                    "exposure_preset_ms": 14,
+                    "focus_metric": "sml",
+                },
+            }
+        )
+        payload = app_config_to_dict(config)
+
+        self.assertEqual(config.config_version, 14)
+        self.assertIsNone(config.z_scan.start_um)
+        self.assertTrue(hasattr(config.z_scan, "select_focus_plane"))
+        self.assertTrue(config.z_scan.select_focus_plane)
+        self.assertFalse(config.z_scan.enabled)
+        self.assertEqual(config.z_scan.direction, "negative_z")
+        self.assertEqual(config.z_scan.num_steps, 4)
+        self.assertEqual(payload["config_version"], 14)
+        self.assertIsNone(payload["z_scan"]["start_um"])
+        self.assertTrue(payload["z_scan"]["select_focus_plane"])
+
+    def test_select_focus_plane_false_round_trips(self):
+        from sim_control.config_store import app_config_from_dict, app_config_to_dict
+        from sim_control.models import AppConfig, ZScanConfig
+
+        z_scan = ZScanConfig()
+        z_scan.select_focus_plane = False
+        payload = app_config_to_dict(AppConfig(z_scan=z_scan))
+        reloaded = app_config_from_dict(payload)
+
+        self.assertIn("select_focus_plane", payload["z_scan"])
+        self.assertFalse(payload["z_scan"]["select_focus_plane"])
+        self.assertFalse(reloaded.z_scan.select_focus_plane)
+
+    def test_z_scan_boolean_fields_accept_only_supported_legacy_encodings(self):
+        from sim_control.config_store import app_config_from_dict
+
+        for raw_value, expected in (
+            (False, False),
+            (0, False),
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            (True, True),
+            (1, True),
+            ("true", True),
+            ("TrUe", True),
+            ("1", True),
+        ):
+            with self.subTest(raw_value=raw_value):
+                config = app_config_from_dict(
+                    {
+                        "config_version": 14,
+                        "z_scan": {
+                            "enabled": raw_value,
+                            "select_focus_plane": raw_value,
+                        },
+                    }
+                )
+                self.assertIs(config.z_scan.enabled, expected)
+                self.assertIs(config.z_scan.select_focus_plane, expected)
+
+    def test_z_scan_boolean_fields_reject_invalid_values_with_field_name(self):
+        from sim_control.config_store import app_config_from_dict
+
+        for field_name, raw_value in (
+            ("enabled", "yes"),
+            ("select_focus_plane", 2),
+        ):
+            with self.subTest(field_name=field_name, raw_value=raw_value):
+                with self.assertRaisesRegex(ValueError, rf"z_scan\.{field_name}"):
+                    app_config_from_dict(
+                        {
+                            "config_version": 14,
+                            "z_scan": {field_name: raw_value},
+                        }
+                    )
+
+    def test_default_config_uses_v14_z_scan_safety_defaults(self):
+        import json
+
+        payload = json.loads(
+            (PROJECT_ROOT / "config" / "sim_control_config.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(payload["config_version"], 14)
+        self.assertIsNone(payload["z_scan"]["start_um"])
+        self.assertTrue(payload["z_scan"]["select_focus_plane"])
+
+    def test_production_example_uses_v14_z_scan_safety_defaults(self):
+        import json
+
+        payload = json.loads(
+            (PROJECT_ROOT / "config" / "sim_control_config.production.example.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(payload["config_version"], 14)
+        self.assertIsNone(payload["z_scan"]["start_um"])
+        self.assertTrue(payload["z_scan"]["select_focus_plane"])
 
     def test_z_scan_validation_reports_invalid_fields(self):
         from sim_control.config_store import validate_app_config

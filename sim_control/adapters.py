@@ -43,7 +43,6 @@ from __future__ import annotations
 import ctypes
 import importlib
 import logging
-import math
 import os
 import re
 import struct
@@ -55,6 +54,7 @@ from typing import Any
 
 import numpy as np
 
+from .camera_timing import calculate_camera_trigger_gap
 from .models import (
     CameraConfig,
     PatternPreparationResult,
@@ -176,31 +176,62 @@ def _target_running_order_exposure_ms(exposure_us: int) -> int:
 
 def find_z_scan_running_order(
     running_orders: list[tuple[int, str]],
+    wavelength_nm: int,
     exposure_preset_ms: int,
 ) -> tuple[int | None, str, list[str]]:
-    """Select the fixed 488 nm three-phase z-scan Running Order."""
-    preset = int(exposure_preset_ms)
+    """Select the requested wavelength's dedicated three-phase z-scan RO.
+
+    The requested wavelength is matched exactly first. 638/647 name the same
+    physical red-light channel on different machines, so only that pair may
+    fall back bidirectionally when the exact repertoire name is absent.
+    """
+    try:
+        preset = int(exposure_preset_ms)
+    except (TypeError, ValueError):
+        return None, "", [f"Invalid z-scan exposure preset: {exposure_preset_ms!r}."]
+    try:
+        requested_wavelength_nm = int(wavelength_nm)
+    except (TypeError, ValueError):
+        return None, "", [f"Invalid z-scan laser wavelength: {wavelength_nm!r}."]
     warnings: list[str] = []
     if preset not in Z_SCAN_EXPOSURE_PRESETS_MS:
         return None, "", [f"Unsupported z-scan exposure preset: {preset} ms."]
+    supported_wavelengths = {405, 488, 561, *RED_EQUIVALENT_WAVELENGTHS}
+    if requested_wavelength_nm not in supported_wavelengths:
+        return None, "", [f"Unsupported z-scan laser wavelength: {requested_wavelength_nm} nm."]
 
-    for index, name in running_orders:
-        parsed = parse_z_scan_running_order_name(name)
-        if parsed is None:
-            continue
-        if parsed["wavelength_nm"] != 488:
-            continue
-        if parsed["pitch"] != "3.5":
-            continue
-        if parsed["mode"] != "2d":
-            continue
-        if parsed["exposure_preset_ms"] != preset:
-            continue
-        return int(index), str(name), warnings
+    if requested_wavelength_nm in RED_EQUIVALENT_WAVELENGTHS:
+        wavelength_candidates = [requested_wavelength_nm] + [
+            value
+            for value in sorted(RED_EQUIVALENT_WAVELENGTHS)
+            if value != requested_wavelength_nm
+        ]
+    else:
+        wavelength_candidates = [requested_wavelength_nm]
+
+    for candidate_wavelength_nm in wavelength_candidates:
+        for index, name in running_orders:
+            parsed = parse_z_scan_running_order_name(name)
+            if parsed is None:
+                continue
+            if parsed["wavelength_nm"] != candidate_wavelength_nm:
+                continue
+            if parsed["pitch"] != "3.5":
+                continue
+            if parsed["mode"] != "2d":
+                continue
+            if parsed["exposure_preset_ms"] != preset:
+                continue
+            if candidate_wavelength_nm != requested_wavelength_nm:
+                warnings.append(
+                    f"Using {candidate_wavelength_nm} nm SLM z-scan running order for "
+                    f"requested {requested_wavelength_nm} nm laser."
+                )
+            return int(index), str(name), warnings
 
     warnings.append(
         "No matching z-scan running order found for "
-        f"488 nm, 3.5/2d, zscan3p, {preset} ms preset."
+        f"{requested_wavelength_nm} nm, 3.5/2d, zscan3p, {preset} ms preset."
     )
     return None, "", warnings
 
@@ -1411,22 +1442,19 @@ class FusionBtCameraAdapter:
         applied_bit_depth: int,
         applied_readout_speed_value: float,
     ) -> dict[str, Any]:
-        """汇总相机的 timing 信息（readout time / 触发周期 / blanking / 推荐帧间隔）。
+        """读取 DCAM 原始 timing，并按厂商触发条件计算安全帧间隔。
 
         关键字段：
             - ``timing_readout_time_s``：相机读出一帧需要的时间（秒）。
-            - ``recommended_inter_frame_gap_us``：基于读出 + blanking 计算的建议帧间隔。
-              ``effective_inter_frame_gap_us`` 用它决定是否覆盖默认 50 ms。
+            - ``TIMING_READOUTTIME`` 只用于诊断与完整性校验，不重复加入 gap。
+            - 推荐 gap 为官方理论最低值加固定 500 µs 安全余量。
         """
         dcamapi4 = self._dcamapi4
         # 1) 读取三个 timing 字段（部分相机不支持某项，此处 try_get 容错）。
         timing_readout_time_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_READOUTTIME)
         timing_cyclic_trigger_period_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_CYCLICTRIGGERPERIOD)
         timing_min_trigger_blanking_s = self._try_get_property(dcamapi4.DCAM_IDPROP.TIMING_MINTRIGGERBLANKING)
-        # 2) 把读出时间夹到 ≥0，并把 None 转 0.0，便于后面 ``int(ceil(...))``。
-        readout_s = None if timing_readout_time_s is None else max(0.0, float(timing_readout_time_s))
-        min_tb_s = max(0.0, float(timing_min_trigger_blanking_s or 0.0))
-        # 3) 拼装基础摘要字典（GUI 摘要、controller 缓存都依赖这里的字段名）。
+        # 2) 拼装基础摘要字典（GUI 摘要、controller 缓存都依赖这里的字段名）。
         summary = {
             "camera_model": str(self._connection_info.get("model", "")),
             "camera_id": str(self._connection_info.get("camera_id", "")),
@@ -1441,13 +1469,22 @@ class FusionBtCameraAdapter:
             "timing_cyclic_trigger_period_s": timing_cyclic_trigger_period_s,
             "timing_min_trigger_blanking_s": timing_min_trigger_blanking_s,
         }
-        # 4) 若 readout 已知，再加 1 ms 安全余量给出推荐帧间隔（微秒）。
-        if readout_s is not None:
-            summary["recommended_inter_frame_gap_us"] = (
-                int(math.ceil(readout_s * 1_000_000.0))
-                + int(math.ceil(min_tb_s * 1_000_000.0))
-                + 1000
+        # 3) LEVEL 外触发下 Tx 是 USB-6423 camera_trigger 的高电平门宽，因此这里
+        #    使用 DAQ 请求曝光时间。波形会把它向上量化到整数采样点，实际 Tx 不会
+        #    更短；不要用 DCAM EXPOSURETIME setget 回值替代这个外部门宽。
+        #    纯 helper 负责严格不等式取整与异常 metadata；不要把缺失属性当 0。
+        summary.update(
+            calculate_camera_trigger_gap(
+                exposure_us=config.exposure_us,
+                readout_s=timing_readout_time_s,
+                cyclic_s=timing_cyclic_trigger_period_s,
+                min_tb_s=timing_min_trigger_blanking_s,
             )
+        )
+        # 4) fallback 时不对外暴露 None recommendation，保持既有消费者的
+        #    “字段缺失即用 50 ms”契约；原因由 metadata 明确记录。
+        if summary.get("recommended_inter_frame_gap_us") is None:
+            summary.pop("recommended_inter_frame_gap_us", None)
         return summary
 
     def initialize(self) -> None:

@@ -300,13 +300,14 @@ class NIDaqWaveformBuilder:
         daq_config: DaqLineConfig,
         timing: TimingConfig,
         exposure_us: int,
+        laser_wavelength_nm: int = 488,
         include_role_matrix: bool = True,
     ) -> WaveformPlan:
         """Generate the single-frame z-scan TTL waveform.
 
         ``slm_enable`` is asserted at sample 0, then after
         ``timing.slm_enable_guard_us`` the SLM trigger edge, camera trigger and
-        488 nm laser window start together. The z-scan RO is not FINISH-looped,
+        requested laser window start together. The z-scan RO is not FINISH-looped,
         so this waveform deliberately leaves ``slm_finish`` low.
         """
         validate_daq_line_config(daq_config)
@@ -314,6 +315,9 @@ class NIDaqWaveformBuilder:
             raise ValueError("exposure_us must be positive.")
         if timing.sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive.")
+        laser_wavelength_nm = int(laser_wavelength_nm)
+        if laser_wavelength_nm not in LASER_ROLE_MAP:
+            raise ValueError(f"Unsupported laser wavelength: {laser_wavelength_nm} nm.")
 
         edge_pulse_samples = self._us_to_samples(timing.edge_pulse_us, timing.sample_rate_hz)
         exposure_samples = self._us_to_samples(exposure_us, timing.sample_rate_hz)
@@ -344,7 +348,7 @@ class NIDaqWaveformBuilder:
             role: np.uint32(1 << parse_line_name(getattr(daq_config, role))[2])
             for role in DAQ_ROLE_ORDER
         }
-        active_laser_role = LASER_ROLE_MAP[488]
+        active_laser_role = LASER_ROLE_MAP[laser_wavelength_nm]
 
         if include_role_matrix:
             matrix["slm_enable_line"][:frame_end] = 1
@@ -367,6 +371,7 @@ class NIDaqWaveformBuilder:
             "slm_enable_guard_samples": guard_samples,
             "frame_start_samples": [frame_start],
             "frame_end_samples": [frame_end],
+            "laser_wavelength_nm": laser_wavelength_nm,
             "active_laser_role": active_laser_role,
         }
         return WaveformPlan(

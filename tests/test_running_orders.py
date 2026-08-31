@@ -168,8 +168,8 @@ class RunningOrderSelectionTests(unittest.TestCase):
         )
 
 
-    def test_find_z_scan_running_order_accepts_only_488_zscan3p_presets(self):
-        """Z-scan 只能选择 488 nm 专用三相位 RO，且按固定 preset 精确匹配。"""
+    def test_find_z_scan_running_order_matches_requested_wavelength_and_preset(self):
+        """Z-scan 按当前波长与固定 preset 精确选择三相位 RO。"""
         from sim_control.adapters import find_z_scan_running_order, parse_z_scan_running_order_name
 
         running_orders = [
@@ -191,10 +191,74 @@ class RunningOrderSelectionTests(unittest.TestCase):
             },
         )
 
-        index, name, warnings = find_z_scan_running_order(running_orders, exposure_preset_ms=8)
+        index, name, warnings = find_z_scan_running_order(
+            running_orders,
+            wavelength_nm=561,
+            exposure_preset_ms=8,
+        )
 
-        self.assertEqual((index, name), (3, "488_3.5_2d_zscan3p_8ms"))
+        self.assertEqual((index, name), (1, "561_3.5_2d_zscan3p_8ms"))
         self.assertEqual(warnings, [])
+
+    def test_find_z_scan_running_order_supports_all_machine_wavelengths_and_presets(self):
+        from sim_control.adapters import find_z_scan_running_order
+
+        running_orders = [
+            (111, f"{wavelength}_3.5_2d_zscan3p_{preset}ms")
+            for wavelength in (405, 488, 561, 647)
+            for preset in (5, 8, 14, 20)
+        ]
+
+        for wavelength in (405, 488, 561, 647):
+            for preset in (5, 8, 14, 20):
+                with self.subTest(wavelength=wavelength, preset=preset):
+                    index, name, warnings = find_z_scan_running_order(
+                        running_orders,
+                        wavelength_nm=wavelength,
+                        exposure_preset_ms=preset,
+                    )
+                    self.assertEqual(index, 111)
+                    self.assertEqual(name, f"{wavelength}_3.5_2d_zscan3p_{preset}ms")
+                    self.assertEqual(warnings, [])
+
+    def test_find_z_scan_running_order_red_exact_first_then_bidirectional_fallback(self):
+        from sim_control.adapters import find_z_scan_running_order
+
+        both = [
+            (4, "647_3.5_2d_zscan3p_8ms"),
+            (9, "638_3.5_2d_zscan3p_8ms"),
+        ]
+        exact = find_z_scan_running_order(both, wavelength_nm=638, exposure_preset_ms=8)
+        fallback_638_to_647 = find_z_scan_running_order(
+            [(4, "647_3.5_2d_zscan3p_8ms")], wavelength_nm=638, exposure_preset_ms=8
+        )
+        fallback_647_to_638 = find_z_scan_running_order(
+            [(9, "638_3.5_2d_zscan3p_8ms")], wavelength_nm=647, exposure_preset_ms=8
+        )
+
+        self.assertEqual(exact, (9, "638_3.5_2d_zscan3p_8ms", []))
+        self.assertEqual(fallback_638_to_647[:2], (4, "647_3.5_2d_zscan3p_8ms"))
+        self.assertTrue(any("Using 647 nm" in warning and "requested 638 nm" in warning
+                            for warning in fallback_638_to_647[2]))
+        self.assertEqual(fallback_647_to_638[:2], (9, "638_3.5_2d_zscan3p_8ms"))
+        self.assertTrue(any("Using 638 nm" in warning and "requested 647 nm" in warning
+                            for warning in fallback_647_to_638[2]))
+
+    def test_find_z_scan_running_order_fails_closed_for_invalid_inputs_and_nonred_mismatch(self):
+        from sim_control.adapters import find_z_scan_running_order
+
+        running_orders = [(1, "561_3.5_2d_zscan3p_8ms")]
+        cases = ((532, 8), (488, 7), (488, 8), (None, 8), (488, "invalid"))
+        for wavelength, preset in cases:
+            with self.subTest(wavelength=wavelength, preset=preset):
+                index, name, warnings = find_z_scan_running_order(
+                    running_orders,
+                    wavelength_nm=wavelength,
+                    exposure_preset_ms=preset,
+                )
+                self.assertIsNone(index)
+                self.assertEqual(name, "")
+                self.assertTrue(warnings)
 
     def test_find_z_scan_running_order_reports_missing_preset(self):
         """缺少指定 z-scan preset 时应返回 warning，而不是回退到正式 SIM9 RO。"""
@@ -202,6 +266,7 @@ class RunningOrderSelectionTests(unittest.TestCase):
 
         index, name, warnings = find_z_scan_running_order(
             [(0, "488_3.5_2d_10ms"), (1, "488_3.5_2d_zscan3p_5ms")],
+            wavelength_nm=488,
             exposure_preset_ms=14,
         )
 

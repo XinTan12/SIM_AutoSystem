@@ -25,8 +25,8 @@
       与硬件实际接线一致（slm_enable=0/trigger=1/finish=2/cam=8/
       405=9/488=10/561=11/red=12）。第四路红光线 ``laser_red_line``（line 12）
       承载机器红光（638 或 647），物理接线与波长数字无关。
-    - ``DEFAULT_INTER_FRAME_GAP_US = 50_000``：SIM9 正式采集帧间隔默认 50 ms，
-      只有相机推荐值（recommended_inter_frame_gap_us）小于该值时才能覆盖。
+    - ``DEFAULT_INTER_FRAME_GAP_US = 50_000``：相机 timing 缺失或非法时使用的
+      SIM9 安全回退值；合法推荐值即使超过 50 ms 也必须采用。
     - ``SUPPORTED_LASERS = (405, 488, 561, 638)``：默认机器四档波长常量；按机器红光
       （``AppConfig.red_laser_nm`` 638/647）取四档用 ``supported_lasers_for``。
     - 9 帧 pattern：``pattern_files`` 列表始终 9 槽位长度，Running Order
@@ -43,6 +43,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,8 +144,7 @@ def supported_lasers_for(red_laser_nm: int) -> tuple[int, int, int, int]:
     if red not in RED_LASER_CHOICES:
         red = DEFAULT_RED_LASER_NM
     return (*BASE_LASERS, red)
-# 50 ms 是正式 SIM9 默认帧间隔。仅当相机针对当前 ROI/接口推荐的
-# ``recommended_inter_frame_gap_us`` < 50_000 时才允许覆盖此默认。
+# 50 ms 是相机 timing 缺失或非法时的正式 SIM9 安全回退帧间隔。
 DEFAULT_INTER_FRAME_GAP_US = 50_000
 Z_SCAN_EXPOSURE_PRESETS_US = {
     5: 4_884,
@@ -189,25 +189,21 @@ def new_task_id(prefix: str = "sim") -> str:
 
 
 def effective_inter_frame_gap_us(recommended_gap_us: int | float | None = None) -> int:
-    """在默认 50 ms 与相机推荐间隔之间选出实际生效的帧间隔。
+    """选择实际写入波形的相机推荐 gap，异常时安全回退 50 ms。
 
-    规则：
-        - 推荐值 None / 缺失：使用 ``DEFAULT_INTER_FRAME_GAP_US`` = 50 ms。
-        - 推荐值 ≥ 50 ms：仍使用 50 ms（项目策略不允许放慢默认时序）。
-        - 推荐值 < 50 ms 且 ≥ 0：使用推荐值（更快读出时缩短帧间）。
-
-    返回：
-        实际写入波形 builder 的 ``inter_frame_gap_us``（整数微秒）。
+    合法的相机推荐值一律向上取整后采用，包括大于或等于 50 ms 的结果；
+    只有缺失、不可转换、非有限或负值才使用 ``DEFAULT_INTER_FRAME_GAP_US``。
+    这样不会把相机报告的硬件安全下界截短到旧默认值。
     """
-    # 1) 没有相机推荐：直接回落默认值。
-    if recommended_gap_us is None:
+    if recommended_gap_us is None or isinstance(recommended_gap_us, bool):
         return DEFAULT_INTER_FRAME_GAP_US
-    # 2) 强转 int（兼容 numpy 浮点等类型），保持后续比较确定。
-    gap_us = int(recommended_gap_us)
-    # 3) 推荐值在 [0, 50_000) 之间才有"更快"的意义，超过默认则继续使用默认。
-    if 0 <= gap_us < DEFAULT_INTER_FRAME_GAP_US:
-        return gap_us
-    return DEFAULT_INTER_FRAME_GAP_US
+    try:
+        numeric_gap_us = float(recommended_gap_us)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_INTER_FRAME_GAP_US
+    if not math.isfinite(numeric_gap_us) or numeric_gap_us < 0:
+        return DEFAULT_INTER_FRAME_GAP_US
+    return int(math.ceil(numeric_gap_us))
 
 
 # ============================================================================
@@ -428,6 +424,7 @@ class ZScanConfig:
 
     enabled: bool = True
     start_um: float | None = None
+    select_focus_plane: bool = True
     direction: str = "positive_z"
     step_um: float = 0.3
     num_steps: int = 10
@@ -517,7 +514,7 @@ class AppConfig:
     # 默认值必须与 ``config_store.CURRENT_CONFIG_VERSION`` 保持一致（由
     # ``test_legacy_sim_config_migration`` 钉死）；写盘路径 ``app_config_to_dict``
     # 另有强制兜底，即使此处漂移也不会写出过期版本号。
-    config_version: int = 13
+    config_version: int = 14
     config_path: str = ""
 
     def resolved_config_path(self) -> Path | None:
